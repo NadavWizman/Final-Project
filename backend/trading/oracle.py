@@ -36,7 +36,7 @@ def get_stock_data(ticker_symbol):
 # --- קוד לבדיקה מקומית ---
 if __name__ == "__main__":
     print("מתחבר לאורקל ושולף נתונים עבור Apple (AAPL)...")
-    result = get_stock_data("ENE")
+    result = get_stock_data("AAPL")
     
     # נדפיס את התוצאה בצורה יפה כדי לראות מה חוזר
     print(json.dumps(result, indent=4, ensure_ascii=False))

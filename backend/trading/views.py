@@ -16,6 +16,10 @@ class OrderViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        # אם זה ה-Node (מנהל), תן לו לראות את כל ההזמנות כדי שיוכל לבצע אותן
+        if self.request.user.is_staff:
+            return Order.objects.all()
+        # אם זה משתמש רגיל, תראה לו רק את ההזמנות שלו
         return Order.objects.filter(user=self.request.user)
 
     def create(self, request, *args, **kwargs):
