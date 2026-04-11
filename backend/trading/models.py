@@ -54,3 +54,20 @@ class Order(models.Model):
     
     def __str__(self):
         return f"{self.order_type} {self.quantity} {self.stock_id} ({self.status})"
+    
+# 5. טבלת אישורי צמתים (Consensus Approvals)
+class OrderApproval(models.Model):
+    # קישור להזמנה הספציפית
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='approvals')
+    # שם ה-Node שאישר (למשל המשתמש איתו הוא התחבר)
+    node_name = models.CharField(max_length=50)
+    # המחיר שה-Node הזה קיבל מהאורקל
+    execution_price = models.DecimalField(max_digits=15, decimal_places=4)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # אילוץ שמונע מאותו Node להצביע פעמיים על אותה הזמנה
+        unique_together = ('order', 'node_name')
+
+    def __str__(self):
+        return f"Node {self.node_name} approved Order {self.order.id} at {self.execution_price}"

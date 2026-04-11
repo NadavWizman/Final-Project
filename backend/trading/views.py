@@ -62,45 +62,72 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"error": "ניתן לבצע רק הזמנות שממתינות לאישור."}, status=status.HTTP_400_BAD_REQUEST)
 
         execution_price = request.data.get('execution_price')
-        oracle_timestamp = request.data.get('timestamp') # חותמת הזמן שה-Nodes מעבירים לנו
+        oracle_timestamp = request.data.get('timestamp')
+        
+        # אנחנו לוקחים את שם המשתמש שה-Node השתמש בו כדי להתחבר אלינו
+        node_name = request.user.username 
 
         if not execution_price or not oracle_timestamp:
-            return Response({"error": "חובה לספק מחיר ביצוע וחותמת זמן (timestamp) מה-Oracle."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "חובה לספק מחיר ביצוע וחותמת זמן."}, status=status.HTTP_400_BAD_REQUEST)
 
         execution_price = Decimal(execution_price)
         
-        # --- השלמה 2: בדיקת טריות המחיר (Stale Data) ---
+        # --- בדיקות טריות וגבול --- (נשאר זהה)
         oracle_time = parse_datetime(oracle_timestamp)
         if not oracle_time:
             return Response({"error": "פורמט חותמת זמן לא תקין."}, status=status.HTTP_400_BAD_REQUEST)
             
-        # אם עברו יותר מ-30 שניות, דוחים את העסקה
         if timezone.now() - oracle_time > timedelta(seconds=30):
             order.status = 'REJECTED'
             order.save()
-            return Response({"error": "Stale Data: המחיר מיושן ולכן העסקה בוטלה."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"error": "Stale Data: המחיר מיושן."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # --- השלמה 3: בדיקת מחיר גבול (Limit Price) ---
         if order.limit_price:
             if order.order_type == 'BUY' and execution_price > order.limit_price:
                 order.status = 'REJECTED'
                 order.save()
-                return Response({"error": f"המחיר בשוק ({execution_price}) גבוה ממחיר הגבול ({order.limit_price}). העסקה בוטלה."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "מחיר שוק גבוה ממחיר גבול."}, status=status.HTTP_400_BAD_REQUEST)
             elif order.order_type == 'SELL' and execution_price < order.limit_price:
                 order.status = 'REJECTED'
                 order.save()
-                return Response({"error": f"המחיר בשוק ({execution_price}) נמוך ממחיר הגבול ({order.limit_price}). העסקה בוטלה."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "מחיר שוק נמוך ממחיר גבול."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # ---- שלב ביצוע העסקה בפועל ----
+
+        # ==========================================
+        # 🌟 המנגנון החדש: קונצנזוס Proof-of-Authority!
+        # ==========================================
+        
+        # 1. רישום ההצבעה של ה-Node הנוכחי
+        try:
+            OrderApproval.objects.create(
+                order=order, 
+                node_name=node_name, 
+                execution_price=execution_price
+            )
+        except Exception as e:
+            # אם הוא כבר הצביע, זה ייפול בגלל ה-unique_together במודל
+            return Response({"error": "ה-Node הזה כבר אישר את העסקה הזו."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. ספירת הקולות!
+        total_approvals = order.approvals.count()
+        
+        if total_approvals < 2:
+            # עדיין אין מספיק קולות (רק 1 מתוך 3 אישר), מחזירים תשובה ולא מבצעים כלום
+            return Response({
+                "status": "pending_consensus", 
+                "message": f"ההצבעה התקבלה בהצלחה ({total_approvals}/3). ממתין לעוד Nodes."
+            })
+
+        # --- אם הגענו לכאן, יש לנו לפחות 2 אישורים! מבצעים את העסקה ---
+        
         total_value = order.quantity * execution_price
         wallet = order.user.wallet
 
         if order.order_type == 'BUY':
-            # בדיקת יתרה סופית לפי המחיר האמיתי
             if wallet.balance < total_value:
                 order.status = 'REJECTED'
                 order.save()
-                return Response({"error": "אין מספיק דולרים לביצוע במחיר השוק הנוכחי."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": "אין מספיק דולרים בארנק לביצוע הקנייה."}, status=status.HTTP_400_BAD_REQUEST)
                 
             wallet.balance -= total_value
             position, created = Position.objects.get_or_create(user=order.user, stock=order.stock)
@@ -122,13 +149,13 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         wallet.save()
         
-        # עדכון ההזמנה ושמירה במסד
         order.execution_price = execution_price
         order.status = 'CONFIRMED'
         order.save()
 
         return Response({
-            "status": "העסקה בוצעה בהצלחה והיתרות עודכנו!", 
+            "status": "success",
+            "message": "קונצנזוס הושג! העסקה בוצעה בהצלחה.", 
             "execution_price": execution_price
         })
 
