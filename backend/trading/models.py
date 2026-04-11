@@ -44,7 +44,7 @@ class Order(models.Model):
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
     order_type = models.CharField(max_length=4, choices=ORDER_TYPES)
     quantity = models.DecimalField(max_digits=15, decimal_places=4)
-    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='DRAFT')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='SUBMITED')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     execution_price = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)

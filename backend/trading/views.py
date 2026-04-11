@@ -19,13 +19,12 @@ class OrderViewSet(viewsets.ModelViewSet):
         return Order.objects.filter(user=self.request.user)
 
     def create(self, request, *args, **kwargs):
-        stock_id = request.data.get('stock')
-        order_type = request.data.get('order_type')
-        quantity = Decimal(request.data.get('quantity', 0))
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        # --- השלמה 1: הגבלת המסחר למניות מורשות (S&P 500) ---
-        if not Stock.objects.filter(ticker=stock_id).exists():
-            raise ValidationError({"error": "המסחר מוגבל למניות מדד S&P 500 בלבד המורשות במערכת."})
+        stock = serializer.validated_data['stock']
+        order_type = serializer.validated_data['order_type']
+        quantity = serializer.validated_data['quantity']
 
         # TODO: פלסטר - יוחלף בעתיד בקריאה לאורקל
         mock_oracle_price = Decimal('100.00') 
@@ -39,7 +38,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         elif order_type == 'SELL':
             try:
-                position = Position.objects.get(user=request.user, stock_id=stock_id)
+                position = Position.objects.get(user=request.user, stock=stock)
                 if position.quantity < quantity:
                     raise ValidationError({"error": "אין לך מספיק מניות למכירה."})
             except Position.DoesNotExist:
@@ -107,8 +106,15 @@ class OrderViewSet(viewsets.ModelViewSet):
         elif order.order_type == 'SELL':
             wallet.balance += total_value
             position = Position.objects.get(user=order.user, stock=order.stock)
+            if position.quantity < order.quantity:
+                order.status = 'REJECTED'
+                order.save()
+                return Response({"error": "לא ניתן למכור יותר מהמלאי הקיים."}, status=status.HTTP_400_BAD_REQUEST)
             position.quantity -= order.quantity
-            position.save()
+            if position.quantity == 0:
+                position.delete()
+            else:
+                position.save()
 
         wallet.save()
         
