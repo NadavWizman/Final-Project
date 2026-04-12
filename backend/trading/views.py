@@ -30,8 +30,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         order_type = serializer.validated_data['order_type']
         quantity = serializer.validated_data['quantity']
 
-        # TODO: פלסטר - יוחלף בעתיד בקריאה לאורקל
-        mock_oracle_price = Decimal('100.00') 
 
         if order_type == 'BUY':
             wallet = Wallet.objects.get(user=request.user)
