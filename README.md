@@ -848,7 +848,7 @@ custom_claim: "value"       →     user.attribute.custom_claim
 ```
 תרחיש:
 IDP חיצוני (שנפרץ / לא מהימן מספיק) מנפיק token עם:
-{
+{ 
   "sub": "admin",
   "email": "real-admin@company.com",
   "groups": ["Administrators"]
