@@ -825,8 +825,7 @@ groups: ["admins"]          →     (תלוי במיפוי) → roles
 custom_claim: "value"       →     user.attribute.custom_claim
 ```
 
-#### 5.3.3 ניתוח גבולות האמון — מי סומך על מי?
-
+ניתוח גבולות האמון — מי סומך על מי?
 **שכבה 1: IDP חיצוני סומך על Keycloak (כ-Registered Client)**
 ```
 Azure AD / External IDP
@@ -876,8 +875,7 @@ Applications (Resource Servers)
        — זו נקודת הכוח וגם נקודת הסיכון!
 ```
 
-#### 5.3.4 וקטורי תקיפה ייחודיים לתרחיש Broker
-
+וקטורי תקיפה ייחודיים לתרחיש Broker
 **וקטור 1: IDP Claim Injection / Claim Confusion**
 
 ```
@@ -971,8 +969,7 @@ Keycloak מאחסן פדרציית זהויות כ-{alias}:{sub}
 └─────────────────────────────────────────────────────────────┘
 ```
 
-#### 5.3.6 מצב שבו ה-IDP החיצוני סומך על Keycloak
-
+מצב שבו ה-IDP החיצוני סומך על Keycloak
 זהו תרחיש הפוך מהרגיל — כאשר Keycloak מוגדר כ-**IDP** (לא כ-SP) ומערכת חיצונה סומכת עליו.
 
 ```
@@ -1015,8 +1012,7 @@ Keycloak מאחסן פדרציית זהויות כ-{alias}:{sub}
 3. **Client Validation:** Keycloak חייב לוודא ש-SP רשום כ-client לפני שהוא מנפיק token/assertion.
 4. **Token Exchange Risk:** אם Token Exchange מופעל, IDP חיצוני שמקבל Keycloak token צריך לדעת שה-subject יכול להיות user חיצוני (מ-broker).
 
-#### 5.3.7 דיאגרמת Trust Chain מלאה
-
+דיאגרמת Trust Chain מלאה
 ```
 External IDP (Azure AD)
         │
@@ -1057,8 +1053,7 @@ Keycloak הוא "תרגומי" — מבדד את האפליקציה מ-IDP הח�
 
 ---
 
-### 5.4 המלצות לחיזוק גבולות האמון
-
+המלצות לחיזוק גבולות האמון
 | תחום | המלצה | חומרה |
 |------|--------|-------|
 | **Broker Configuration** | הגדר `trustEmail=false` תמיד; אמת מייל בנפרד | קריטי |
