@@ -827,8 +827,7 @@ custom_claim: "value"       →     user.attribute.custom_claim
 
 #### 5.3.3 ניתוח גבולות האמון — מי סומך על מי?
 
-**טיר 1: IDP חיצוני סומך על Keycloak (כ-Registered Client)**
-
+**שכבה 1: IDP חיצוני סומך על Keycloak (כ-Registered Client)**
 ```
 Azure AD / External IDP
     │
@@ -844,8 +843,7 @@ Azure AD / External IDP
 
 ---
 
-**טיר 2: Keycloak סומך על IDP חיצוני (Accepting Claims)**
-
+**שכבה 2: Keycloak סומך על IDP חיצוני (Accepting Claims)**
 ```
 Keycloak (Broker)
     │
@@ -865,8 +863,7 @@ Keycloak (Broker)
 
 ---
 
-**טיר 3: אפליקציות סומכות על Keycloak (Accepting Keycloak Tokens)**
-
+**שכבה 3: אפליקציות סומכות על Keycloak (Accepting Keycloak Tokens)**
 ```
 Applications (Resource Servers)
     │
