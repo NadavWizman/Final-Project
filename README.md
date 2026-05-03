@@ -755,19 +755,19 @@ User → GET /auth → Browser Flow
                                │
                     ┌──────────▼───────────┐
                     │   KEYCLOAK (Broker)  │
-                    │                     │
-                    │  - Validates IDP    │
-                    │    tokens/assertions│
-                    │  - Maps claims      │
-                    │  - Issues own tokens│
+                    │                      │
+                    │  - Validates IDP     │
+                    │    tokens/assertions │
+                    │  - Maps claims       │
+                    │  - Issues own tokens │
                     └──────────┬───────────┘
                                │
                     TRUSTS ◄───┤ (Keycloak issues tokens
                                │  that Apps accept)
                                │
               ┌────────────────▼─────────────────┐
-              │           Applications            │
-              │  (Resource Servers, SPAs, etc.)   │
+              │           Applications           │
+              │  (Resource Servers, SPAs, etc.)  │
               └──────────────────────────────────┘
 ```
 
@@ -958,19 +958,19 @@ Keycloak מאחסן פדרציית זהויות כ-{alias}:{sub}
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│              Claim Mapping Trust Analysis                    │
+│              Claim Mapping Trust Analysis                   │
 │                                                             │
-│  External IDP Claim    │  Risk Level  │  Recommendation    │
-│  ────────────────────────────────────────────────────────  │
-│  sub                   │  LOW         │  תמיד מאוחסן       │
+│  External IDP Claim    │  Risk Level  │  Recommendation     │
+│  ────────────────────────────────────────────────────────   │
+│  sub                   │  LOW         │  תמיד מאוחסן        │
 │                        │              │  כ-federatedId     │
-│  email                 │  HIGH        │  trustEmail=false  │
-│                        │              │  + verification    │
-│  roles / groups        │  CRITICAL    │  אל תמפה ישירות!  │
+│  email                 │  HIGH        │  trustEmail=false   │
+│                        │              │  + verification     │
+│  roles / groups        │  CRITICAL    │  אל תמפה ישירות!    │
 │                        │              │  מיפוי מפורש בלבד │
-│  name / username       │  MEDIUM      │  אפשר עם review   │
-│  custom attributes     │  MEDIUM-HIGH │  whitelist בלבד   │
-│  acr / amr             │  MEDIUM      │  אמות מול מדיניות │
+│  name / username       │  MEDIUM      │  אפשר עם review     │
+│  custom attributes     │  MEDIUM-HIGH │  whitelist בלבד     │
+│  acr / amr             │  MEDIUM      │  אמות מול מדיניות   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
