@@ -834,37 +834,13 @@ custom_claim: "value"       →     user.attribute.custom_claim
 ---
 
 **שכבה 2: Keycloak סומך על IDP חיצוני (Accepting Claims)**
-```
-Keycloak (Broker)
-    │
-    ├─ TRUSTS External IDP לנפק זהויות תקפות
-    │   ├─ אמות JWT Signature מול JWKS של ה-IDP
-    │   ├─ בדיקת Issuer (iss)
-    │   └─ מיפוי claims פנימי
-    │
-    ├─ PARTIAL TRUST — Keycloak לא סומך עיוור
-    │   ├─ אינו מקבל roles/groups ישירות (ברירת מחדל)
-    │   ├─ מפעיל First Broker Login Flow לאישור
-    │   └─ מגדיר trustEmail=false (ברירת מחדל)
-    │
-    └─ TRUST BOUNDARY: Keycloak הוא "גשר" — הוא מאמת את הזהות
-       אך לא בהכרח את ההרשאות מה-IDP החיצוני
-```
+<img width="1122" height="1402" alt="image" src="https://github.com/user-attachments/assets/8940767f-f42c-48ef-b5c5-a481f864e8a6" />
 
 ---
 
 **שכבה 3: אפליקציות סומכות על Keycloak (Accepting Keycloak Tokens)**
-```
-Applications (Resource Servers)
-    │
-    ├─ FULLY TRUST Keycloak Tokens
-    │   ├─ אמות JWT Signature מול Keycloak JWKS
-    │   ├─ בדיקת iss: https://keycloak.example.com/realms/{realm}
-    │   └─ קריאת roles מ-realm_access / resource_access
-    │
-    └─ האפליקציה אינה יודעת מה מקור הזהות (local / broker)
-       — זו נקודת הכוח וגם נקודת הסיכון!
-```
+`<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/59708beb-5091-4fbe-8403-083c956256d9" />
+
 
 וקטורי תקיפה ייחודיים לתרחיש Broker
 **וקטור 1: IDP Claim Injection / Claim Confusion**
