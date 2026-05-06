@@ -1,0 +1,24 @@
+{
+  "_note": "Seed state replicated across all 3 nodes. pub_key_der is the base64 of the DER SubjectPublicKeyInfo of each demo user (generate with scripts/gen_keys.py).",
+  "accounts": [
+    {
+      "user_id": "alice",
+      "pub_key_der": "BASE64_OF_ALICE_DER_PUBKEY",
+      "cash": "100000",
+      "positions": {"AAPL": "10", "MSFT": "5"},
+      "last_nonce": 0
+    },
+    {
+      "user_id": "bob",
+      "pub_key_der": "BASE64_OF_BOB_DER_PUBKEY",
+      "cash": "50000",
+      "positions": {},
+      "last_nonce": 0
+    }
+  ],
+  "symbols": [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA",
+    "BRK.B", "JPM", "V", "JNJ", "WMT", "PG", "UNH", "HD",
+    "MA", "XOM", "DIS", "KO", "PEP"
+  ]
+}

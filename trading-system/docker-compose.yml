@@ -1,0 +1,74 @@
+services:
+  node-1:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    command: ["-config", "/app/configs/node-1.json"]
+    volumes:
+      - ./node/configs:/app/configs:ro
+      - ./keys:/app/keys:ro
+      - node1-data:/app/data
+    ports:
+      - "9001:9001"
+    depends_on:
+      - oracle
+
+  node-2:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    command: ["-config", "/app/configs/node-2.json"]
+    volumes:
+      - ./node/configs:/app/configs:ro
+      - ./keys:/app/keys:ro
+      - node2-data:/app/data
+    ports:
+      - "9002:9002"
+    depends_on:
+      - oracle
+
+  node-3:
+    build:
+      context: .
+      dockerfile: node/Dockerfile
+    command: ["-config", "/app/configs/node-3.json"]
+    volumes:
+      - ./node/configs:/app/configs:ro
+      - ./keys:/app/keys:ro
+      - node3-data:/app/data
+    ports:
+      - "9003:9003"
+    depends_on:
+      - oracle
+
+  oracle:
+    build:
+      context: .
+      dockerfile: oracle/Dockerfile
+    environment:
+      NODE_ADDRS: "node-1:9001,node-2:9002,node-3:9003"
+      POLL_INTERVAL_SECS: "15"
+    ports:
+      - "7000:7000"
+
+  django:
+    build:
+      context: .
+      dockerfile: django_app/Dockerfile
+    environment:
+      LEADER_NODE_ADDR: "node-1:9001"
+      ORACLE_URL: "http://oracle:7000"
+      DJANGO_DEBUG: "1"
+    volumes:
+      - django-data:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - node-1
+      - oracle
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  django-data:

@@ -1,0 +1,15 @@
+{
+  "node_id": "node-3",
+  "is_leader": false,
+  "grpc_listen": ":9003",
+  "priv_key_path": "/app/keys/node-3.key.pem",
+  "genesis_path": "/app/configs/genesis.json",
+  "chain_path": "/app/data/chain.log",
+  "max_price_age_secs": 30,
+  "consensus_timeout_ms": 2000,
+  "authorities": [
+    {"node_id": "node-1", "pub_key_pem": "REPLACE_WITH_NODE_1_PUB_PEM", "address": "node-1:9001"},
+    {"node_id": "node-2", "pub_key_pem": "REPLACE_WITH_NODE_2_PUB_PEM", "address": "node-2:9002"},
+    {"node_id": "node-3", "pub_key_pem": "REPLACE_WITH_NODE_3_PUB_PEM", "address": "node-3:9003"}
+  ]
+}
