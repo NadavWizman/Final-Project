@@ -85,4 +85,4 @@ def _build_message(order_data: dict) -> bytes:
         "quantity":   str(order_data.get("quantity", "")),
         "nonce":      str(order_data.get("nonce", "")),
     }
-    return json.dumps(payload, sort_keys=True).encode()
+    return json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()

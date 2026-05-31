@@ -54,13 +54,13 @@ func NewChain(nodeName string) *Chain {
 		genesis := Block{
 			Index:     0,
 			PrevHash:  "0000000000000000000000000000000000000000000000000000000000000000",
-			Timestamp: time.Now().Unix(),
+			Timestamp: 0,
 			OrderID:   0,
 			Stock:     "GENESIS",
 			OrderType: "GENESIS",
 			Quantity:  "0",
 			Price:     "0",
-			NodeName:  nodeName,
+			NodeName:  "genesis",
 		}
 		genesis.Hash = computeHash(genesis)
 		c.blocks = append(c.blocks, genesis)
