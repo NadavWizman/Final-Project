@@ -2,26 +2,30 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	pb "nodes/consensus"
 )
 
-// ProposeRequest — what the Leader sends to Validators
+// ProposeRequest — what the Leader sends to Validators (kept for reference, proto handles the wire)
 type ProposeRequest struct {
 	Block           Block  `json:"block"`
 	OraclePrice     string `json:"oracle_price"`
 	OracleTimestamp string `json:"oracle_timestamp"`
-	// ECDSA fields — for verifying the order creator's identity
-	Signature     string `json:"signature"`      // user's Base64 signature
-	PublicKey     string `json:"public_key"`     // PEM public key
-	SignedMessage string `json:"signed_message"` // signed message: stock|order_type|quantity|nonce
+	Signature       string `json:"signature"`
+	PublicKey       string `json:"public_key"`
+	SignedMessage   string `json:"signed_message"`
 }
 
-// VoteResponse — what the Validator returns
+// VoteResponse — what the Validator returns (kept for reference)
 type VoteResponse struct {
 	NodeID  string `json:"node_id"`
 	Approve bool   `json:"approve"`
@@ -63,7 +67,7 @@ func processLeaderCycle(cfg Config, chain *Chain) {
 		}
 		fmt.Printf("[Leader] Oracle: $%s\n", oracle.ExecutionPrice)
 
-		// step 2: build proposed block (including signature)
+		// step 2: build proposed block
 		block := chain.CreateNextBlock(
 			order.ID, order.Stock, order.OrderType,
 			order.Quantity, oracle.ExecutionPrice, cfg.NodeName,
@@ -71,25 +75,17 @@ func processLeaderCycle(cfg Config, chain *Chain) {
 		)
 		fmt.Printf("[Leader] Block #%d | hash: %s...\n", block.Index, block.Hash[:16])
 
-		// build the signed message (same format as Python)
+		// build the signed message (same compact JSON format as Python)
 		signedMsg := fmt.Sprintf(`{"nonce":"%s","order_type":"%s","quantity":"%s","stock":"%s"}`,
 			order.Nonce, order.OrderType, order.Quantity, order.Stock)
 
-		proposal := ProposeRequest{
-			Block:           block,
-			OraclePrice:     oracle.ExecutionPrice,
-			OracleTimestamp: oracle.Timestamp,
-			Signature:       order.Signature,
-			PublicKey:       order.PublicKey,
-			SignedMessage:   signedMsg,
-		}
-
-		// step 3: collect votes from Validators
-		approvals := 1 // Leader approves its own proposal
+		// step 3: collect votes from Validators via gRPC
+		approvals := 1 // Leader counts itself as approved
 		fmt.Printf("[Leader] Self-vote: approve\n")
 
 		for _, addr := range cfg.ValidatorAddresses {
-			vote := askValidator(addr, proposal)
+			vote := askValidator(addr, block, oracle.ExecutionPrice, oracle.Timestamp,
+				order.Signature, order.PublicKey, signedMsg)
 			if vote.Approve {
 				approvals++
 				fmt.Printf("[Leader] Approved by %s\n", vote.NodeID)
@@ -104,14 +100,11 @@ func processLeaderCycle(cfg Config, chain *Chain) {
 		if approvals >= 2 {
 			fmt.Printf("[Leader] Consensus reached! Executing order...\n")
 
-			// send execute_order to Django
 			if sendExecuteOrder(cfg, order.ID, oracle) {
-				// commit block to local chain
 				chain.Append(block)
 				fmt.Printf("[Leader] Block #%d committed | chain length: %d\n",
 					block.Index, chain.Length())
 
-				// broadcast final block to Validators
 				for _, addr := range cfg.ValidatorAddresses {
 					broadcastCommit(addr, block)
 				}
@@ -128,42 +121,77 @@ func processLeaderCycle(cfg Config, chain *Chain) {
 	}
 }
 
-// askValidator sends a ProposeBlock to a Validator and waits for a response
-func askValidator(address string, proposal ProposeRequest) VoteResponse {
-	body, _ := json.Marshal(proposal)
-	url := fmt.Sprintf("http://%s/propose", address)
+// askValidator sends a Propose RPC to a Validator and returns its vote
+func askValidator(address string, block Block, oraclePrice, oracleTimestamp,
+	signature, publicKey, signedMsg string) VoteResponse {
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewBuffer(body))
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return VoteResponse{NodeID: address, Approve: false,
 			Reason: fmt.Sprintf("connection error: %v", err)}
 	}
-	defer resp.Body.Close()
+	defer conn.Close()
 
-	var vote VoteResponse
-	if err := json.NewDecoder(resp.Body).Decode(&vote); err != nil {
-		return VoteResponse{NodeID: address, Approve: false, Reason: "invalid response"}
+	client := pb.NewConsensusServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := client.Propose(ctx, &pb.ProposeRequest{
+		Block:           blockToProto(block),
+		OraclePrice:     oraclePrice,
+		OracleTimestamp: oracleTimestamp,
+		Signature:       signature,
+		PublicKey:       publicKey,
+		SignedMessage:   signedMsg,
+	})
+	if err != nil {
+		return VoteResponse{NodeID: address, Approve: false,
+			Reason: fmt.Sprintf("rpc error: %v", err)}
 	}
-	return vote
+
+	return VoteResponse{NodeID: resp.NodeId, Approve: resp.Approve, Reason: resp.Reason}
 }
 
-// broadcastCommit notifies a Validator that the block has been finalized
+// broadcastCommit sends a Commit RPC to a Validator to finalize the block
 func broadcastCommit(address string, block Block) {
-	body, _ := json.Marshal(block)
-	url := fmt.Sprintf("http://%s/commit", address)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewBuffer(body))
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Printf("[Leader] Commit broadcast to %s failed: %v", address, err)
+		log.Printf("[Leader] Commit connection to %s failed: %v", address, err)
 		return
 	}
-	defer resp.Body.Close()
+	defer conn.Close()
+
+	client := pb.NewConsensusServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err = client.Commit(ctx, &pb.CommitRequest{Block: blockToProto(block)})
+	if err != nil {
+		log.Printf("[Leader] Commit RPC to %s failed: %v", address, err)
+		return
+	}
 	fmt.Printf("[Leader] Block broadcast to %s succeeded\n", address)
 }
 
-// sendExecuteOrder sends the POST request to Django
+// blockToProto converts the local Block struct to a proto Block message
+func blockToProto(b Block) *pb.Block {
+	return &pb.Block{
+		Index:     int32(b.Index),
+		PrevHash:  b.PrevHash,
+		Timestamp: b.Timestamp,
+		OrderId:   int32(b.OrderID),
+		Stock:     b.Stock,
+		OrderType: b.OrderType,
+		Quantity:  b.Quantity,
+		Price:     b.Price,
+		NodeName:  b.NodeName,
+		Signature: b.Signature,
+		PublicKey: b.PublicKey,
+		Hash:      b.Hash,
+	}
+}
+
+// sendExecuteOrder sends the POST request to Django — stays as HTTP
 func sendExecuteOrder(cfg Config, orderID int, oracle *OracleData) bool {
 	payload := map[string]string{
 		"execution_price": oracle.ExecutionPrice,

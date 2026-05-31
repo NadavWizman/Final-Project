@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django.db import models
 from django.contrib.auth.models import User
 
@@ -32,7 +33,7 @@ class Wallet(models.Model):
 class Position(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='positions')
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
-    quantity = models.DecimalField(max_digits=15, decimal_places=4, default=0.00)
+    quantity = models.DecimalField(max_digits=15, decimal_places=4, default=Decimal('0'))
 
     class Meta:
         unique_together = ('user', 'stock') # prevents duplicates: one row per user per stock

@@ -53,7 +53,7 @@ func LoadConfig() Config {
 		NodeName:           name,
 		NodePass:           pass,
 		DjangoURL:          "http://127.0.0.1:8000/api",
-		OracleURL:          "http://127.0.0.1:8001",
+		OracleURL:          "127.0.0.1:8001",
 		IsLeader:           isLeader,
 		ValidatorAddresses: validators,
 		ListenPort:         listenPort,

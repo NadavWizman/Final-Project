@@ -5,10 +5,10 @@ from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from .models import Order, Wallet, Position, Stock, OrderApproval, UserProfile
+from .models import Order, Wallet, Position, Stock, UserProfile
 from .serializers import OrderSerializer
 from .crypto_utils import generate_key_pair, sign_order, verify_signature
 from django.contrib.auth.models import User
@@ -101,21 +101,12 @@ class OrderViewSet(viewsets.ModelViewSet):
         })
 
     # ----------------------------------------------------------------
-    # execute_order — called by Execution nodes after consensus
+    # execute_order — called once by the Leader node after gRPC consensus is reached
     # ----------------------------------------------------------------
     @action(detail=True, methods=['post'])
     def execute_order(self, request, pk=None):
-        order = self.get_object()
-
-        if order.status != 'SUBMITTED':
-            return Response(
-                {"error": "Only SUBMITTED orders can be executed."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
         execution_price_raw = request.data.get('execution_price')
         oracle_timestamp    = request.data.get('timestamp')
-        node_name           = request.user.username
 
         if not execution_price_raw or not oracle_timestamp:
             return Response(
@@ -123,7 +114,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # parse price
         try:
             execution_price = Decimal(str(execution_price_raw))
         except InvalidOperation:
@@ -136,65 +126,37 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         age = timezone.now() - oracle_time
         if age > timedelta(seconds=60):
-            order.status = 'REJECTED'
-            order.save()
             return Response(
                 {"error": f"Stale data: price is {int(age.total_seconds())} seconds old (limit: 60s)."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # limit-price check
-        if order.limit_price:
-            if order.order_type == 'BUY' and execution_price > order.limit_price:
-                order.status = 'REJECTED'
-                order.save()
-                return Response(
-                    {"error": f"Market price ${execution_price} exceeds limit price ${order.limit_price}."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            elif order.order_type == 'SELL' and execution_price < order.limit_price:
-                order.status = 'REJECTED'
-                order.save()
-                return Response(
-                    {"error": f"Market price ${execution_price} is below limit price ${order.limit_price}."},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-        # record this node's vote
-        try:
-            OrderApproval.objects.create(
-                order=order,
-                node_name=node_name,
-                execution_price=execution_price
-            )
-        except IntegrityError:
-            return Response(
-                {"error": "This node has already approved this order."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        except Exception as e:
-            return Response(
-                {"error": f"Internal error: {str(e)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-        total_approvals = order.approvals.count()
-
-        if total_approvals < 2:
-            return Response({
-                "status": "pending_consensus",
-                "message": f"Vote recorded ({total_approvals}/3). Waiting for more nodes.",
-                "approvals": total_approvals
-            })
-
-        # consensus reached — execute with lock to prevent race condition
         with transaction.atomic():
+            order = self.get_object()
             order.refresh_from_db()
+
             if order.status != 'SUBMITTED':
-                return Response({
-                    "status": "already_processed",
-                    "message": "This order has already been processed by another node."
-                })
+                return Response(
+                    {"error": f"Only SUBMITTED orders can be executed. Current status: {order.status}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # limit-price check
+            if order.limit_price:
+                if order.order_type == 'BUY' and execution_price > order.limit_price:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {"error": f"Market price ${execution_price} exceeds limit price ${order.limit_price}."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                elif order.order_type == 'SELL' and execution_price < order.limit_price:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {"error": f"Market price ${execution_price} is below limit price ${order.limit_price}."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
             total_value = order.quantity * execution_price
             wallet = order.user.wallet
@@ -243,10 +205,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         return Response({
             "status": "success",
-            "message": f"Consensus reached! ({total_approvals}/3 approvals). Order executed.",
+            "message": "Order executed after gRPC consensus.",
             "execution_price": str(execution_price),
             "total_value": str(total_value),
-            "approvals": total_approvals
         })
 
 

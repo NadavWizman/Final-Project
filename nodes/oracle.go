@@ -1,31 +1,42 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"net/http"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	pb "nodes/oracle"
 )
 
+// OracleData holds the price response — same struct as before, used throughout the codebase
 type OracleData struct {
-	Ticker         string `json:"ticker"`
-	ExecutionPrice string `json:"execution_price"`
-	Timestamp      string `json:"timestamp"`
-	Error          string `json:"error"`
+	Ticker         string
+	ExecutionPrice string
+	Timestamp      string
 }
 
-func FetchPrice(oracleURL, ticker string) (*OracleData, error) {
-	resp, err := http.Get(fmt.Sprintf("%s/price/%s", oracleURL, ticker))
+// FetchPrice calls the Oracle gRPC service and returns the current price for a ticker
+func FetchPrice(oracleAddr, ticker string) (*OracleData, error) {
+	conn, err := grpc.NewClient(oracleAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("oracle connection failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer conn.Close()
 
-	var data OracleData
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, err
+	client := pb.NewOracleServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := client.GetPrice(ctx, &pb.PriceRequest{Ticker: ticker})
+	if err != nil {
+		return nil, fmt.Errorf("oracle rpc failed: %v", err)
 	}
-	if data.Error != "" {
-		return nil, fmt.Errorf("oracle error: %s", data.Error)
-	}
-	return &data, nil
+
+	return &OracleData{
+		Ticker:         resp.Ticker,
+		ExecutionPrice: resp.ExecutionPrice,
+		Timestamp:      resp.Timestamp,
+	}, nil
 }

@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package consensus;
+
+option go_package = "github.com/trading/nodes/consensus";
+
+// Block represents a single entry in the append-only chain
+message Block {
+  int32  index      = 1;
+  string prev_hash  = 2;
+  int64  timestamp  = 3;
+  int32  order_id   = 4;
+  string stock      = 5;
+  string order_type = 6;
+  string quantity   = 7;
+  string price      = 8;
+  string node_name  = 9;
+  string signature  = 10;
+  string public_key = 11;
+  string hash       = 12;
+}
+
+// ProposeRequest is what the Leader sends to each Validator
+message ProposeRequest {
+  Block  block            = 1;
+  string oracle_price     = 2;
+  string oracle_timestamp = 3;
+  string signature        = 4;  // user's ECDSA signature
+  string public_key       = 5;  // user's PEM public key
+  string signed_message   = 6;  // the exact message that was signed
+}
+
+// VoteResponse is what the Validator sends back
+message VoteResponse {
+  string node_id = 1;
+  bool   approve = 2;
+  string reason  = 3;
+}
+
+// CommitRequest is sent by the Leader after consensus is reached
+message CommitRequest {
+  Block block = 1;
+}
+
+// CommitResponse acknowledges that the Validator appended the block
+message CommitResponse {
+  string status       = 1;
+  int32  index        = 2;
+  int32  chain_length = 3;
+}
+
+// ConsensusService is the gRPC interface exposed by each Validator
+service ConsensusService {
+  // Propose asks the Validator to vote on a candidate block
+  rpc Propose (ProposeRequest) returns (VoteResponse);
+
+  // Commit tells the Validator to finalize and append the agreed block
+  rpc Commit (CommitRequest) returns (CommitResponse);
+}
