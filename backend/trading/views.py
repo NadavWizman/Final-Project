@@ -294,3 +294,68 @@ def deposit_view(request):
     wallet.save()
 
     return Response({"message": f"Successfully deposited ${amount}.", "new_balance": str(wallet.balance)})
+
+
+# ============================================================
+# 5. Price proxy — lets the browser fetch live prices via gRPC oracle
+# ============================================================
+import sys as _sys, os as _os
+_oracle_path = _os.path.normpath(_os.path.join(_os.path.dirname(__file__), '..', '..', 'oracle_service'))
+if _oracle_path not in _sys.path:
+    _sys.path.insert(0, _oracle_path)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def history_view(_request, ticker):
+    try:
+        import yfinance as yf
+        period   = _request.GET.get('period', '1mo')
+        interval = _request.GET.get('interval', '1d')
+
+        valid_periods   = {'1d','5d','1mo','3mo','6mo','ytd','1y','2y','5y','10y','max'}
+        valid_intervals = {'1m','2m','5m','15m','30m','60m','1h','1d','5d','1wk','1mo','3mo'}
+
+        if period   not in valid_periods:   period   = '1mo'
+        if interval not in valid_intervals: interval = '1d'
+
+        # yfinance hard limits: cap period to what each interval supports
+        if interval == '1m' and period not in {'1d','5d'}:
+            period = '5d'
+        elif interval in {'2m','5m','15m','30m','60m','1h'} and period not in {'1d','5d','1mo','3mo','6mo'}:
+            period = '1mo'
+
+        data = yf.Ticker(ticker.upper()).history(period=period, interval=interval)
+        if data.empty:
+            return Response({"error": f"No data for {ticker}"}, status=status.HTTP_404_NOT_FOUND)
+        prices = [
+            {
+                "date":  str(row.Index.date()),
+                "open":  round(float(row.Open),  2),
+                "high":  round(float(row.High),  2),
+                "low":   round(float(row.Low),   2),
+                "close": round(float(row.Close), 2),
+            }
+            for row in data.itertuples()
+        ]
+        return Response({"ticker": ticker.upper(), "prices": prices})
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def price_view(_request, ticker):
+    try:
+        import grpc                          # type: ignore
+        import oracle_pb2                    # type: ignore
+        import oracle_pb2_grpc              # type: ignore
+        channel = grpc.insecure_channel('127.0.0.1:8001')
+        stub = oracle_pb2_grpc.OracleServiceStub(channel)
+        resp = stub.GetPrice(oracle_pb2.PriceRequest(ticker=ticker.upper()), timeout=5)
+        return Response({
+            "ticker":          resp.ticker,
+            "execution_price": resp.execution_price,
+            "timestamp":       resp.timestamp,
+        })
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
