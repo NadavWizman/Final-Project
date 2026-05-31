@@ -1,15 +1,26 @@
 from django.db import models
 from django.contrib.auth.models import User
 
-# 1. טבלת נכסים/מניות (קטלוג המניות המורשות)
+
+# 0. User profile — holds ECDSA keys
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
+    ecdsa_private_key = models.TextField()   # PEM — stored server-side, never exposed via API
+    ecdsa_public_key  = models.TextField()   # PEM — sent to nodes for signature verification
+
+    def __str__(self):
+        return f"Profile({self.user.username})"
+
+
+# 1. Stocks table (catalog of allowed tickers)
 class Stock(models.Model):
-    ticker = models.CharField(max_length=10, primary_key=True) # למשל: AAPL
+    ticker = models.CharField(max_length=10, primary_key=True) # e.g. AAPL
     name = models.CharField(max_length=100)
 
     def __str__(self):
         return self.ticker
 
-# 2. טבלת ארנק דולרי - קשר של 1:1 למשתמש
+# 2. Dollar wallet table - 1:1 relationship with User
 class Wallet(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='wallet')
     balance = models.DecimalField(max_digits=15, decimal_places=2, default=0.00)
@@ -17,22 +28,22 @@ class Wallet(models.Model):
     def __str__(self):
         return f"Wallet of {self.user.username} - {self.balance} USD"
 
-# 3. טבלת החזקות מניות (Positions)
+# 3. Stock holdings table (Positions)
 class Position(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='positions')
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
     quantity = models.DecimalField(max_digits=15, decimal_places=4, default=0.00)
 
     class Meta:
-        unique_together = ('user', 'stock') # מונע כפילות: לכל משתמש שורה אחת לכל מניה
+        unique_together = ('user', 'stock') # prevents duplicates: one row per user per stock
 
-# 4. טבלת הזמנות (Orders) וניהול מחזור חיים 
+# 4. Orders table and lifecycle management
 class Order(models.Model):
     ORDER_TYPES = [
         ('BUY', 'Buy'),
         ('SELL', 'Sell'),
     ]
-    
+
     STATUS_CHOICES = [
         ('DRAFT', 'Draft'),
         ('SUBMITTED', 'Submitted'),
@@ -44,29 +55,30 @@ class Order(models.Model):
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
     order_type = models.CharField(max_length=4, choices=ORDER_TYPES)
     quantity = models.DecimalField(max_digits=15, decimal_places=4)
-    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='SUBMITED')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='DRAFT')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     execution_price = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
     nonce = models.CharField(max_length=100, unique=True, null=True, blank=True)
     limit_price = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    signature = models.TextField(null=True, blank=True)  # ECDSA signature of the order creator
 
-    
+
     def __str__(self):
         return f"{self.order_type} {self.quantity} {self.stock_id} ({self.status})"
-    
-# 5. טבלת אישורי צמתים (Consensus Approvals)
+
+# 5. Node consensus approvals table
 class OrderApproval(models.Model):
-    # קישור להזמנה הספציפית
+    # link to the specific order
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='approvals')
-    # שם ה-Node שאישר (למשל המשתמש איתו הוא התחבר)
+    # name of the node that approved (i.e. the username it authenticated with)
     node_name = models.CharField(max_length=50)
-    # המחיר שה-Node הזה קיבל מהאורקל
+    # price this node received from the oracle
     execution_price = models.DecimalField(max_digits=15, decimal_places=4)
     timestamp = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        # אילוץ שמונע מאותו Node להצביע פעמיים על אותה הזמנה
+        # prevents the same node from voting twice on the same order
         unique_together = ('order', 'node_name')
 
     def __str__(self):

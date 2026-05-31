@@ -4,26 +4,26 @@ import json
 
 def get_stock_data(ticker_symbol):
     """
-    פונקציה שפונה ל-Yahoo Finance, שולפת את המחיר הנוכחי של המניה
-    ומחזירה אותו יחד עם חותמת זמן מדויקת (UTC).
+    Queries Yahoo Finance for the current price of a stock and returns it
+    together with a precise UTC timestamp.
     """
     try:
-        # יצירת אובייקט מניה
+        # create a ticker object
         stock = yf.Ticker(ticker_symbol)
-        
-        # שליפת היסטוריית המחירים של היום האחרון
-        todays_data = stock.history(period='1d')
-        
-        if todays_data.empty:
-            return {"error": f"לא נמצאו נתונים עבור המניה {ticker_symbol}"}
 
-        # לקיחת מחיר הסגירה/הנוכחי האחרון
+        # fetch today's price history
+        todays_data = stock.history(period='1d')
+
+        if todays_data.empty:
+            return {"error": f"No data found for ticker {ticker_symbol}"}
+
+        # take the most recent close/current price
         current_price = round(todays_data['Close'].iloc[-1], 2)
-        
-        # יצירת חותמת זמן בפורמט ISO (אותו פורמט ש-Django מצפה לקבל)
+
+        # build an ISO timestamp (the format Django expects)
         current_timestamp = datetime.now(timezone.utc).isoformat()
 
-        # החזרת הנתונים כ-Dictionary (מוכן להמרה ל-JSON)
+        # return the data as a dict (ready for JSON serialization)
         return {
             "ticker": ticker_symbol,
             "execution_price": str(current_price),
@@ -33,10 +33,10 @@ def get_stock_data(ticker_symbol):
     except Exception as e:
         return {"error": str(e)}
 
-# --- קוד לבדיקה מקומית ---
+# --- local testing ---
 if __name__ == "__main__":
-    print("מתחבר לאורקל ושולף נתונים עבור Apple (AAPL)...")
+    print("Connecting to oracle and fetching data for Apple (AAPL)...")
     result = get_stock_data("AAPL")
-    
-    # נדפיס את התוצאה בצורה יפה כדי לראות מה חוזר
-    print(json.dumps(result, indent=4, ensure_ascii=False))
+
+    # pretty-print the result
+    print(json.dumps(result, indent=4))

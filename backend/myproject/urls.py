@@ -19,5 +19,5 @@ from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include('trading.urls')), # <--- כאן אנחנו מנתבים את התנועה לקובץ של trading
+    path('api/', include('trading.urls')), # routes all /api/ traffic to trading/urls.py
 ]
