@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package oracle;
+
+option go_package = "github.com/trading/nodes/oracle";
+option py_generic_services = true;
+
+// PriceRequest is sent by a node asking for the current price of a stock
+message PriceRequest {
+  string ticker = 1;
+}
+
+// PriceResponse is returned by the oracle with the live execution price
+message PriceResponse {
+  string ticker          = 1;
+  string execution_price = 2;
+  string timestamp       = 3;
+}
+
+// OracleService is the gRPC interface exposed by the oracle microservice
+service OracleService {
+  // GetPrice fetches the current market price for a given ticker
+  rpc GetPrice (PriceRequest) returns (PriceResponse);
+}
