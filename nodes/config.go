@@ -49,11 +49,20 @@ func LoadConfig() Config {
 		}
 	}
 
+	djangoURL := os.Getenv("DJANGO_URL")
+	if djangoURL == "" {
+		djangoURL = "http://127.0.0.1:8000/api"
+	}
+	oracleURL := os.Getenv("ORACLE_URL")
+	if oracleURL == "" {
+		oracleURL = "127.0.0.1:8001"
+	}
+
 	return Config{
 		NodeName:           name,
 		NodePass:           pass,
-		DjangoURL:          "http://127.0.0.1:8000/api",
-		OracleURL:          "127.0.0.1:8001",
+		DjangoURL:          djangoURL,
+		OracleURL:          oracleURL,
 		IsLeader:           isLeader,
 		ValidatorAddresses: validators,
 		ListenPort:         listenPort,
