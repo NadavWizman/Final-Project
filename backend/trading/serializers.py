@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from rest_framework.validators import UniqueValidator
 from django.contrib.auth.models import User
 from .models import Stock, Wallet, Position, Order
 
@@ -35,6 +36,12 @@ class PositionSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     # user's public key — read automatically from UserProfile
     public_key = serializers.SerializerMethodField()
+    # nonce is required at creation and must be unique (replay attack prevention)
+    nonce = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        validators=[UniqueValidator(queryset=Order.objects.all())],
+    )
 
     class Meta:
         model = Order
