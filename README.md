@@ -52,75 +52,73 @@ DRAFT → SUBMITTED → CONFIRMED
 ## Prerequisites
 
 - Python 3.11+
-- Go 1.21+
+- Go 1.21+ (only needed if rebuilding the binary)
 
 ---
 
 ## Quick Start
 
-### 1 — Clone and install Python dependencies
+### Option A — one command (recommended)
 
 ```bash
 git clone https://github.com/NadavWizman/Final-Project.git
 cd Final-Project
-
-pip install -r requirements.txt
+bash setup.sh
 ```
 
-### 2 — Configure the Django backend
+`setup.sh` will:
+1. Install all Python dependencies from `requirements.txt`
+2. Create `backend/.env` from the example file
+3. Run Django migrations
+4. Seed the S&P 500 stock catalog (54 tickers)
+5. Create the three node users (`node1`, `node2`, `node3`)
+6. Rebuild the Go binary (if Go is installed)
+
+### Option B — manual steps
 
 ```bash
+# 1. Install Python dependencies
+pip3 install -r requirements.txt
+
+# 2. Configure Django
 cd backend
-cp .env.example .env          # edit SECRET_KEY and DEBUG as needed
+cp .env.example .env        # edit SECRET_KEY if needed
+
+# 3. Database
 python3 manage.py migrate
-python3 manage.py createsuperuser   # optional — for the /admin panel
+python3 manage.py seed_stocks          # populate stock catalog
+python3 manage.py create_node_users    # create node1/node2/node3
 ```
 
-Create node users so the Leader can authenticate with Django:
+---
+
+## Running the Project
+
+Open **five** terminal windows from the project root:
 
 ```bash
-python3 manage.py shell -c "
-from django.contrib.auth.models import User
-User.objects.create_user('node1', password='node1pass', is_staff=True)
-"
+# Terminal 1 — Oracle service (must start first)
+cd oracle_service && python3 oracle_server.py
+
+# Terminal 2 — Node 1: Leader
+cd nodes && NODE_NAME=node1 NODE_PASS=node1pass IS_LEADER=true ./nodes_bin
+
+# Terminal 3 — Node 2: Validator
+cd nodes && NODE_NAME=node2 NODE_PASS=node2pass IS_LEADER=false LISTEN_PORT=9002 ./nodes_bin
+
+# Terminal 4 — Node 3: Validator
+cd nodes && NODE_NAME=node3 NODE_PASS=node3pass IS_LEADER=false LISTEN_PORT=9003 ./nodes_bin
+
+# Terminal 5 — Django backend
+cd backend && python3 manage.py runserver
 ```
 
-### 3 — Start the Oracle service
+Open **http://127.0.0.1:8000** in your browser.
 
-```bash
-cd oracle_service
-python3 oracle_server.py
-# Listening on 0.0.0.0:8001
-```
-
-### 4 — Start the blockchain nodes (three separate terminals)
-
-```bash
-# Terminal A — Leader (node1)
-cd nodes
-NODE_NAME=node1 NODE_PASS=node1pass IS_LEADER=true ./nodes_bin
-
-# Terminal B — Validator (node2)
-NODE_NAME=node2 NODE_PASS=node2pass IS_LEADER=false LISTEN_PORT=9002 ./nodes_bin
-
-# Terminal C — Validator (node3)
-NODE_NAME=node3 NODE_PASS=node3pass IS_LEADER=false LISTEN_PORT=9003 ./nodes_bin
-```
-
-To recompile the binary after source changes:
-
-```bash
-cd nodes
-go build -o nodes_bin .
-```
-
-### 5 — Start Django
-
-```bash
-cd backend
-python3 manage.py runserver
-# Open http://127.0.0.1:8000
-```
+> **Rebuild the Go binary after source changes:**
+> ```bash
+> cd nodes && go build -o nodes_bin .
+> ```
 
 ---
 
@@ -133,18 +131,33 @@ python3 manage.py runserver
 | `SECRET_KEY` | insecure dev value | Django secret key — **change in production** |
 | `DEBUG` | `True` | Set to `False` in production |
 | `ALLOWED_HOSTS` | `127.0.0.1,localhost` | Comma-separated allowed host names |
+| `ORACLE_URL` | `127.0.0.1:8001` | Oracle gRPC address used by the price proxy |
 
 ### Nodes (`nodes/.env.example`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `NODE_NAME` | `node1` | Identifies the node (`node1`, `node2`, `node3`) |
-| `NODE_PASS` | `node1pass` | Basic auth password for Django requests |
+| `NODE_PASS` | `node1pass` | Basic auth password matching the Django user |
 | `IS_LEADER` | `false` | Set `true` for the leader node only |
 | `LISTEN_PORT` | auto (9002/9003) | gRPC port for validators |
 | `DJANGO_URL` | `http://127.0.0.1:8000/api` | Backend API base URL |
 | `ORACLE_URL` | `127.0.0.1:8001` | Oracle gRPC address |
-| `VALIDATOR_ADDRESSES` | `localhost:9002,localhost:9003` | Comma-separated validator addresses |
+| `VALIDATOR_ADDRESSES` | `localhost:9002,localhost:9003` | Comma-separated validator addresses (Leader only) |
+
+---
+
+## Management Commands
+
+| Command | Description |
+|---------|-------------|
+| `python3 manage.py migrate` | Apply all database migrations |
+| `python3 manage.py seed_stocks` | Populate the Stock table with 54 S&P 500 tickers |
+| `python3 manage.py create_node_users` | Create node1/node2/node3 users with `is_staff=True` |
+| `python3 manage.py test trading` | Run the full test suite (32 tests) |
+| `python3 manage.py createsuperuser` | Create an admin user for `/admin` |
+
+All seed/create commands are **idempotent** — safe to run multiple times.
 
 ---
 
@@ -155,7 +168,10 @@ cd backend
 python3 manage.py test trading --verbosity=2
 ```
 
-32 tests covering: crypto utilities, registration, portfolio, deposits, order creation, submission, and execution.
+32 tests covering: crypto utilities, registration, portfolio, deposits,
+order creation (whitelist, nonce, quantity validation), order submission
+(ECDSA signature), and full order execution (BUY/SELL, limit price,
+balance checks, stale timestamp).
 
 ---
 
@@ -165,12 +181,12 @@ All endpoints require HTTP Basic Auth except `/api/register/`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/register/` | Create account (returns ECDSA public key) |
-| GET | `/api/portfolio/` | Balance and holdings |
-| POST | `/api/deposit/` | Add USD to wallet |
-| GET | `/api/orders/` | List orders (own only; staff sees all) |
-| POST | `/api/orders/` | Create DRAFT order |
-| POST | `/api/orders/{id}/submit/` | Sign and submit for consensus |
-| POST | `/api/orders/{id}/execute_order/` | Called by Leader after consensus |
-| GET | `/api/price/{ticker}/` | Live price via Oracle gRPC |
-| GET | `/api/history/{ticker}/` | Historical OHLC data |
+| `POST` | `/api/register/` | Create account — returns ECDSA public key and $10 000 wallet |
+| `GET` | `/api/portfolio/` | Balance and holdings |
+| `POST` | `/api/deposit/` | Add USD to wallet |
+| `GET` | `/api/orders/` | List orders (own only; staff/nodes see all) |
+| `POST` | `/api/orders/` | Create DRAFT order |
+| `POST` | `/api/orders/{id}/submit/` | Sign order with ECDSA and submit for consensus |
+| `POST` | `/api/orders/{id}/execute_order/` | Called by the Leader after consensus is reached |
+| `GET` | `/api/price/{ticker}/` | Live price via Oracle gRPC |
+| `GET` | `/api/history/{ticker}/` | Historical OHLC data (supports `period` and `interval` params) |
