@@ -554,6 +554,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
       <input class="modal-input" id="m-qty" type="number" min="1" placeholder="Shares"
              oninput="updateModalEstimate();checkModalQty()">
       <div class="qty-warning" id="m-qty-warning"></div>
+      <div class="field-label" style="margin-top:2px">Limit Price <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(optional)</span></div>
+      <input class="modal-input" id="m-limit" type="number" min="0.01" step="0.01" placeholder="Max price per share">
       <div class="modal-estimate">
         <span>Estimated total</span>
         <strong id="m-estimate">—</strong>
@@ -696,7 +698,7 @@ const S = {
   creds: null, tab: 'portfolio',
   portfolio: null, orders: [],
   holdingPrices: {},
-  tradePrice: null, tradeType: 'BUY', tradeStock: '', tradeQty: '', tradeNonce: genNonce(),
+  tradePrice: null, tradeType: 'BUY', tradeStock: '', tradeQty: '', tradeLimitPrice: '', tradeNonce: genNonce(),
   pendingDraft: null,
   // chart state (never reset on data refresh)
   tc: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
@@ -920,6 +922,10 @@ function renderTrade() {
         <input class="input-field" type="number" min="1" placeholder="Shares" value="${S.tradeQty}"
                oninput="S.tradeQty=this.value;updateTradeEstimate();checkTradeQty()">
         <div class="qty-warning" id="trade-qty-warning"></div>
+        <div class="field-label" style="margin-top:4px">Limit Price <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(optional)</span></div>
+        <input class="input-field" type="number" min="0.01" step="0.01" placeholder="Max price per share"
+               value="${S.tradeLimitPrice}"
+               oninput="S.tradeLimitPrice=this.value">
         <div style="margin-top:8px"></div>
         <button class="btn-primary" id="place-btn" onclick="doPlaceOrder()">Place Order</button>
         <div id="trade-error" class="error-msg" style="display:none;margin-top:12px"></div>
@@ -1164,13 +1170,15 @@ function paintModalChart() {
 
 function doModalTrade() {
   const {ticker, tradeType: type} = S.modal;
-  const qty   = document.getElementById('m-qty').value;
-  const nonce = document.getElementById('m-nonce').value || genNonce();
-  const errEl = document.getElementById('m-error');
+  const qty        = document.getElementById('m-qty').value;
+  const nonce      = document.getElementById('m-nonce').value || genNonce();
+  const limitPrice = document.getElementById('m-limit').value;
+  const errEl      = document.getElementById('m-error');
   errEl.style.display = 'none';
   if (!qty || parseFloat(qty) <= 0) { showErr(errEl, 'Enter a valid quantity.'); return; }
+  if (limitPrice && parseFloat(limitPrice) <= 0) { showErr(errEl, 'Limit price must be greater than 0.'); return; }
   const price = S.modal.price;
-  showConfirm({ stock: ticker, type, qty, nonce, price, source: 'modal' });
+  showConfirm({ stock: ticker, type, qty, nonce, price, limitPrice, source: 'modal' });
 }
 
 function closeModal()      { document.getElementById('stock-modal').classList.remove('open'); }
@@ -1398,8 +1406,8 @@ function addHover(canvas, s, tooltipId, crosshairId) {
 // ── CONFIRM DIALOG ───────────────────────────────────────────────
 let _pendingOrder = null;
 
-function showConfirm({ stock, type, qty, nonce, price, source }) {
-  _pendingOrder = { stock, type, qty, nonce, price, source };
+function showConfirm({ stock, type, qty, nonce, price, limitPrice, source }) {
+  _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source };
   const isBuy = type === 'BUY';
   document.getElementById('confirm-headline').textContent = `${type} ${qty} ${stock}`;
   document.getElementById('confirm-action').textContent = type;
@@ -1415,6 +1423,21 @@ function showConfirm({ stock, type, qty, nonce, price, source }) {
   } else {
     priceRow.style.display = 'none';
     totalRow.style.display = 'none';
+  }
+  // show limit price row if set
+  let limitRow = document.getElementById('confirm-limit-row');
+  if (!limitRow) {
+    limitRow = document.createElement('div');
+    limitRow.id = 'confirm-limit-row';
+    limitRow.className = 'confirm-row';
+    limitRow.innerHTML = '<span class="c-label">Limit price</span><span class="c-value" id="confirm-limit-val"></span>';
+    document.getElementById('confirm-total-row').insertAdjacentElement('afterend', limitRow);
+  }
+  if (limitPrice && parseFloat(limitPrice) > 0) {
+    limitRow.style.display = '';
+    document.getElementById('confirm-limit-val').textContent = fmt$(limitPrice) + '/share';
+  } else {
+    limitRow.style.display = 'none';
   }
   const btn = document.getElementById('confirm-ok-btn');
   btn.className   = `btn-modal ${isBuy?'green':'red'}`;
@@ -1434,14 +1457,14 @@ function maybeCloseConfirm(e) {
 
 async function doConfirmedOrder() {
   if (!_pendingOrder) return;
-  const { stock, type, qty, nonce, source } = _pendingOrder;
+  const { stock, type, qty, nonce, limitPrice, source } = _pendingOrder;
   const btn = document.getElementById('confirm-ok-btn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
 
   // Step 1: create as DRAFT
-  const createRes = await api('POST', '/orders/', {
-    stock: stock.toUpperCase(), order_type: type, quantity: qty, nonce
-  });
+  const body = { stock: stock.toUpperCase(), order_type: type, quantity: qty, nonce };
+  if (limitPrice && parseFloat(limitPrice) > 0) body.limit_price = limitPrice;
+  const createRes = await api('POST', '/orders/', body);
 
   if (!createRes.ok) {
     btn.disabled = false; btn.textContent = 'Confirm';
@@ -1469,15 +1492,17 @@ async function doConfirmedOrder() {
 
   // Reset source form
   if (source === 'trade') {
-    S.tradeNonce = genNonce();
-    S.tradeQty   = '';
-    const qtyEl = document.querySelector('#tab-trade input[type=number]');
-    if (qtyEl) qtyEl.value = '';
+    S.tradeNonce      = genNonce();
+    S.tradeQty        = '';
+    S.tradeLimitPrice = '';
+    const inputs = document.querySelectorAll('#tab-trade input[type=number]');
+    inputs.forEach(el => el.value = '');
     const warn = document.getElementById('trade-qty-warning');
     if (warn) { warn.textContent = ''; warn.classList.remove('visible'); }
     updateTradePriceCard();
   } else {
     document.getElementById('m-qty').value   = '';
+    document.getElementById('m-limit').value = '';
     document.getElementById('m-nonce').value = genNonce();
     document.getElementById('m-estimate').textContent = '—';
     closeModal();
@@ -1538,11 +1563,12 @@ function checkModalQty() {
 function doPlaceOrder() {
   const errEl = document.getElementById('trade-error');
   errEl.style.display = 'none';
-  const {tradeStock:stock, tradeType:type, tradeQty:qty, tradeNonce:nonce} = S;
+  const {tradeStock:stock, tradeType:type, tradeQty:qty, tradeNonce:nonce, tradeLimitPrice:limitPrice} = S;
   if (!stock) { showErr(errEl, 'Enter a ticker symbol.'); return; }
   if (!qty || parseFloat(qty) <= 0) { showErr(errEl, 'Enter a valid quantity.'); return; }
+  if (limitPrice && parseFloat(limitPrice) <= 0) { showErr(errEl, 'Limit price must be greater than 0.'); return; }
   const price = S.tradePrice ? S.tradePrice.execution_price : null;
-  showConfirm({ stock: stock.toUpperCase(), type, qty, nonce, price, source: 'trade' });
+  showConfirm({ stock: stock.toUpperCase(), type, qty, nonce, price, limitPrice, source: 'trade' });
 }
 
 async function doSubmit(orderId) {
