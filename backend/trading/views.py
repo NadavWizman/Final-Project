@@ -35,10 +35,12 @@ class OrderViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        # Node (staff) sees all orders — regular user sees only their own
+        # Node (staff) sees all orders — regular user sees only their own.
+        # select_related avoids N+1 queries when serializing user and stock fields.
+        qs = Order.objects.select_related('user', 'stock', 'user__profile')
         if self.request.user.is_staff:
-            return Order.objects.all()
-        return Order.objects.filter(user=self.request.user)
+            return qs
+        return qs.filter(user=self.request.user)
 
     def perform_create(self, serializer):
         stock = serializer.validated_data['stock']
@@ -299,10 +301,6 @@ def deposit_view(request):
 # ============================================================
 # 5. Price proxy — lets the browser fetch live prices via gRPC oracle
 # ============================================================
-import sys as _sys, os as _os
-_oracle_path = _os.path.normpath(_os.path.join(_os.path.dirname(__file__), '..', '..', 'oracle_service'))
-if _oracle_path not in _sys.path:
-    _sys.path.insert(0, _oracle_path)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -342,16 +340,29 @@ def history_view(_request, ticker):
         return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
+def _get_oracle_stub():
+    """Returns a gRPC stub for the Oracle service, importing from the correct path."""
+    import sys, os
+    oracle_path = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), '..', '..', 'oracle_service')
+    )
+    if oracle_path not in sys.path:
+        sys.path.insert(0, oracle_path)
+    import grpc                   # type: ignore
+    import oracle_pb2             # type: ignore
+    import oracle_pb2_grpc        # type: ignore
+    from django.conf import settings
+    oracle_url = getattr(settings, 'ORACLE_URL', '127.0.0.1:8001')
+    channel = grpc.insecure_channel(oracle_url)
+    return oracle_pb2_grpc.OracleServiceStub(channel), oracle_pb2
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def price_view(_request, ticker):
     try:
-        import grpc                          # type: ignore
-        import oracle_pb2                    # type: ignore
-        import oracle_pb2_grpc              # type: ignore
-        channel = grpc.insecure_channel('127.0.0.1:8001')
-        stub = oracle_pb2_grpc.OracleServiceStub(channel)
-        resp = stub.GetPrice(oracle_pb2.PriceRequest(ticker=ticker.upper()), timeout=5)
+        stub, pb = _get_oracle_stub()
+        resp = stub.GetPrice(pb.PriceRequest(ticker=ticker.upper()), timeout=5)
         return Response({
             "ticker":          resp.ticker,
             "execution_price": resp.execution_price,
