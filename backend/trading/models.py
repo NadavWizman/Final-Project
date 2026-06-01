@@ -36,7 +36,10 @@ class Position(models.Model):
     quantity = models.DecimalField(max_digits=15, decimal_places=4, default=Decimal('0'))
 
     class Meta:
-        unique_together = ('user', 'stock') # prevents duplicates: one row per user per stock
+        unique_together = ('user', 'stock')
+        indexes = [
+            models.Index(fields=['user'], name='position_user_idx'),
+        ]
 
 # 4. Orders table and lifecycle management
 class Order(models.Model):
@@ -65,6 +68,12 @@ class Order(models.Model):
     signature = models.TextField(null=True, blank=True)  # ECDSA signature of the order creator
 
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'status'], name='order_user_status_idx'),
+            models.Index(fields=['status'],          name='order_status_idx'),
+        ]
+
     def __str__(self):
         return f"{self.order_type} {self.quantity} {self.stock_id} ({self.status})"
 
@@ -81,6 +90,9 @@ class OrderApproval(models.Model):
     class Meta:
         # prevents the same node from voting twice on the same order
         unique_together = ('order', 'node_name')
+        indexes = [
+            models.Index(fields=['order'], name='approval_order_idx'),
+        ]
 
     def __str__(self):
         return f"Node {self.node_name} approved Order {self.order.id} at {self.execution_price}"
