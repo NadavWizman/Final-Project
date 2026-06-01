@@ -1,5 +1,27 @@
+# Python
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Django
 db.sqlite3
-*.jsonl**/.DS_Store
+*.sqlite3
+.env
+
+# Blockchain data (node-local state, not committed)
+nodes/chain_*.jsonl
+
+# macOS
+**/.DS_Store
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
