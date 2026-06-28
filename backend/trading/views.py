@@ -8,7 +8,7 @@ from django.utils.dateparse import parse_datetime
 from django.db import transaction
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from .models import Order, Wallet, Position, Stock, UserProfile
+from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition
 from .serializers import OrderSerializer
 from .crypto_utils import generate_key_pair, sign_order, verify_signature
 from django.contrib.auth.models import User
@@ -160,8 +160,46 @@ class OrderViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_400_BAD_REQUEST
                     )
 
-            total_value = order.quantity * execution_price
             wallet = order.user.wallet
+
+            if order.trade_type == 'CFD':
+                leverage    = order.leverage or 1
+                notional    = order.quantity * execution_price
+                margin      = (notional / leverage).quantize(Decimal('0.0001'))
+                direction   = 'LONG' if order.order_type == 'BUY' else 'SHORT'
+
+                if wallet.balance < margin:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {"error": f"Insufficient margin: need ${margin}, have ${wallet.balance}."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                wallet.balance -= margin
+                wallet.save()
+                CFDPosition.objects.create(
+                    user=order.user, stock=order.stock,
+                    direction=direction, quantity=order.quantity,
+                    entry_price=execution_price, leverage=leverage,
+                    margin_used=margin,
+                )
+                order.execution_price = execution_price
+                order.status = 'CONFIRMED'
+                order.save()
+
+                return Response({
+                    "status":        "success",
+                    "message":       "CFD position opened after gRPC consensus.",
+                    "direction":     direction,
+                    "entry_price":   str(execution_price),
+                    "notional":      str(notional),
+                    "leverage":      leverage,
+                    "margin_used":   str(margin),
+                })
+
+            # --- regular stock order ---
+            total_value = order.quantity * execution_price
 
             if order.order_type == 'BUY':
                 if wallet.balance < total_value:
@@ -206,10 +244,10 @@ class OrderViewSet(viewsets.ModelViewSet):
             order.save()
 
         return Response({
-            "status": "success",
-            "message": "Order executed after gRPC consensus.",
+            "status":          "success",
+            "message":         "Order executed after gRPC consensus.",
             "execution_price": str(execution_price),
-            "total_value": str(total_value),
+            "total_value":     str(total_value),
         })
 
 
@@ -338,6 +376,81 @@ def history_view(_request, ticker):
         return Response({"ticker": ticker.upper(), "prices": prices})
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+# ============================================================
+# 6. CFD positions list
+# ============================================================
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def cfd_positions_view(request):
+    positions = CFDPosition.objects.filter(user=request.user).select_related('stock').order_by('-opened_at')
+    data = [
+        {
+            "id":          pos.id,
+            "stock":       pos.stock.ticker,
+            "direction":   pos.direction,
+            "quantity":    str(pos.quantity),
+            "entry_price": str(pos.entry_price),
+            "leverage":    pos.leverage,
+            "margin_used": str(pos.margin_used),
+            "is_open":     pos.is_open,
+            "opened_at":   pos.opened_at,
+            "close_price": str(pos.close_price) if pos.close_price else None,
+            "pnl":         str(pos.pnl)         if pos.pnl         is not None else None,
+            "closed_at":   pos.closed_at,
+        }
+        for pos in positions
+    ]
+    return Response({"cfd_positions": data})
+
+
+# ============================================================
+# 7. CFD close position
+# ============================================================
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def close_cfd_view(request, pk):
+    try:
+        pos = CFDPosition.objects.get(pk=pk, user=request.user, is_open=True)
+    except CFDPosition.DoesNotExist:
+        return Response({"error": "Open CFD position not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        stub, pb = _get_oracle_stub()
+        resp = stub.GetPrice(pb.PriceRequest(ticker=pos.stock.ticker), timeout=5)
+        close_price = Decimal(str(resp.execution_price))
+    except Exception as e:
+        return Response({"error": f"Oracle unavailable: {e}"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    if pos.direction == 'LONG':
+        pnl = (close_price - pos.entry_price) * pos.quantity
+    else:
+        pnl = (pos.entry_price - close_price) * pos.quantity
+
+    with transaction.atomic():
+        wallet = request.user.wallet
+        wallet.balance += pos.margin_used + pnl
+        if wallet.balance < 0:
+            wallet.balance = Decimal('0')
+        wallet.save()
+
+        pos.is_open     = False
+        pos.close_price = close_price
+        pos.pnl         = pnl
+        pos.closed_at   = timezone.now()
+        pos.save()
+
+    return Response({
+        "status":           "closed",
+        "stock":            pos.stock.ticker,
+        "direction":        pos.direction,
+        "entry_price":      str(pos.entry_price),
+        "close_price":      str(close_price),
+        "pnl":              str(pnl),
+        "margin_returned":  str(pos.margin_used),
+        "new_balance":      str(wallet.balance),
+    })
 
 
 def _get_oracle_stub():

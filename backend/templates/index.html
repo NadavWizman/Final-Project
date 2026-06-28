@@ -367,6 +367,33 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
 .badge-draft{background:rgba(142,142,147,.12);color:var(--gray)}
 .badge-rejected{background:rgba(255,59,48,.12);color:#D70015}
 
+/* ── CFD ─────────────────────────────────────────── */
+.cfd-positions{display:flex;flex-direction:column;gap:12px;margin-bottom:28px}
+.cfd-card{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);
+  padding:16px 20px;display:flex;align-items:center;gap:14px;
+  border-left:3px solid transparent;transition:transform .12s}
+.cfd-card:hover{transform:translateY(-1px)}
+.cfd-card.long{border-left-color:var(--green)}
+.cfd-card.short{border-left-color:var(--red)}
+.cfd-dir-badge{padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700;
+  letter-spacing:.3px;flex-shrink:0;text-transform:uppercase}
+.cfd-dir-badge.long{background:rgba(52,199,89,.12);color:#248A3D}
+.cfd-dir-badge.short{background:rgba(255,59,48,.12);color:#D70015}
+.cfd-info{flex:1}
+.cfd-ticker{font-size:17px;font-weight:700;letter-spacing:-.2px}
+.cfd-meta{font-size:12px;color:var(--label2);margin-top:2px}
+.cfd-right{text-align:right;flex-shrink:0;min-width:90px}
+.cfd-pnl{font-size:16px;font-weight:700}
+.cfd-pnl.pos{color:var(--green)}
+.cfd-pnl.neg{color:var(--red)}
+.cfd-sub{font-size:11px;color:var(--label2);margin-top:2px}
+.leverage-picker{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
+.lev-btn{padding:7px 14px;border:1.5px solid var(--gray5);border-radius:8px;
+  font-size:13px;font-weight:600;cursor:pointer;background:var(--card);
+  color:var(--label2);font-family:inherit;transition:all .15s}
+.lev-btn:hover{border-color:var(--blue);color:var(--blue)}
+.lev-btn.active{border-color:var(--blue);background:var(--blue);color:#fff}
+
 /* ── MISC ───────────────────────────────────────── */
 #toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(80px);
   background:rgba(30,30,32,.9);color:#fff;padding:12px 20px;border-radius:20px;
@@ -453,6 +480,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
   </div>
 
   <div class="tab-bar">
+    <button class="tab-btn" onclick="switchTab('activity',this)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Activity
+    </button>
     <button class="tab-btn active" onclick="switchTab('portfolio',this)">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
       Portfolio
@@ -461,9 +492,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Trade
     </button>
-    <button class="tab-btn" onclick="switchTab('activity',this)">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-      Activity
+    <button class="tab-btn" onclick="switchTab('cfd',this)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 16l4-8 4 4 4-6"/></svg>
+      CFD
     </button>
   </div>
 
@@ -471,6 +502,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
     <div id="tab-portfolio"></div>
     <div id="tab-trade" style="display:none"></div>
     <div id="tab-activity" style="display:none"></div>
+    <div id="tab-cfd"      style="display:none"></div>
   </div>
 </div>
 
@@ -706,6 +738,9 @@ const S = {
   ec: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
   modal: { ticker: null, tradeType: 'BUY', price: null, qty: 0 },
   refreshTimer: null, priceTimer: null,
+  // CFD state
+  cfdPositions: [],
+  cfdDir: 'BUY', cfdStock: '', cfdQty: '', cfdLeverage: 10, cfdPrice: null,
 };
 // chart cache: key = "TICKER-period" => prices[]
 const CC = {};
@@ -795,13 +830,20 @@ function updateHeader() {
 }
 
 async function loadData() {
-  const [pRes, oRes] = await Promise.all([api('GET','/portfolio/'), api('GET','/orders/')]);
-  if (pRes.ok) { S.portfolio = pRes.data; updateHeader(); }
-  if (oRes.ok) { S.orders = oRes.data; }
+  const [pRes, oRes, cfdRes] = await Promise.all([
+    api('GET','/portfolio/'), api('GET','/orders/'), api('GET','/cfd/'),
+  ]);
+  if (pRes.ok)   { S.portfolio = pRes.data; updateHeader(); }
+  if (oRes.ok)   { S.orders = oRes.data; }
+  if (cfdRes.ok) { S.cfdPositions = cfdRes.data.cfd_positions || []; }
   if (S.pendingDraft) {
     const u = S.orders.find(o => o.id === S.pendingDraft);
     if (u && u.status === 'CONFIRMED') {
-      showToast('✅ Order confirmed at ' + fmt$(u.execution_price));
+      if (u.trade_type === 'CFD') {
+        showToast('✅ CFD position opened at ' + fmt$(u.execution_price));
+      } else {
+        showToast('✅ Order confirmed at ' + fmt$(u.execution_price));
+      }
       S.pendingDraft = null;
     }
   }
@@ -810,19 +852,24 @@ async function loadData() {
 }
 
 async function refreshHoldingPrices() {
-  if (!S.portfolio?.holdings?.length) return;
-  const results = await Promise.all(
-    S.portfolio.holdings.map(h => api('GET', `/price/${h.ticker}/`))
-  );
+  const tickers = new Set();
+  S.portfolio?.holdings?.forEach(h => tickers.add(h.ticker));
+  S.cfdPositions?.filter(p => p.is_open)?.forEach(p => tickers.add(p.stock));
+  if (!tickers.size) return;
+  const tickerArr = [...tickers];
+  const results = await Promise.all(tickerArr.map(t => api('GET', `/price/${t}/`)));
   let changed = false;
-  S.portfolio.holdings.forEach((h, i) => {
+  tickerArr.forEach((t, i) => {
     if (results[i].ok) {
-      const prev = S.holdingPrices[h.ticker]?.execution_price;
-      S.holdingPrices[h.ticker] = results[i].data;
+      const prev = S.holdingPrices[t]?.execution_price;
+      S.holdingPrices[t] = results[i].data;
       if (prev !== results[i].data.execution_price) changed = true;
     }
   });
-  if (changed && S.tab === 'portfolio') renderPortfolio();
+  if (changed) {
+    if (S.tab === 'portfolio') renderPortfolio();
+    if (S.tab === 'cfd')       renderCFD();
+  }
 }
 
 // ── TABS ─────────────────────────────────────────────────────────
@@ -830,7 +877,7 @@ function switchTab(tab, btn) {
   S.tab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  ['portfolio','trade','activity'].forEach(t =>
+  ['portfolio','trade','activity','cfd'].forEach(t =>
     document.getElementById('tab-'+t).style.display = t === tab ? '' : 'none');
   renderActiveTab();
 }
@@ -846,6 +893,7 @@ function renderActiveTab() {
     }
   }
   if (S.tab === 'activity')  renderActivity();
+  if (S.tab === 'cfd')       renderCFD();
 }
 
 // ── PORTFOLIO ────────────────────────────────────────────────────
@@ -1406,25 +1454,31 @@ function addHover(canvas, s, tooltipId, crosshairId) {
 // ── CONFIRM DIALOG ───────────────────────────────────────────────
 let _pendingOrder = null;
 
-function showConfirm({ stock, type, qty, nonce, price, limitPrice, source }) {
-  _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source };
-  const isBuy = type === 'BUY';
-  document.getElementById('confirm-headline').textContent = `${type} ${qty} ${stock}`;
-  document.getElementById('confirm-action').textContent = type;
+function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, tradeType = 'STOCK', leverage = null }) {
+  _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source, tradeType, leverage };
+  const isBuy  = type === 'BUY';
+  const isCFD  = tradeType === 'CFD';
+  const label  = isCFD ? (isBuy ? 'LONG' : 'SHORT') : type;
+  document.getElementById('confirm-headline').textContent = isCFD
+    ? `${label} ${qty} ${stock} (${leverage}x)` : `${type} ${qty} ${stock}`;
+  document.getElementById('confirm-action').textContent = label;
   document.getElementById('confirm-action').className   = `c-value ${isBuy?'buy':'sell'}`;
-  document.getElementById('confirm-qty').textContent    = `${qty} share${parseFloat(qty)!==1?'s':''}`;
+  document.getElementById('confirm-qty').textContent    = `${qty} ${isCFD?'unit':'share'}${parseFloat(qty)!==1?'s':''}`;
   const priceRow = document.getElementById('confirm-price-row');
   const totalRow = document.getElementById('confirm-total-row');
+  totalRow.querySelector('.c-label').textContent = isCFD ? 'Margin required' : 'Est. total';
   if (price) {
     priceRow.style.display = '';
     totalRow.style.display = '';
     document.getElementById('confirm-price').textContent = fmt$(price) + '/share';
-    document.getElementById('confirm-total').textContent = fmt$(parseFloat(price)*parseFloat(qty));
+    const total = isCFD
+      ? parseFloat(price) * parseFloat(qty) / leverage
+      : parseFloat(price) * parseFloat(qty);
+    document.getElementById('confirm-total').textContent = fmt$(total);
   } else {
     priceRow.style.display = 'none';
     totalRow.style.display = 'none';
   }
-  // show limit price row if set
   let limitRow = document.getElementById('confirm-limit-row');
   if (!limitRow) {
     limitRow = document.createElement('div');
@@ -1433,7 +1487,7 @@ function showConfirm({ stock, type, qty, nonce, price, limitPrice, source }) {
     limitRow.innerHTML = '<span class="c-label">Limit price</span><span class="c-value" id="confirm-limit-val"></span>';
     document.getElementById('confirm-total-row').insertAdjacentElement('afterend', limitRow);
   }
-  if (limitPrice && parseFloat(limitPrice) > 0) {
+  if (!isCFD && limitPrice && parseFloat(limitPrice) > 0) {
     limitRow.style.display = '';
     document.getElementById('confirm-limit-val').textContent = fmt$(limitPrice) + '/share';
   } else {
@@ -1441,7 +1495,7 @@ function showConfirm({ stock, type, qty, nonce, price, limitPrice, source }) {
   }
   const btn = document.getElementById('confirm-ok-btn');
   btn.className   = `btn-modal ${isBuy?'green':'red'}`;
-  btn.textContent = 'Confirm';
+  btn.textContent = isCFD ? 'Open Position' : 'Confirm';
   btn.disabled    = false;
   document.getElementById('confirm-modal').classList.add('open');
 }
@@ -1457,13 +1511,18 @@ function maybeCloseConfirm(e) {
 
 async function doConfirmedOrder() {
   if (!_pendingOrder) return;
-  const { stock, type, qty, nonce, limitPrice, source } = _pendingOrder;
+  const { stock, type, qty, nonce, limitPrice, source, tradeType = 'STOCK', leverage } = _pendingOrder;
   const btn = document.getElementById('confirm-ok-btn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
 
   // Step 1: create as DRAFT
   const body = { stock: stock.toUpperCase(), order_type: type, quantity: qty, nonce };
-  if (limitPrice && parseFloat(limitPrice) > 0) body.limit_price = limitPrice;
+  if (tradeType === 'CFD') {
+    body.trade_type = 'CFD';
+    body.leverage   = leverage;
+  } else if (limitPrice && parseFloat(limitPrice) > 0) {
+    body.limit_price = limitPrice;
+  }
   const createRes = await api('POST', '/orders/', body);
 
   if (!createRes.ok) {
@@ -1500,6 +1559,11 @@ async function doConfirmedOrder() {
     const warn = document.getElementById('trade-qty-warning');
     if (warn) { warn.textContent = ''; warn.classList.remove('visible'); }
     updateTradePriceCard();
+  } else if (source === 'cfd') {
+    S.cfdQty = '';
+    const qtyEl = document.getElementById('cfd-qty');
+    if (qtyEl) qtyEl.value = '';
+    updateCFDPriceCard();
   } else {
     document.getElementById('m-qty').value   = '';
     document.getElementById('m-limit').value = '';
@@ -1590,13 +1654,19 @@ function renderActivity() {
   const sorted = [...S.orders].sort((a,b) => b.id - a.id);
   el.innerHTML = `<div class="section-title">Order History</div>
     <div class="orders-list">${sorted.map(o => {
-      const isBuy = o.order_type === 'BUY';
-      const total = o.execution_price ? fmt$(parseFloat(o.execution_price)*parseFloat(o.quantity)) : '—';
-      const perSh = o.execution_price ? fmt$(parseFloat(o.execution_price)) + '/share' : 'Pending';
+      const isBuy  = o.order_type === 'BUY';
+      const isCFD  = o.trade_type === 'CFD';
+      const label  = isCFD ? (isBuy ? 'LONG' : 'SHORT') : o.order_type;
+      const cfdTag = isCFD ? `<span style="font-size:10px;background:rgba(0,122,255,.12);color:var(--blue);padding:2px 7px;border-radius:10px;font-weight:700;margin-left:4px">CFD ${o.leverage}x</span>` : '';
+      const total  = o.execution_price
+        ? (isCFD ? fmt$(parseFloat(o.execution_price)*parseFloat(o.quantity)/o.leverage)+' margin'
+                 : fmt$(parseFloat(o.execution_price)*parseFloat(o.quantity)))
+        : '—';
+      const perSh  = o.execution_price ? fmt$(parseFloat(o.execution_price)) + '/share' : 'Pending';
       return `<div class="order-row ${isBuy?'buy':'sell'}">
         <div class="order-info">
           <div class="order-title" style="color:${isBuy?'var(--green)':'var(--red)'}">
-            ${o.order_type} ${parseFloat(o.quantity)} ${o.stock}
+            ${label} ${parseFloat(o.quantity)} ${o.stock}${cfdTag}
           </div>
           <div class="order-sub">
             <span class="status-badge badge-${o.status.toLowerCase()}">${o.status}</span>
@@ -1703,6 +1773,194 @@ window.addEventListener('resize', () => {
   if (document.getElementById('expand-overlay').classList.contains('open'))
     requestAnimationFrame(paintExpandChart);
 });
+
+// ── CFD ──────────────────────────────────────────────────────────
+function renderCFD() {
+  const el = document.getElementById('tab-cfd');
+  const open   = S.cfdPositions.filter(p => p.is_open);
+  const closed = S.cfdPositions.filter(p => !p.is_open);
+
+  const openHtml = open.length ? open.map(pos => {
+    const pd  = S.holdingPrices[pos.stock];
+    let pnlHtml = '';
+    if (pd) {
+      const cp  = parseFloat(pd.execution_price);
+      const ep  = parseFloat(pos.entry_price);
+      const qty = parseFloat(pos.quantity);
+      const pnl = pos.direction === 'LONG' ? (cp - ep) * qty : (ep - cp) * qty;
+      const cls  = pnl >= 0 ? 'pos' : 'neg';
+      pnlHtml = `<div class="cfd-pnl ${cls}">${pnl>=0?'+':''}${fmt$(pnl)}</div>
+                 <div class="cfd-sub">Live @ ${fmt$(cp)}</div>`;
+    } else {
+      pnlHtml = `<div class="cfd-pnl" style="color:var(--label2)">—</div>
+                 <div class="cfd-sub">Fetching…</div>`;
+    }
+    const dir = pos.direction;
+    return `<div class="cfd-card ${dir.toLowerCase()}">
+      <span class="cfd-dir-badge ${dir.toLowerCase()}">${dir}</span>
+      <div class="cfd-info">
+        <div class="cfd-ticker">${pos.stock} <span style="font-size:13px;color:var(--label2);font-weight:500">${pos.leverage}x</span></div>
+        <div class="cfd-meta">${parseFloat(pos.quantity)} units · entry ${fmt$(pos.entry_price)} · margin ${fmt$(pos.margin_used)}</div>
+      </div>
+      <div class="cfd-right">${pnlHtml}</div>
+      <button class="btn-small red" onclick="doCloseCFD(${pos.id},this)">Close</button>
+    </div>`;
+  }).join('')
+  : `<div class="empty-state"><div class="icon">📊</div>
+      <h3>No open positions</h3><p>Open your first CFD position below.</p></div>`;
+
+  const closedHtml = closed.length ? `
+    <div class="section-title" style="margin-top:28px">Closed Positions</div>
+    <div class="orders-list">${closed.map(pos => {
+      const pnl  = parseFloat(pos.pnl || 0);
+      const sign = pnl >= 0 ? '+' : '';
+      return `<div class="order-row ${pos.direction==='LONG'?'buy':'sell'}">
+        <div class="order-info">
+          <div class="order-title" style="color:${pos.direction==='LONG'?'var(--green)':'var(--red)'}">
+            ${pos.direction} ${parseFloat(pos.quantity)} ${pos.stock} (${pos.leverage}x)
+          </div>
+          <div class="order-sub">
+            <span class="status-badge ${pnl>=0?'badge-confirmed':'badge-rejected'}">CLOSED</span>
+            &nbsp;· ${fmt$(pos.entry_price)} → ${fmt$(pos.close_price)} · ${timeAgo(pos.closed_at)}
+          </div>
+        </div>
+        <div class="order-right">
+          <div class="order-price" style="color:${pnl>=0?'var(--green)':'var(--red)'}">${sign}${fmt$(pnl)}</div>
+          <div class="order-date">Margin back: ${fmt$(pos.margin_used)}</div>
+        </div>
+      </div>`;
+    }).join('')}</div>` : '';
+
+  el.innerHTML = `
+    <div class="section-title">Open Positions</div>
+    <div class="cfd-positions">${openHtml}</div>
+    <div class="section-title" style="margin-bottom:22px">Open New Position</div>
+    <div class="trade-grid">
+      <div class="card">
+        <div class="field-label">Direction</div>
+        <div class="segment-control">
+          <button class="segment-btn ${S.cfdDir==='BUY'?'active-buy':''}"  id="cfd-dir-long"  onclick="setCFDDir('BUY')">LONG</button>
+          <button class="segment-btn ${S.cfdDir==='SELL'?'active-sell':''}" id="cfd-dir-short" onclick="setCFDDir('SELL')">SHORT</button>
+        </div>
+        <div class="field-label">Ticker Symbol</div>
+        <input class="input-field" id="cfd-ticker" placeholder="e.g. AAPL, NVDA, MSFT"
+               value="${S.cfdStock}"
+               oninput="S.cfdStock=this.value.toUpperCase();this.value=S.cfdStock;onCFDTickerChange()">
+        <div class="field-label">Quantity</div>
+        <input class="input-field" id="cfd-qty" type="number" min="1" placeholder="Units"
+               value="${S.cfdQty}"
+               oninput="S.cfdQty=this.value;updateCFDPriceCard()">
+        <div class="field-label">Leverage</div>
+        <div class="leverage-picker">
+          ${[2,5,10,20,50].map(l =>
+            `<button class="lev-btn ${S.cfdLeverage===l?'active':''}" onclick="setCFDLeverage(${l})">${l}x</button>`
+          ).join('')}
+        </div>
+        <button class="btn-primary" onclick="doPlaceCFD()">Open Position</button>
+        <div id="cfd-error" class="error-msg" style="display:none;margin-top:12px"></div>
+      </div>
+      <div class="card" id="cfd-price-card"></div>
+    </div>
+    ${closedHtml}`;
+  updateCFDPriceCard();
+}
+
+function setCFDDir(dir) {
+  S.cfdDir = dir;
+  const l = document.getElementById('cfd-dir-long');
+  const s = document.getElementById('cfd-dir-short');
+  if (l) l.className = 'segment-btn' + (dir === 'BUY'  ? ' active-buy'  : '');
+  if (s) s.className = 'segment-btn' + (dir === 'SELL' ? ' active-sell' : '');
+  updateCFDPriceCard();
+}
+
+function setCFDLeverage(lev) {
+  S.cfdLeverage = lev;
+  document.querySelectorAll('.lev-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.textContent) === lev));
+  updateCFDPriceCard();
+}
+
+let _cfdPriceTimer;
+function onCFDTickerChange() {
+  clearTimeout(_cfdPriceTimer);
+  const t = S.cfdStock.trim();
+  if (!t) { S.cfdPrice = null; updateCFDPriceCard(); return; }
+  _cfdPriceTimer = setTimeout(async () => {
+    const r = await api('GET', `/price/${t}/`);
+    if (r.ok) { S.cfdPrice = r.data; S.holdingPrices[t] = r.data; }
+    updateCFDPriceCard();
+  }, 400);
+}
+
+function updateCFDPriceCard() {
+  const card = document.getElementById('cfd-price-card');
+  if (!card) return;
+  if (!S.cfdPrice) {
+    card.innerHTML = `<div style="color:var(--label2);font-size:14px;padding:20px 0">Enter a ticker to see the live price and margin preview.</div>`;
+    return;
+  }
+  const price    = parseFloat(S.cfdPrice.execution_price);
+  const qty      = parseFloat(S.cfdQty || 0);
+  const lev      = S.cfdLeverage;
+  const notional = qty ? price * qty : null;
+  const margin   = notional ? notional / lev : null;
+  const dir      = S.cfdDir === 'BUY' ? 'LONG' : 'SHORT';
+  const dc       = S.cfdDir === 'BUY' ? 'var(--green)' : 'var(--red)';
+  card.innerHTML = `
+    <div class="price-header">
+      <span class="price-ticker-label">${S.cfdPrice.ticker}</span>
+      <span class="price-live"><span class="price-live-dot"></span>Live</span>
+    </div>
+    <div class="price-big">${fmt$(price)}</div>
+    <div style="background:var(--gray6);border-radius:var(--r-sm);padding:14px 16px;margin-top:14px">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:var(--label2);margin-bottom:10px">Position Preview</div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0">
+        <span style="color:var(--label2)">Direction</span>
+        <span style="font-weight:700;color:${dc}">${dir}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0">
+        <span style="color:var(--label2)">Leverage</span>
+        <span style="font-weight:700">${lev}x</span>
+      </div>
+      ${notional ? `
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0">
+        <span style="color:var(--label2)">Notional value</span>
+        <span style="font-weight:700">${fmt$(notional)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:8px 0 4px;border-top:1px solid var(--sep);margin-top:4px">
+        <span style="color:var(--label2)">Required margin</span>
+        <span style="font-weight:700;color:var(--blue)">${fmt$(margin)}</span>
+      </div>` : ''}
+    </div>`;
+}
+
+function doPlaceCFD() {
+  const errEl = document.getElementById('cfd-error');
+  errEl.style.display = 'none';
+  const stock = S.cfdStock.trim();
+  const qty   = S.cfdQty;
+  if (!stock) { showErr(errEl, 'Enter a ticker symbol.'); return; }
+  if (!qty || parseFloat(qty) <= 0) { showErr(errEl, 'Enter a valid quantity.'); return; }
+  showConfirm({
+    stock: stock.toUpperCase(), type: S.cfdDir, qty,
+    nonce: genNonce(), price: S.cfdPrice?.execution_price,
+    tradeType: 'CFD', leverage: S.cfdLeverage, source: 'cfd',
+  });
+}
+
+async function doCloseCFD(posId, btn) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  const r = await api('POST', `/cfd/${posId}/close/`, {});
+  btn.disabled = false;
+  btn.textContent = 'Close';
+  if (!r.ok) { showToast('⚠️ ' + (r.data.error || 'Close failed')); return; }
+  const pnl  = parseFloat(r.data.pnl);
+  const sign = pnl >= 0 ? '+' : '';
+  showToast(`✅ Closed · P&L ${sign}${fmt$(pnl)}`);
+  await loadData();
+}
 
 // ── HELPERS ──────────────────────────────────────────────────────
 function fmt$(v) {

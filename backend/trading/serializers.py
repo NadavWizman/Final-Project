@@ -46,8 +46,8 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = [
-            'id', 'user', 'stock', 'order_type', 'quantity',
-            'limit_price', 'status', 'created_at', 'execution_price',
+            'id', 'user', 'stock', 'order_type', 'trade_type', 'quantity',
+            'leverage', 'limit_price', 'status', 'created_at', 'execution_price',
             'nonce', 'signature', 'public_key',
         ]
         read_only_fields = ['id', 'user', 'status', 'created_at', 'execution_price', 'signature', 'public_key']
@@ -64,10 +64,24 @@ class OrderSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Quantity must be greater than 0.")
         return value
 
+    def validate_leverage(self, value):
+        if value is not None and (value < 2 or value > 100):
+            raise serializers.ValidationError("Leverage must be between 2 and 100.")
+        return value
+
     def validate_limit_price(self, value):
         if value is not None and value <= 0:
             raise serializers.ValidationError("Limit price must be greater than 0.")
         return value
+
+    def validate(self, data):
+        trade_type = data.get('trade_type', 'STOCK')
+        leverage   = data.get('leverage')
+        if trade_type == 'CFD' and not leverage:
+            raise serializers.ValidationError({"leverage": "Leverage is required for CFD orders."})
+        if trade_type == 'STOCK' and leverage:
+            raise serializers.ValidationError({"leverage": "Leverage only applies to CFD orders."})
+        return data
 
     def validate_nonce(self, value):
         if not value:

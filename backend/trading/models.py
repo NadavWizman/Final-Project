@@ -55,10 +55,17 @@ class Order(models.Model):
         ('REJECTED', 'Rejected'),
     ]
 
+    TRADE_TYPES = [
+        ('STOCK', 'Stock'),
+        ('CFD',   'CFD'),
+    ]
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders')
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
     order_type = models.CharField(max_length=4, choices=ORDER_TYPES)
+    trade_type = models.CharField(max_length=5, choices=TRADE_TYPES, default='STOCK')
     quantity = models.DecimalField(max_digits=15, decimal_places=4)
+    leverage = models.IntegerField(null=True, blank=True)  # CFD only — e.g. 5 means 5x
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='DRAFT')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -77,7 +84,36 @@ class Order(models.Model):
     def __str__(self):
         return f"{self.order_type} {self.quantity} {self.stock_id} ({self.status})"
 
-# 5. Node consensus approvals table
+# 5. CFD open positions
+class CFDPosition(models.Model):
+    DIRECTION_CHOICES = [
+        ('LONG',  'Long'),
+        ('SHORT', 'Short'),
+    ]
+
+    user        = models.ForeignKey(User,  on_delete=models.CASCADE, related_name='cfd_positions')
+    stock       = models.ForeignKey(Stock, on_delete=models.CASCADE)
+    direction   = models.CharField(max_length=5, choices=DIRECTION_CHOICES)
+    quantity    = models.DecimalField(max_digits=15, decimal_places=4)
+    entry_price = models.DecimalField(max_digits=15, decimal_places=4)
+    leverage    = models.IntegerField()
+    margin_used = models.DecimalField(max_digits=15, decimal_places=4)
+    is_open     = models.BooleanField(default=True)
+    opened_at   = models.DateTimeField(auto_now_add=True)
+    closed_at   = models.DateTimeField(null=True, blank=True)
+    close_price = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    pnl         = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'is_open'], name='cfd_user_open_idx'),
+        ]
+
+    def __str__(self):
+        return f"CFD {self.direction} {self.quantity} {self.stock_id} @{self.entry_price} x{self.leverage}"
+
+
+# 6. Node consensus approvals table
 class OrderApproval(models.Model):
     # link to the specific order
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='approvals')
