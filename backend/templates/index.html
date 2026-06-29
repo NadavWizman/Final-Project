@@ -178,11 +178,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
 .chart-wrap{position:relative;width:100%;border-radius:var(--r-sm);overflow:hidden;
   background:var(--chart-bg);min-height:60px}
 .chart-canvas{display:block;width:100%;cursor:crosshair}
-.chart-tooltip{position:absolute;background:rgba(30,30,32,.9);color:#fff;padding:6px 10px;
-  border-radius:8px;font-size:12px;font-weight:600;pointer-events:none;white-space:nowrap;
-  backdrop-filter:blur(10px);transform:translateX(-50%);z-index:10}
-.chart-crosshair{position:absolute;top:0;bottom:0;width:1px;
-  background:rgba(120,120,128,.5);pointer-events:none;display:none}
+.chart-tooltip{position:absolute;background:rgba(30,30,32,.9);color:#fff;padding:5px 9px;
+  border-radius:7px;font-size:11px;font-weight:600;pointer-events:none;white-space:nowrap;
+  backdrop-filter:blur(10px);z-index:10;line-height:1.5}
+.chart-crosshair{position:absolute;width:1px;
+  background:rgba(120,120,128,.6);pointer-events:none;display:none}
 .chart-range{display:flex;justify-content:space-between;font-size:11px;
   color:var(--label2);margin-top:6px;padding:0 2px}
 .candle-interval-bar{display:none;align-items:center;gap:4px;margin-top:6px;flex-wrap:wrap}
@@ -276,6 +276,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
 .btn-modal:hover{opacity:.9}.btn-modal:active{transform:scale(.98)}
 .btn-modal.green{background:var(--green);color:#fff}
 .btn-modal.red{background:var(--red);color:#fff}
+.btn-modal.blue{background:var(--blue);color:#fff}
 .btn-modal:disabled{opacity:.6;pointer-events:none}
 
 /* ── CONFIRM DIALOG ─────────────────────────────── */
@@ -588,6 +589,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
       <div class="qty-warning" id="m-qty-warning"></div>
       <div class="field-label" style="margin-top:2px">Limit Price <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(optional)</span></div>
       <input class="modal-input" id="m-limit" type="number" min="0.01" step="0.01" placeholder="Max price per share">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:2px">
+        <div>
+          <div class="field-label" style="color:var(--red)">Stop Loss</div>
+          <input class="modal-input" id="m-sl" type="number" min="0.01" step="0.01" placeholder="Auto-sell below" style="margin-bottom:0">
+        </div>
+        <div>
+          <div class="field-label" style="color:var(--green)">Take Profit</div>
+          <input class="modal-input" id="m-tp" type="number" min="0.01" step="0.01" placeholder="Auto-sell above" style="margin-bottom:0">
+        </div>
+      </div>
       <div class="modal-estimate">
         <span>Estimated total</span>
         <strong id="m-estimate">—</strong>
@@ -685,6 +696,45 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
   </div>
 </div>
 
+<!-- SL/TP Level Manager Modal -->
+<div class="modal-overlay" id="sltp-modal" onclick="maybecloseSLTPModal(event)">
+  <div class="modal-sheet" style="max-width:440px">
+    <div class="modal-header" style="padding:20px 20px 0">
+      <div>
+        <div style="font-size:11px;font-weight:600;text-transform:uppercase;
+             letter-spacing:.4px;color:var(--label2);margin-bottom:4px">Manage SL / TP</div>
+        <div style="font-size:18px;font-weight:700;letter-spacing:-.3px" id="sltp-headline">—</div>
+      </div>
+      <button class="modal-close" onclick="closeSLTPModal()">✕</button>
+    </div>
+    <!-- Active levels list -->
+    <div id="sltp-levels-list" style="padding:14px 20px 0"></div>
+    <!-- Add level form -->
+    <div style="padding:14px 20px 0;border-top:1px solid var(--sep);margin-top:4px">
+      <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:var(--label2);margin-bottom:10px">Add Level</div>
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        <button class="segment-btn active-buy" id="sltp-type-sl" onclick="setSLTPType('SL')" style="flex:1">Stop Loss</button>
+        <button class="segment-btn" id="sltp-type-tp" onclick="setSLTPType('TP')" style="flex:1">Take Profit</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <div>
+          <div class="field-label">Price ($)</div>
+          <input class="modal-input" id="sltp-price" type="number" min="0.01" step="0.01" placeholder="Trigger price" style="margin-bottom:0">
+        </div>
+        <div>
+          <div class="field-label">Quantity</div>
+          <input class="modal-input" id="sltp-qty" type="number" min="0.01" step="0.01" placeholder="Shares / units" style="margin-bottom:0">
+        </div>
+      </div>
+      <div id="sltp-add-error" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px"></div>
+      <button class="btn-modal blue" id="sltp-add-btn" onclick="doAddSLTPLevel()">+ Add Level</button>
+    </div>
+    <div style="padding:10px 20px 16px">
+      <button class="btn-modal" style="background:var(--gray5);color:var(--label)" onclick="closeSLTPModal()">Done</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -730,17 +780,18 @@ const S = {
   creds: null, tab: 'portfolio',
   portfolio: null, orders: [],
   holdingPrices: {},
-  tradePrice: null, tradeType: 'BUY', tradeStock: '', tradeQty: '', tradeLimitPrice: '', tradeNonce: genNonce(),
+  tradePrice: null, tradeType: 'BUY', tradeStock: '', tradeQty: '', tradeLimitPrice: '', tradeStopLoss: '', tradeTakeProfit: '', tradeNonce: genNonce(),
   pendingDraft: null,
   // chart state (never reset on data refresh)
   tc: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
+  cc: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
   mc: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
   ec: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
   modal: { ticker: null, tradeType: 'BUY', price: null, qty: 0 },
   refreshTimer: null, priceTimer: null,
   // CFD state
   cfdPositions: [],
-  cfdDir: 'BUY', cfdStock: '', cfdQty: '', cfdLeverage: 10, cfdPrice: null,
+  cfdDir: 'BUY', cfdStock: '', cfdQty: '', cfdLeverage: 10, cfdPrice: null, cfdStopLoss: '', cfdTakeProfit: '',
 };
 // chart cache: key = "TICKER-period" => prices[]
 const CC = {};
@@ -847,6 +898,30 @@ async function loadData() {
       S.pendingDraft = null;
     }
   }
+  // Auto-create SLTPLevel records for any newly-confirmed orders that had SL/TP set at creation
+  for (const [nonce, pend] of Object.entries(_pendingSLTP)) {
+    const confirmed = S.orders.find(o => o.nonce === nonce && o.status === 'CONFIRMED');
+    if (!confirmed) continue;
+    try {
+      if (pend.tradeType === 'CFD') {
+        const pos = S.cfdPositions?.find(p =>
+          p.is_open && p.stock === pend.ticker && p.direction === pend.dir &&
+          new Date(p.opened_at).getTime() >= pend.submittedAt - 5000
+        );
+        if (pos) {
+          if (pend.sl) await api('POST', '/sltp/', { cfd_id: pos.id, level_type: 'SL', price: pend.sl, quantity: pend.qty });
+          if (pend.tp) await api('POST', '/sltp/', { cfd_id: pos.id, level_type: 'TP', price: pend.tp, quantity: pend.qty });
+        }
+      } else {
+        const holding = S.portfolio?.holdings?.find(h => h.ticker === pend.ticker);
+        if (holding) {
+          if (pend.sl) await api('POST', '/sltp/', { position_id: holding.id, level_type: 'SL', price: pend.sl, quantity: pend.qty });
+          if (pend.tp) await api('POST', '/sltp/', { position_id: holding.id, level_type: 'TP', price: pend.tp, quantity: pend.qty });
+        }
+      }
+    } catch (_) {}
+    delete _pendingSLTP[nonce];
+  }
   await refreshHoldingPrices();
   renderActiveTab();
 }
@@ -868,7 +943,7 @@ async function refreshHoldingPrices() {
   });
   if (changed) {
     if (S.tab === 'portfolio') renderPortfolio();
-    if (S.tab === 'cfd')       renderCFD();
+    if (S.tab === 'cfd')       updateCFDLivePrices();
   }
 }
 
@@ -893,7 +968,13 @@ function renderActiveTab() {
     }
   }
   if (S.tab === 'activity')  renderActivity();
-  if (S.tab === 'cfd')       renderCFD();
+  if (S.tab === 'cfd') {
+    if (document.activeElement?.closest?.('#tab-cfd')) {
+      updateCFDLivePrices();
+    } else {
+      renderCFD();
+    }
+  }
 }
 
 // ── PORTFOLIO ────────────────────────────────────────────────────
@@ -910,8 +991,9 @@ function renderPortfolio() {
       const price = pd ? parseFloat(pd.execution_price) : null;
       const qty   = parseFloat(h.quantity);
       const total = price ? price * qty : null;
+      const safeName = (h.name||h.ticker).replace(/'/g,"\\'");
       return `
-        <div class="holding-card" onclick="openModal('${h.ticker}','${(h.name||h.ticker).replace(/'/g,"\\'")}',${qty})">
+        <div class="holding-card" onclick="openModal('${h.ticker}','${safeName}',${qty})">
           <div class="holding-dot"></div>
           <div class="holding-ticker">${h.ticker}</div>
           <div class="holding-name">${h.name||''}</div>
@@ -919,7 +1001,12 @@ function renderPortfolio() {
           <div class="holding-divider"></div>
           <div class="holding-price">${price ? fmt$(price)+' / share' : '<span class="price-loading">Loading…</span>'}</div>
           ${total ? `<div class="holding-value">${fmt$(total)}</div>` : ''}
-          <div style="font-size:11px;color:var(--label3);margin-top:6px">Tap to trade ›</div>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <button class="btn-small gray" style="flex:1;font-size:11px;padding:5px 8px"
+              onclick="event.stopPropagation();openModal('${h.ticker}','${safeName}',${qty})">Trade</button>
+            <button class="btn-small blue" style="flex:1;font-size:11px;padding:5px 8px"
+              onclick="event.stopPropagation();openSLTPModal('position',${h.id},'${h.ticker} · ${qty} shares',${qty})">SL/TP</button>
+          </div>
         </div>`;
     }).join('');
   } else {
@@ -974,7 +1061,18 @@ function renderTrade() {
         <input class="input-field" type="number" min="0.01" step="0.01" placeholder="Max price per share"
                value="${S.tradeLimitPrice}"
                oninput="S.tradeLimitPrice=this.value">
-        <div style="margin-top:8px"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <div class="field-label" style="color:var(--red)">Stop Loss <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
+            <input class="input-field" type="number" min="0.01" step="0.01" placeholder="Auto-sell below"
+                   value="${S.tradeStopLoss}" oninput="S.tradeStopLoss=this.value">
+          </div>
+          <div>
+            <div class="field-label" style="color:var(--green)">Take Profit <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
+            <input class="input-field" type="number" min="0.01" step="0.01" placeholder="Auto-sell above"
+                   value="${S.tradeTakeProfit}" oninput="S.tradeTakeProfit=this.value">
+          </div>
+        </div>
         <button class="btn-primary" id="place-btn" onclick="doPlaceOrder()">Place Order</button>
         <div id="trade-error" class="error-msg" style="display:none;margin-top:12px"></div>
       </div>
@@ -1221,12 +1319,14 @@ function doModalTrade() {
   const qty        = document.getElementById('m-qty').value;
   const nonce      = document.getElementById('m-nonce').value || genNonce();
   const limitPrice = document.getElementById('m-limit').value;
+  const stopLoss   = document.getElementById('m-sl')?.value || '';
+  const takeProfit = document.getElementById('m-tp')?.value || '';
   const errEl      = document.getElementById('m-error');
   errEl.style.display = 'none';
   if (!qty || parseFloat(qty) <= 0) { showErr(errEl, 'Enter a valid quantity.'); return; }
   if (limitPrice && parseFloat(limitPrice) <= 0) { showErr(errEl, 'Limit price must be greater than 0.'); return; }
   const price = S.modal.price;
-  showConfirm({ stock: ticker, type, qty, nonce, price, limitPrice, source: 'modal' });
+  showConfirm({ stock: ticker, type, qty, nonce, price, limitPrice, stopLoss, takeProfit, source: 'modal' });
 }
 
 function closeModal()      { document.getElementById('stock-modal').classList.remove('open'); }
@@ -1234,12 +1334,12 @@ function maybeCloseModal(e){ if (e.target.id === 'stock-modal') closeModal(); }
 
 // ── EXPAND ───────────────────────────────────────────────────────
 function expandChart(source) {
-  const ticker = source === 'trade' ? S.tradeStock : S.modal.ticker;
+  const ticker = source === 'trade' ? S.tradeStock : source === 'cfd' ? S.cfdStock : S.modal.ticker;
   if (!ticker) return;
   S.ec.ticker = ticker;
-  S.ec.period = source === 'trade' ? S.tc.period : S.mc.period;
-  S.ec.type   = source === 'trade' ? S.tc.type   : S.mc.type;
-  S.ec.data   = source === 'trade' ? S.tc.data   : S.mc.data;
+  S.ec.period = source === 'trade' ? S.tc.period : source === 'cfd' ? S.cc.period : S.mc.period;
+  S.ec.type   = source === 'trade' ? S.tc.type   : source === 'cfd' ? S.cc.type   : S.mc.type;
+  S.ec.data   = source === 'trade' ? S.tc.data   : source === 'cfd' ? S.cc.data   : S.mc.data;
 
   document.getElementById('expand-title').textContent = ticker;
   document.getElementById('expand-overlay').classList.add('open');
@@ -1328,7 +1428,7 @@ function chartScales(prices, W, H, pad) {
 function drawLineChart(canvas, prices, color, rangeId) {
   if (!canvas || !prices?.length) return null;
   const {ctx, W, H} = setupCanvas(canvas);
-  const pad = {pl:4, pr:4, pt:10, pb:22};
+  const pad = {pl:8, pr:62, pt:10, pb:32};
   const s = chartScales(prices, W, H, pad);
   const {x, y, cw, ch} = s;
 
@@ -1348,7 +1448,7 @@ function drawLineChart(canvas, prices, color, rangeId) {
   ctx.strokeStyle = color; ctx.lineWidth = 2;
   ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke();
 
-  drawDateLabels(ctx, prices, x, W, H, pad);
+  drawAxes(ctx, prices, x, s, W, H, pad);
   updateRange(rangeId, prices, s);
   return {x, y, prices, W, H, pad, s};
 }
@@ -1356,7 +1456,7 @@ function drawLineChart(canvas, prices, color, rangeId) {
 function drawCandleChart(canvas, prices, rangeId) {
   if (!canvas || !prices?.length) return null;
   const {ctx, W, H} = setupCanvas(canvas);
-  const pad = {pl:4, pr:4, pt:10, pb:22};
+  const pad = {pl:8, pr:62, pt:10, pb:32};
   const s = chartScales(prices, W, H, pad);
   const {x, y} = s;
 
@@ -1396,18 +1496,48 @@ function drawCandleChart(canvas, prices, rangeId) {
     ctx.strokeRect(cx - bw/2, top, bw, ht);
   });
 
-  drawDateLabels(ctx, prices, xCtr, W, H, pad);
+  drawAxes(ctx, prices, xCtr, s, W, H, pad);
   updateRange(rangeId, prices, s);
 
   // return hover info using candle xCtr
   return {x: xCtr, y: yv, prices, W, H, pad, s};
 }
 
-function drawDateLabels(ctx, prices, xFn, W, H, {pl, pr, pb}) {
+function drawAxes(ctx, prices, xFn, s, W, H, pad) {
+  const {pl, pr, pt, pb} = pad;
+  const n = prices.length;
+
+  // X axis baseline
+  ctx.strokeStyle = 'rgba(142,142,147,.2)'; ctx.lineWidth = 0.5;
+  ctx.beginPath(); ctx.moveTo(pl, H - pb); ctx.lineTo(W - pr, H - pb); ctx.stroke();
+
+  // X axis labels — 4 evenly spaced
+  const nX = Math.min(4, n);
   ctx.fillStyle = 'rgba(142,142,147,.8)';
   ctx.font      = '10px -apple-system,sans-serif';
-  ctx.textAlign = 'left';  ctx.fillText(prices[0].date, pl, H - 4);
-  ctx.textAlign = 'right'; ctx.fillText(prices[prices.length-1].date, W - pr, H - 4);
+  for (let i = 0; i < nX; i++) {
+    const idx  = Math.round(i / (nX - 1) * (n - 1));
+    const xPos = xFn(idx);
+    ctx.textAlign = i === 0 ? 'left' : i === nX - 1 ? 'right' : 'center';
+    ctx.fillText(prices[idx].date, xPos, H - pb + 14);
+    ctx.strokeStyle = 'rgba(142,142,147,.3)'; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(xPos, H - pb); ctx.lineTo(xPos, H - pb + 4); ctx.stroke();
+  }
+
+  // Y axis labels — 5 price levels on right side, with horizontal grid lines
+  const nY = 5;
+  ctx.textAlign = 'left';
+  for (let i = 0; i <= nY; i++) {
+    const v    = s.ylo + (s.yhi - s.ylo) * (i / nY);
+    const yPos = s.y(v);
+    // grid line
+    ctx.strokeStyle = 'rgba(142,142,147,.1)'; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(pl, yPos); ctx.lineTo(W - pr, yPos); ctx.stroke();
+    // label
+    ctx.fillStyle = 'rgba(142,142,147,.8)';
+    ctx.font      = '10px -apple-system,sans-serif';
+    ctx.fillText(fmt$(v), W - pr + 4, yPos + 4);
+  }
 }
 
 function updateRange(rangeId, prices, s) {
@@ -1429,17 +1559,32 @@ function addHover(canvas, s, tooltipId, crosshairId) {
   if (!tip || !hair) return;
 
   function move(e) {
-    const rect = canvas.getBoundingClientRect();
-    const cx   = (e.touches?.[0]?.clientX ?? e.clientX) - rect.left;
-    const pct  = Math.max(0, Math.min(1, (cx - s.pad.pl) / (s.W - s.pad.pl - s.pad.pr)));
-    const idx  = Math.round(pct * (s.prices.length - 1));
-    const p    = s.prices[idx];
-    const px   = s.x(idx);
+    const rect  = canvas.getBoundingClientRect();
+    const cx    = (e.touches?.[0]?.clientX ?? e.clientX) - rect.left;
+    const chartW = s.W - s.pad.pl - s.pad.pr;
+    const pct   = Math.max(0, Math.min(1, (cx - s.pad.pl) / chartW));
+    const idx   = Math.round(pct * (s.prices.length - 1));
+    const p     = s.prices[idx];
+    const px    = s.x(idx);
+    const py    = s.y(p.close);
 
-    tip.style.cssText  = `display:block;left:${px}px;top:${s.pad.pt - 36}px`;
-    const o = p.open ? ` O:${fmt$(p.open)} H:${fmt$(p.high)} L:${fmt$(p.low)}` : '';
-    tip.textContent    = `${p.date}  ${fmt$(p.close)}${o}`;
-    hair.style.cssText = `display:block;left:${px}px`;
+    // Vertical crosshair only
+    hair.style.cssText = `display:block;left:${px}px;top:${s.pad.pt}px;bottom:${s.pad.pb}px`;
+
+    // Tooltip content
+    const o = p.open ? `\nO ${fmt$(p.open)}  H ${fmt$(p.high)}  L ${fmt$(p.low)}` : '';
+    tip.innerHTML = `<div>${p.date}</div><div style="font-size:13px">${fmt$(p.close)}${o ? `<br><span style="font-size:10px;opacity:.8">${o.trim()}</span>` : ''}</div>`;
+
+    // Float tooltip left/right of cursor to stay in bounds
+    tip.style.display = 'block';
+    const tipW = tip.offsetWidth  || 140;
+    const tipH = tip.offsetHeight || 50;
+    const wrapW = canvas.parentElement?.clientWidth || s.W;
+    const tipLeft = (px + tipW + 16 < wrapW - s.pad.pr) ? px + 10 : px - tipW - 10;
+    const tipTop  = Math.max(s.pad.pt, Math.min(py - tipH / 2, s.H - s.pad.pb - tipH));
+    tip.style.transform = 'none';
+    tip.style.left = tipLeft + 'px';
+    tip.style.top  = tipTop  + 'px';
   }
   function leave() {
     tip.style.display  = 'none';
@@ -1453,9 +1598,10 @@ function addHover(canvas, s, tooltipId, crosshairId) {
 
 // ── CONFIRM DIALOG ───────────────────────────────────────────────
 let _pendingOrder = null;
+const _pendingSLTP = {}; // nonce → {ticker,qty,tradeType,dir,sl,tp,submittedAt}
 
-function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, tradeType = 'STOCK', leverage = null }) {
-  _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source, tradeType, leverage };
+function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, tradeType = 'STOCK', leverage = null, stopLoss = '', takeProfit = '' }) {
+  _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source, tradeType, leverage, stopLoss, takeProfit };
   const isBuy  = type === 'BUY';
   const isCFD  = tradeType === 'CFD';
   const label  = isCFD ? (isBuy ? 'LONG' : 'SHORT') : type;
@@ -1509,9 +1655,110 @@ function maybeCloseConfirm(e) {
   if (e.target.id === 'confirm-modal') closeConfirm();
 }
 
+// ── SL/TP LEVEL MANAGER ──────────────────────────────────────────
+// kind: 'position' (stock holding) | 'cfd' (CFD position)
+let _sltpTarget = null;  // { kind, id, maxQty }
+let _sltpType   = 'SL';  // currently selected type in add form
+
+function openSLTPModal(kind, id, headline, maxQty) {
+  _sltpTarget = { kind, id, maxQty };
+  _sltpType   = 'SL';
+  document.getElementById('sltp-headline').textContent = headline;
+  document.getElementById('sltp-price').value = '';
+  document.getElementById('sltp-qty').value   = '';
+  document.getElementById('sltp-add-error').style.display = 'none';
+  setSLTPType('SL');
+  document.getElementById('sltp-modal').classList.add('open');
+  loadSLTPLevels();
+}
+
+function closeSLTPModal() {
+  document.getElementById('sltp-modal').classList.remove('open');
+  _sltpTarget = null;
+}
+
+function maybecloseSLTPModal(e) {
+  if (e.target.id === 'sltp-modal') closeSLTPModal();
+}
+
+function setSLTPType(type) {
+  _sltpType = type;
+  const slBtn = document.getElementById('sltp-type-sl');
+  const tpBtn = document.getElementById('sltp-type-tp');
+  slBtn.className = `segment-btn ${type==='SL' ? 'active-sell' : ''}`;
+  tpBtn.className = `segment-btn ${type==='TP' ? 'active-buy'  : ''}`;
+}
+
+async function loadSLTPLevels() {
+  if (!_sltpTarget) return;
+  const param = _sltpTarget.kind === 'position' ? `position=${_sltpTarget.id}` : `cfd=${_sltpTarget.id}`;
+  const r = await api('GET', `/sltp/?${param}`);
+  const list = document.getElementById('sltp-levels-list');
+  if (!r.ok) { list.innerHTML = `<div style="color:var(--red);font-size:13px">Failed to load levels.</div>`; return; }
+  const levels = r.data;
+  if (!levels.length) {
+    list.innerHTML = `<div style="color:var(--label2);font-size:13px;padding-bottom:10px">No active levels. Add one below.</div>`;
+    return;
+  }
+  list.innerHTML = `
+    <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:var(--label2);margin-bottom:8px">Active Levels</div>
+    ${levels.map(lv => {
+      const isSL   = lv.level_type === 'SL';
+      const color  = isSL ? 'var(--red)' : 'var(--green)';
+      const bgClr  = isSL ? 'rgba(255,69,58,.12)' : 'rgba(52,199,89,.12)';
+      const fired  = lv.triggered;
+      return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--sep);opacity:${fired?0.5:1}">
+        <span style="background:${bgClr};color:${color};padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;min-width:28px;text-align:center">${lv.level_type}</span>
+        <span style="flex:1;font-size:13px">${fmt$(lv.price)} &times; ${parseFloat(lv.quantity)} ${_sltpTarget.kind==='position'?'shares':'units'}</span>
+        ${fired
+          ? `<span style="font-size:11px;color:var(--label2)">Triggered</span>`
+          : `<button class="btn-small gray" style="padding:4px 10px;font-size:11px" onclick="doDeleteSLTPLevel(${lv.id})">✕</button>`
+        }
+      </div>`;
+    }).join('')}
+    <div style="padding-bottom:10px"></div>`;
+}
+
+async function doAddSLTPLevel() {
+  if (!_sltpTarget) return;
+  const errEl = document.getElementById('sltp-add-error');
+  errEl.style.display = 'none';
+  const price = document.getElementById('sltp-price').value;
+  const qty   = document.getElementById('sltp-qty').value;
+  if (!price || parseFloat(price) <= 0) { errEl.textContent = 'Enter a valid price.'; errEl.style.display=''; return; }
+  if (!qty   || parseFloat(qty)   <= 0) { errEl.textContent = 'Enter a valid quantity.'; errEl.style.display=''; return; }
+
+  const btn = document.getElementById('sltp-add-btn');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+
+  const body = { level_type: _sltpType, price, quantity: qty };
+  if (_sltpTarget.kind === 'position') body.position_id = _sltpTarget.id;
+  else                                  body.cfd_id      = _sltpTarget.id;
+
+  const r = await api('POST', '/sltp/', body);
+  btn.disabled = false; btn.textContent = '+ Add Level';
+
+  if (!r.ok) {
+    errEl.textContent = r.data.error || 'Failed to add level.';
+    errEl.style.display = '';
+    return;
+  }
+  document.getElementById('sltp-price').value = '';
+  document.getElementById('sltp-qty').value   = '';
+  showToast(`✅ ${_sltpType === 'SL' ? 'Stop loss' : 'Take profit'} level added`);
+  await loadSLTPLevels();
+}
+
+async function doDeleteSLTPLevel(levelId) {
+  const r = await api('DELETE', `/sltp/${levelId}/`);
+  if (!r.ok) { showToast('⚠️ Could not remove level'); return; }
+  showToast('Level removed');
+  await loadSLTPLevels();
+}
+
 async function doConfirmedOrder() {
   if (!_pendingOrder) return;
-  const { stock, type, qty, nonce, limitPrice, source, tradeType = 'STOCK', leverage } = _pendingOrder;
+  const { stock, type, qty, nonce, limitPrice, source, tradeType = 'STOCK', leverage, stopLoss, takeProfit } = _pendingOrder;
   const btn = document.getElementById('confirm-ok-btn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
 
@@ -1549,24 +1796,45 @@ async function doConfirmedOrder() {
   showToast('⚡ Submitted — consensus in progress…');
   S.pendingDraft = orderId;
 
+  // Store SL/TP intent for auto-creation after order confirms
+  if (type === 'BUY' && (stopLoss && parseFloat(stopLoss) > 0 || takeProfit && parseFloat(takeProfit) > 0)) {
+    _pendingSLTP[nonce] = {
+      ticker: stock, qty, tradeType,
+      dir: tradeType === 'CFD' ? (type === 'BUY' ? 'LONG' : 'SHORT') : null,
+      sl: (stopLoss   && parseFloat(stopLoss)   > 0) ? stopLoss   : null,
+      tp: (takeProfit && parseFloat(takeProfit) > 0) ? takeProfit : null,
+      submittedAt: Date.now(),
+    };
+  }
+
   // Reset source form
   if (source === 'trade') {
     S.tradeNonce      = genNonce();
     S.tradeQty        = '';
     S.tradeLimitPrice = '';
+    S.tradeStopLoss   = '';
+    S.tradeTakeProfit = '';
     const inputs = document.querySelectorAll('#tab-trade input[type=number]');
     inputs.forEach(el => el.value = '');
     const warn = document.getElementById('trade-qty-warning');
     if (warn) { warn.textContent = ''; warn.classList.remove('visible'); }
     updateTradePriceCard();
   } else if (source === 'cfd') {
-    S.cfdQty = '';
+    S.cfdQty        = '';
+    S.cfdStopLoss   = '';
+    S.cfdTakeProfit = '';
     const qtyEl = document.getElementById('cfd-qty');
     if (qtyEl) qtyEl.value = '';
+    const slEl  = document.getElementById('cfd-sl');
+    if (slEl)  slEl.value  = '';
+    const tpEl  = document.getElementById('cfd-tp');
+    if (tpEl)  tpEl.value  = '';
     updateCFDPriceCard();
   } else {
     document.getElementById('m-qty').value   = '';
     document.getElementById('m-limit').value = '';
+    const msl = document.getElementById('m-sl'); if (msl) msl.value = '';
+    const mtp = document.getElementById('m-tp'); if (mtp) mtp.value = '';
     document.getElementById('m-nonce').value = genNonce();
     document.getElementById('m-estimate').textContent = '—';
     closeModal();
@@ -1627,12 +1895,13 @@ function checkModalQty() {
 function doPlaceOrder() {
   const errEl = document.getElementById('trade-error');
   errEl.style.display = 'none';
-  const {tradeStock:stock, tradeType:type, tradeQty:qty, tradeNonce:nonce, tradeLimitPrice:limitPrice} = S;
+  const {tradeStock:stock, tradeType:type, tradeQty:qty, tradeNonce:nonce,
+         tradeLimitPrice:limitPrice, tradeStopLoss:stopLoss, tradeTakeProfit:takeProfit} = S;
   if (!stock) { showErr(errEl, 'Enter a ticker symbol.'); return; }
   if (!qty || parseFloat(qty) <= 0) { showErr(errEl, 'Enter a valid quantity.'); return; }
   if (limitPrice && parseFloat(limitPrice) <= 0) { showErr(errEl, 'Limit price must be greater than 0.'); return; }
   const price = S.tradePrice ? S.tradePrice.execution_price : null;
-  showConfirm({ stock: stock.toUpperCase(), type, qty, nonce, price, limitPrice, source: 'trade' });
+  showConfirm({ stock: stock.toUpperCase(), type, qty, nonce, price, limitPrice, stopLoss, takeProfit, source: 'trade' });
 }
 
 async function doSubmit(orderId) {
@@ -1796,14 +2065,19 @@ function renderCFD() {
                  <div class="cfd-sub">Fetching…</div>`;
     }
     const dir = pos.direction;
-    return `<div class="cfd-card ${dir.toLowerCase()}">
+    return `<div class="cfd-card ${dir.toLowerCase()}" data-cfd-id="${pos.id}">
       <span class="cfd-dir-badge ${dir.toLowerCase()}">${dir}</span>
       <div class="cfd-info">
         <div class="cfd-ticker">${pos.stock} <span style="font-size:13px;color:var(--label2);font-weight:500">${pos.leverage}x</span></div>
         <div class="cfd-meta">${parseFloat(pos.quantity)} units · entry ${fmt$(pos.entry_price)} · margin ${fmt$(pos.margin_used)}</div>
       </div>
       <div class="cfd-right">${pnlHtml}</div>
-      <button class="btn-small red" onclick="doCloseCFD(${pos.id},this)">Close</button>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn-small blue" style="font-size:11px;padding:5px 10px"
+          onclick="openSLTPModal('cfd',${pos.id},'${dir} ${parseFloat(pos.quantity)} ${pos.stock}',${parseFloat(pos.quantity)})">
+          SL/TP</button>
+        <button class="btn-small red" onclick="doCloseCFD(${pos.id},this)">Close</button>
+      </div>
     </div>`;
   }).join('')
   : `<div class="empty-state"><div class="icon">📊</div>
@@ -1856,12 +2130,45 @@ function renderCFD() {
             `<button class="lev-btn ${S.cfdLeverage===l?'active':''}" onclick="setCFDLeverage(${l})">${l}x</button>`
           ).join('')}
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <div class="field-label" style="color:var(--red)">Stop Loss <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
+            <input class="input-field" id="cfd-sl" type="number" min="0.01" step="0.01" placeholder="Auto-close at loss"
+                   value="${S.cfdStopLoss}" oninput="S.cfdStopLoss=this.value">
+          </div>
+          <div>
+            <div class="field-label" style="color:var(--green)">Take Profit <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
+            <input class="input-field" id="cfd-tp" type="number" min="0.01" step="0.01" placeholder="Auto-close at profit"
+                   value="${S.cfdTakeProfit}" oninput="S.cfdTakeProfit=this.value">
+          </div>
+        </div>
         <button class="btn-primary" onclick="doPlaceCFD()">Open Position</button>
         <div id="cfd-error" class="error-msg" style="display:none;margin-top:12px"></div>
       </div>
       <div class="card" id="cfd-price-card"></div>
     </div>
     ${closedHtml}`;
+  updateCFDPriceCard();
+}
+
+function updateCFDLivePrices() {
+  S.cfdPositions?.filter(p => p.is_open).forEach(pos => {
+    const card = document.querySelector(`[data-cfd-id="${pos.id}"]`);
+    if (!card) return;
+    const pd = S.holdingPrices[pos.stock];
+    if (!pd) return;
+    const cp  = parseFloat(pd.execution_price);
+    const ep  = parseFloat(pos.entry_price);
+    const qty = parseFloat(pos.quantity);
+    const pnl = pos.direction === 'LONG' ? (cp - ep) * qty : (ep - cp) * qty;
+    const pnlEl = card.querySelector('.cfd-pnl');
+    const subEl = card.querySelector('.cfd-sub');
+    if (pnlEl) {
+      pnlEl.className   = `cfd-pnl ${pnl >= 0 ? 'pos' : 'neg'}`;
+      pnlEl.textContent = `${pnl >= 0 ? '+' : ''}${fmt$(pnl)}`;
+    }
+    if (subEl) subEl.textContent = `Live @ ${fmt$(cp)}`;
+  });
   updateCFDPriceCard();
 }
 
@@ -1885,10 +2192,14 @@ let _cfdPriceTimer;
 function onCFDTickerChange() {
   clearTimeout(_cfdPriceTimer);
   const t = S.cfdStock.trim();
-  if (!t) { S.cfdPrice = null; updateCFDPriceCard(); return; }
+  if (!t) { S.cfdPrice = null; S.cc.ticker = ''; S.cc.data = null; updateCFDPriceCard(); return; }
   _cfdPriceTimer = setTimeout(async () => {
     const r = await api('GET', `/price/${t}/`);
     if (r.ok) { S.cfdPrice = r.data; S.holdingPrices[t] = r.data; }
+    if (S.cc.ticker !== t) {
+      S.cc.ticker = t;
+      S.cc.data = await getChartData(t, S.cc.period, S.cc.interval);
+    }
     updateCFDPriceCard();
   }, 400);
 }
@@ -1897,7 +2208,7 @@ function updateCFDPriceCard() {
   const card = document.getElementById('cfd-price-card');
   if (!card) return;
   if (!S.cfdPrice) {
-    card.innerHTML = `<div style="color:var(--label2);font-size:14px;padding:20px 0">Enter a ticker to see the live price and margin preview.</div>`;
+    card.innerHTML = `<div style="color:var(--label2);font-size:14px;padding:20px 0">Enter a ticker to see the live price and chart.</div>`;
     return;
   }
   const price    = parseFloat(S.cfdPrice.execution_price);
@@ -1907,32 +2218,119 @@ function updateCFDPriceCard() {
   const margin   = notional ? notional / lev : null;
   const dir      = S.cfdDir === 'BUY' ? 'LONG' : 'SHORT';
   const dc       = S.cfdDir === 'BUY' ? 'var(--green)' : 'var(--red)';
+  const posPreview = `
+    <div style="background:var(--gray6);border-radius:var(--r-sm);padding:12px 14px;margin-top:12px">
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:var(--label2);margin-bottom:8px">Position Preview</div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0">
+        <span style="color:var(--label2)">Direction</span>
+        <span style="font-weight:700;color:${dc}">${dir}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0">
+        <span style="color:var(--label2)">Leverage</span>
+        <span style="font-weight:700">${lev}x</span>
+      </div>
+      ${notional ? `
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0">
+        <span style="color:var(--label2)">Notional value</span>
+        <span style="font-weight:700">${fmt$(notional)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding:7px 0 3px;border-top:1px solid var(--sep);margin-top:3px">
+        <span style="color:var(--label2)">Required margin</span>
+        <span style="font-weight:700;color:var(--blue)">${fmt$(margin)}</span>
+      </div>` : ''}
+    </div>`;
   card.innerHTML = `
     <div class="price-header">
       <span class="price-ticker-label">${S.cfdPrice.ticker}</span>
       <span class="price-live"><span class="price-live-dot"></span>Live</span>
     </div>
     <div class="price-big">${fmt$(price)}</div>
-    <div style="background:var(--gray6);border-radius:var(--r-sm);padding:14px 16px;margin-top:14px">
-      <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:var(--label2);margin-bottom:10px">Position Preview</div>
-      <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0">
-        <span style="color:var(--label2)">Direction</span>
-        <span style="font-weight:700;color:${dc}">${dir}</span>
+    ${posPreview}
+    <div style="margin-top:14px">
+      <div class="chart-outer">
+        <div class="chart-toolbar">
+          <div class="chart-period-bar" id="cc-period-bar">
+            <button class="period-btn ${S.cc.period==='1d'?'active':''}"   onclick="setCFDPeriod('1d',this)">1D</button>
+            <button class="period-btn ${S.cc.period==='5d'?'active':''}"   onclick="setCFDPeriod('5d',this)">1W</button>
+            <button class="period-btn ${S.cc.period==='1mo'?'active':''}"  onclick="setCFDPeriod('1mo',this)">1M</button>
+            <button class="period-btn ${S.cc.period==='3mo'?'active':''}"  onclick="setCFDPeriod('3mo',this)">3M</button>
+            <button class="period-btn ${S.cc.period==='6mo'?'active':''}"  onclick="setCFDPeriod('6mo',this)">6M</button>
+            <button class="period-btn ${S.cc.period==='ytd'?'active':''}"  onclick="setCFDPeriod('ytd',this)">YTD</button>
+            <button class="period-btn ${S.cc.period==='1y'?'active':''}"   onclick="setCFDPeriod('1y',this)">1Y</button>
+            <button class="period-btn ${S.cc.period==='2y'?'active':''}"   onclick="setCFDPeriod('2y',this)">2Y</button>
+            <button class="period-btn ${S.cc.period==='5y'?'active':''}"   onclick="setCFDPeriod('5y',this)">5Y</button>
+            <button class="period-btn ${S.cc.period==='max'?'active':''}"  onclick="setCFDPeriod('max',this)">All</button>
+          </div>
+          <div class="chart-actions">
+            <div class="chart-type-bar">
+              <button class="ctype-btn ${S.cc.type==='line'?'active':''}"   onclick="setCFDChartType('line',this)">Line</button>
+              <button class="ctype-btn ${S.cc.type==='candle'?'active':''}" onclick="setCFDChartType('candle',this)">Candle</button>
+            </div>
+            <button class="chart-expand-btn" onclick="expandChart('cfd')" title="Expand">⤢</button>
+          </div>
+        </div>
+        <div class="chart-wrap" id="cc-chart-wrap" style="height:160px">
+          <canvas class="chart-canvas" id="cc-canvas" height="160"></canvas>
+          <div class="chart-tooltip" id="cc-tooltip" style="display:none"></div>
+          <div class="chart-crosshair" id="cc-crosshair"></div>
+          <div class="chart-resize-x" id="cc-resize-x"></div>
+        </div>
+        <div class="chart-resize-y" id="cc-resize-y"></div>
+        <div class="chart-range" id="cc-range"></div>
+        <div class="candle-interval-bar ${S.cc.type==='candle'?'visible':''}" id="cc-interval-bar">
+          <span class="ibar-label">Interval</span>
+          <button class="interval-btn ${S.cc.interval==='1m'?'active':''}"  onclick="setCFDInterval('1m',this)">1m</button>
+          <button class="interval-btn ${S.cc.interval==='5m'?'active':''}"  onclick="setCFDInterval('5m',this)">5m</button>
+          <button class="interval-btn ${S.cc.interval==='15m'?'active':''}" onclick="setCFDInterval('15m',this)">15m</button>
+          <button class="interval-btn ${S.cc.interval==='1h'?'active':''}"  onclick="setCFDInterval('1h',this)">1h</button>
+          <button class="interval-btn ${S.cc.interval==='1d'?'active':''}"  onclick="setCFDInterval('1d',this)">1D</button>
+          <button class="interval-btn ${S.cc.interval==='1wk'?'active':''}" onclick="setCFDInterval('1wk',this)">1W</button>
+          <button class="interval-btn ${S.cc.interval==='1mo'?'active':''}" onclick="setCFDInterval('1mo',this)">1M</button>
+        </div>
       </div>
-      <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0">
-        <span style="color:var(--label2)">Leverage</span>
-        <span style="font-weight:700">${lev}x</span>
-      </div>
-      ${notional ? `
-      <div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0">
-        <span style="color:var(--label2)">Notional value</span>
-        <span style="font-weight:700">${fmt$(notional)}</span>
-      </div>
-      <div style="display:flex;justify-content:space-between;font-size:13px;padding:8px 0 4px;border-top:1px solid var(--sep);margin-top:4px">
-        <span style="color:var(--label2)">Required margin</span>
-        <span style="font-weight:700;color:var(--blue)">${fmt$(margin)}</span>
-      </div>` : ''}
     </div>`;
+  paintCFDChart();
+  observeWrap('cc-chart-wrap', paintCFDChart);
+  attachDrag(
+    document.getElementById('cc-resize-x'),
+    document.getElementById('cc-chart-wrap'), 'x', paintCFDChart
+  );
+  attachDrag(
+    document.getElementById('cc-resize-y'),
+    document.getElementById('cc-chart-wrap'), 'y', paintCFDChart
+  );
+}
+
+function paintCFDChart() {
+  if (!S.cc.data) return;
+  const canvas = document.getElementById('cc-canvas');
+  if (!canvas) return;
+  const color = S.cfdDir === 'SELL' ? '#FF3B30' : '#007AFF';
+  const ctx = S.cc.type === 'candle'
+    ? drawCandleChart(canvas, S.cc.data, 'cc-range')
+    : drawLineChart(canvas, S.cc.data, color, 'cc-range');
+  if (ctx) addHover(canvas, ctx, 'cc-tooltip', 'cc-crosshair');
+}
+
+async function setCFDPeriod(period, btn) {
+  S.cc.period = period;
+  S.cc.data = await getChartData(S.cfdStock, period, S.cc.interval);
+  paintCFDChart();
+}
+
+function setCFDChartType(type) {
+  S.cc.type = type;
+  const bar = document.getElementById('cc-interval-bar');
+  if (bar) bar.classList.toggle('visible', type === 'candle');
+  paintCFDChart();
+}
+
+async function setCFDInterval(interval, btn) {
+  S.cc.interval = interval;
+  document.querySelectorAll('#cc-interval-bar .interval-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  S.cc.data = await getChartData(S.cfdStock, S.cc.period, interval);
+  paintCFDChart();
 }
 
 function doPlaceCFD() {
@@ -1945,7 +2343,9 @@ function doPlaceCFD() {
   showConfirm({
     stock: stock.toUpperCase(), type: S.cfdDir, qty,
     nonce: genNonce(), price: S.cfdPrice?.execution_price,
-    tradeType: 'CFD', leverage: S.cfdLeverage, source: 'cfd',
+    tradeType: 'CFD', leverage: S.cfdLeverage,
+    stopLoss: S.cfdStopLoss, takeProfit: S.cfdTakeProfit,
+    source: 'cfd',
   });
 }
 

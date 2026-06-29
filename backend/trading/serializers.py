@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from django.contrib.auth.models import User
-from .models import Stock, Wallet, Position, Order
+from .models import Stock, Wallet, Position, Order, SLTPLevel
 
 
 # 1. User serializer
@@ -47,7 +47,8 @@ class OrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             'id', 'user', 'stock', 'order_type', 'trade_type', 'quantity',
-            'leverage', 'limit_price', 'status', 'created_at', 'execution_price',
+            'leverage', 'limit_price',
+            'status', 'created_at', 'execution_price',
             'nonce', 'signature', 'public_key',
         ]
         read_only_fields = ['id', 'user', 'status', 'created_at', 'execution_price', 'signature', 'public_key']
@@ -87,3 +88,10 @@ class OrderSerializer(serializers.ModelSerializer):
         if not value:
             raise serializers.ValidationError("A unique nonce is required to prevent replay attacks.")
         return value
+
+
+# 6. SLTPLevel serializer
+class SLTPLevelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SLTPLevel
+        fields = ['id', 'level_type', 'price', 'quantity', 'triggered', 'triggered_at', 'created_at']

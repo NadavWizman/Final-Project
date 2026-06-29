@@ -8,8 +8,8 @@ from django.utils.dateparse import parse_datetime
 from django.db import transaction
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition
-from .serializers import OrderSerializer
+from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel
+from .serializers import OrderSerializer, SLTPLevelSerializer
 from .crypto_utils import generate_key_pair, sign_order, verify_signature
 from django.contrib.auth.models import User
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -264,7 +264,7 @@ def portfolio_view(request):
 
     positions = Position.objects.filter(user=request.user).select_related('stock')
     holdings = [
-        {"ticker": pos.stock.ticker, "name": pos.stock.name, "quantity": str(pos.quantity)}
+        {"id": pos.id, "ticker": pos.stock.ticker, "name": pos.stock.name, "quantity": str(pos.quantity)}
         for pos in positions
     ]
 
@@ -468,6 +468,95 @@ def _get_oracle_stub():
     oracle_url = getattr(settings, 'ORACLE_URL', '127.0.0.1:8001')
     channel = grpc.insecure_channel(oracle_url)
     return oracle_pb2_grpc.OracleServiceStub(channel), oracle_pb2
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def sltp_view(request):
+    """List or create SLTPLevel records for a stock position or CFD position."""
+    if request.method == 'GET':
+        position_id = request.query_params.get('position')
+        cfd_id      = request.query_params.get('cfd')
+        if position_id:
+            levels = SLTPLevel.objects.filter(
+                position__id=position_id, position__user=request.user
+            )
+        elif cfd_id:
+            levels = SLTPLevel.objects.filter(
+                cfd_position__id=cfd_id, cfd_position__user=request.user
+            )
+        else:
+            return Response({'error': 'Provide ?position=<id> or ?cfd=<id>'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(SLTPLevelSerializer(levels, many=True).data)
+
+    # POST — create a new level
+    position_id = request.data.get('position_id')
+    cfd_id      = request.data.get('cfd_id')
+    level_type  = request.data.get('level_type')
+    raw_price   = request.data.get('price')
+    raw_qty     = request.data.get('quantity')
+
+    if level_type not in ('SL', 'TP'):
+        return Response({'error': 'level_type must be SL or TP'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        price    = Decimal(str(raw_price))
+        quantity = Decimal(str(raw_qty))
+        if price <= 0 or quantity <= 0:
+            raise ValueError
+    except (InvalidOperation, TypeError, ValueError):
+        return Response({'error': 'price and quantity must be positive numbers'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if position_id:
+        try:
+            pos = Position.objects.get(pk=position_id, user=request.user)
+        except Position.DoesNotExist:
+            return Response({'error': 'Position not found'}, status=status.HTTP_404_NOT_FOUND)
+        from django.db.models import Sum
+        used = SLTPLevel.objects.filter(
+            position=pos, level_type=level_type, triggered=False
+        ).aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+        if used + quantity > pos.quantity:
+            return Response(
+                {'error': f'Total {level_type} quantity ({used + quantity}) exceeds holding ({pos.quantity})'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        level = SLTPLevel.objects.create(position=pos, level_type=level_type, price=price, quantity=quantity)
+
+    elif cfd_id:
+        try:
+            cfd = CFDPosition.objects.get(pk=cfd_id, user=request.user, is_open=True)
+        except CFDPosition.DoesNotExist:
+            return Response({'error': 'CFD position not found'}, status=status.HTTP_404_NOT_FOUND)
+        from django.db.models import Sum
+        used = SLTPLevel.objects.filter(
+            cfd_position=cfd, level_type=level_type, triggered=False
+        ).aggregate(total=Sum('quantity'))['total'] or Decimal('0')
+        if used + quantity > cfd.quantity:
+            return Response(
+                {'error': f'Total {level_type} quantity ({used + quantity}) exceeds position ({cfd.quantity})'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        level = SLTPLevel.objects.create(cfd_position=cfd, level_type=level_type, price=price, quantity=quantity)
+
+    else:
+        return Response({'error': 'Provide position_id or cfd_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(SLTPLevelSerializer(level).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def sltp_delete_view(request, pk):
+    """Delete an untriggered SLTPLevel owned by the requesting user."""
+    try:
+        level = SLTPLevel.objects.select_related('position__user', 'cfd_position__user').get(pk=pk)
+        owner = level.position.user if level.position_id else level.cfd_position.user
+        if owner != request.user:
+            raise SLTPLevel.DoesNotExist
+    except SLTPLevel.DoesNotExist:
+        return Response({'error': 'Level not found'}, status=status.HTTP_404_NOT_FOUND)
+    level.delete()
+    return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @api_view(['GET'])

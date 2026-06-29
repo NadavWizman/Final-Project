@@ -72,6 +72,9 @@ class Order(models.Model):
     execution_price = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
     nonce = models.CharField(max_length=100, unique=True, null=True, blank=True)
     limit_price = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    stop_loss   = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    take_profit = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    sltp_triggered = models.BooleanField(default=False)  # prevents double-fire of SL/TP auto-sell
     signature = models.TextField(null=True, blank=True)  # ECDSA signature of the order creator
 
 
@@ -98,6 +101,8 @@ class CFDPosition(models.Model):
     entry_price = models.DecimalField(max_digits=15, decimal_places=4)
     leverage    = models.IntegerField()
     margin_used = models.DecimalField(max_digits=15, decimal_places=4)
+    stop_loss   = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    take_profit = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
     is_open     = models.BooleanField(default=True)
     opened_at   = models.DateTimeField(auto_now_add=True)
     closed_at   = models.DateTimeField(null=True, blank=True)
@@ -113,7 +118,30 @@ class CFDPosition(models.Model):
         return f"CFD {self.direction} {self.quantity} {self.stock_id} @{self.entry_price} x{self.leverage}"
 
 
-# 6. Node consensus approvals table
+# 6. Multi-level Stop Loss / Take Profit
+class SLTPLevel(models.Model):
+    TYPE_CHOICES = [('SL', 'Stop Loss'), ('TP', 'Take Profit')]
+
+    # Exactly one of these is set per level
+    position     = models.ForeignKey('Position',    null=True, blank=True, on_delete=models.CASCADE, related_name='sltp_levels')
+    cfd_position = models.ForeignKey('CFDPosition', null=True, blank=True, on_delete=models.CASCADE, related_name='sltp_levels')
+
+    level_type   = models.CharField(max_length=2, choices=TYPE_CHOICES)
+    price        = models.DecimalField(max_digits=15, decimal_places=4)
+    quantity     = models.DecimalField(max_digits=15, decimal_places=4)
+    triggered    = models.BooleanField(default=False)
+    triggered_at = models.DateTimeField(null=True, blank=True)
+    created_at   = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['level_type', 'price']
+
+    def __str__(self):
+        target = f"pos#{self.position_id}" if self.position_id else f"cfd#{self.cfd_position_id}"
+        return f"{self.level_type} {self.quantity}@{self.price} ({target})"
+
+
+# 7. Node consensus approvals table
 class OrderApproval(models.Model):
     # link to the specific order
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='approvals')
