@@ -6,3 +6,5 @@ grpcio-tools>=1.62
 protobuf>=4.25
 yfinance>=0.2.36
 python-decouple>=3.8
+duckduckgo-search>=6.0
+google-genai>=1.0

@@ -24,6 +24,8 @@ if [ ! -f "$BACKEND/.env" ]; then
     cp "$BACKEND/.env.example" "$BACKEND/.env"
     echo "      Created backend/.env from .env.example"
     echo "      ⚠  Edit backend/.env and set a real SECRET_KEY before deploying."
+    echo "      ℹ  Add your free Gemini API key to GEMINI_API_KEY to enable AI news & chat."
+    echo "         Get one at: https://aistudio.google.com/app/apikey"
 else
     echo "      backend/.env already exists — skipped."
 fi

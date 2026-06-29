@@ -11,6 +11,9 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='127.0.0.1,localhost', cast=Csv(
 # Oracle gRPC address used by the price_view proxy
 ORACLE_URL = config('ORACLE_URL', default='127.0.0.1:8001')
 
+# Gemini API key for the AI news overview feature
+GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
+
 
 # Application definition
 

@@ -5,6 +5,7 @@ from .views import (
     price_view, history_view, cfd_positions_view,
     sltp_view, sltp_delete_view,
     option_chain_view, option_positions_view,
+    ai_news_view, ai_chat_view,
 )
 
 router = DefaultRouter()
@@ -22,4 +23,6 @@ urlpatterns = [
     path('sltp/<int:pk>/',            sltp_delete_view,       name='sltp-delete'),
     path('options/',                    option_positions_view, name='options-list'),
     path('options/chain/<str:ticker>/', option_chain_view,     name='options-chain'),
+    path('ai-news/<str:ticker>/',       ai_news_view,          name='ai-news'),
+    path('ai-chat/<str:ticker>/',       ai_chat_view,          name='ai-chat'),
 ]

@@ -812,3 +812,183 @@ def price_view(_request, ticker):
         })
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+# ── AI News ──────────────────────────────────────────────────────────────────
+
+_AI_NEWS_CACHE = {}   # ticker -> (timestamp, result)
+_AI_NEWS_TTL   = 300  # seconds
+
+_COMPANY_NAMES = {
+    'AAPL':'Apple','MSFT':'Microsoft','GOOGL':'Alphabet (Google)','AMZN':'Amazon',
+    'NVDA':'NVIDIA','META':'Meta','TSLA':'Tesla','NFLX':'Netflix','AMD':'AMD',
+    'INTC':'Intel','JPM':'JPMorgan Chase','V':'Visa','MA':'Mastercard',
+    'KO':'Coca-Cola','BAC':'Bank of America','QCOM':'Qualcomm',
+    'AMGN':'Amgen','GS':'Goldman Sachs','HD':'Home Depot','IBM':'IBM',
+    'JNJ':'Johnson & Johnson','MCD':'McDonald\'s','PG':'Procter & Gamble',
+}
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def ai_news_view(_request, ticker):
+    import time, json
+    import yfinance as yf
+    from django.conf import settings
+
+    ticker = ticker.upper()
+
+    # simple in-process cache
+    cached = _AI_NEWS_CACHE.get(ticker)
+    if cached and time.time() - cached[0] < _AI_NEWS_TTL:
+        return Response(cached[1])
+
+    if not settings.GEMINI_API_KEY:
+        return Response(
+            {"error": "GEMINI_API_KEY not configured. Add it to your .env file."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    # 1. Yahoo Finance direct news (new nested structure: item['content']['title'])
+    yf_items = []
+    try:
+        news = yf.Ticker(ticker).news or []
+        for item in news[:12]:
+            content = item.get('content') or item  # handle both old and new yfinance formats
+            title = content.get('title', '')
+            url   = (content.get('canonicalUrl') or content.get('clickThroughUrl') or {}).get('url', '') \
+                    or content.get('link', content.get('url', ''))
+            if title:
+                yf_items.append(f"- {title}  [URL: {url}]")
+    except Exception:
+        pass
+
+    # 2. DuckDuckGo broader macro / sector news (with timeout)
+    ddg_items = []
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS(timeout=8) as ddgs:
+            for r in ddgs.news(f"{ticker} stock market news sector", max_results=10):
+                title = r.get('title', '')
+                body  = (r.get('body') or '')[:200]
+                url   = r.get('url', '')
+                if title:
+                    ddg_items.append(f"- {title}: {body}  [URL: {url}]")
+    except Exception:
+        pass
+
+    if not yf_items and not ddg_items:
+        return Response({"points": []})
+
+    # 3. Gemini synthesis — retry up to 3 times on transient 503 errors
+    from google import genai as google_genai
+    from google.genai import errors as genai_errors
+    client = google_genai.Client(api_key=settings.GEMINI_API_KEY)
+
+    news_block = ""
+    if yf_items:
+        news_block += "DIRECT STOCK NEWS (Yahoo Finance):\n" + "\n".join(yf_items) + "\n\n"
+    if ddg_items:
+        news_block += "BROADER MARKET / MACRO SEARCH RESULTS:\n" + "\n".join(ddg_items)
+
+    prompt = f"""You are a concise market analyst helping a retail investor decide whether news is worth reading right now.
+
+Stock ticker: {ticker}
+
+Your tasks:
+1. Pick the 4-6 most relevant and recent items for a {ticker} investor.
+2. Include BOTH direct news (about {ticker} itself) AND indirect news (sector trends, macro events, government/regulatory actions, competitor moves) — but only if there is a plausible reason it could affect {ticker}'s price or outlook.
+3. For indirect items, briefly state WHY it matters to {ticker} in one phrase.
+4. Discard anything clearly outdated, duplicate, or irrelevant.
+
+Return ONLY this JSON (no markdown, no explanation):
+{{
+  "points": [
+    {{"text": "one-sentence summary", "url": "source URL", "indirect": false}},
+    {{"text": "one-sentence summary", "url": "source URL", "indirect": true, "reason": "why it affects {ticker}"}}
+  ]
+}}
+
+NEWS DATA:
+{news_block}"""
+
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = client.models.generate_content(
+                model='gemini-flash-lite-latest',
+                contents=prompt,
+            )
+            raw = resp.text.strip()
+            if raw.startswith('```'):
+                raw = raw.split('```')[1]
+                if raw.startswith('json'):
+                    raw = raw[4:]
+            result = json.loads(raw.strip())
+            break
+        except genai_errors.ServerError:
+            last_err = "503"
+            time.sleep(2 ** attempt)  # 1s, 2s, 4s
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    else:
+        return Response({"error": "Gemini is busy, try again in a moment."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    _AI_NEWS_CACHE[ticker] = (time.time(), result)
+    return Response(result)
+
+
+# ── AI Chat ───────────────────────────────────────────────────────────────────
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def ai_chat_view(request, ticker):
+    import time
+    from django.conf import settings
+
+    ticker   = ticker.upper()
+    question = (request.data.get('question') or '').strip()
+    history  = request.data.get('history') or []   # [{role, text}, ...]
+
+    if not question:
+        return Response({"error": "No question provided."}, status=status.HTTP_400_BAD_REQUEST)
+    if not settings.GEMINI_API_KEY:
+        return Response({"error": "GEMINI_API_KEY not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    company = _COMPANY_NAMES.get(ticker, ticker)
+
+    from google import genai as google_genai
+    from google.genai import errors as genai_errors, types as genai_types
+    client = google_genai.Client(api_key=settings.GEMINI_API_KEY)
+
+    system_instruction = (
+        f"You are a concise stock market analyst assistant. "
+        f"The user is currently viewing the stock {ticker} ({company}). "
+        f"Whenever the user says 'they', 'the company', 'it', 'their', 'them', or any ambiguous pronoun, "
+        f"they are referring to {company} ({ticker}). "
+        f"Answer questions about this company and its stock concisely. "
+        f"Keep responses under 150 words unless more detail is clearly needed."
+    )
+
+    # Build conversation: history (up to 10 prior messages) + current question
+    contents = []
+    for msg in history[-10:]:
+        role = 'user' if msg.get('role') == 'user' else 'model'
+        contents.append({'role': role, 'parts': [{'text': msg['text']}]})
+    contents.append({'role': 'user', 'parts': [{'text': question}]})
+
+    for attempt in range(3):
+        try:
+            resp = client.models.generate_content(
+                model='gemini-flash-lite-latest',
+                contents=contents,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                ),
+            )
+            return Response({"answer": resp.text.strip()})
+        except genai_errors.ServerError:
+            time.sleep(2 ** attempt)
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    return Response({"error": "Gemini is busy, try again in a moment."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)

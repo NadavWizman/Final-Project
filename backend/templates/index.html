@@ -406,6 +406,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
 .loading-spinner{width:18px;height:18px;border:2px solid var(--gray4);
   border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+@keyframes newsPanelIn{
+  from{opacity:0;transform:translateY(10px) scale(0.97)}
+  to  {opacity:1;transform:translateY(0)    scale(1)}
+}
+@keyframes newsItemIn{
+  from{opacity:0;transform:translateX(-6px)}
+  to  {opacity:1;transform:translateX(0)}
+}
 .loading-row{display:flex;align-items:center;justify-content:center;gap:10px;
   padding:40px;color:var(--label2);font-size:14px}
 .empty-state{text-align:center;padding:48px 24px;color:var(--label2)}
@@ -802,6 +810,10 @@ const S = {
   optPositions: [], optSubTab: 'chain',
   optTicker: '', optExpiry: '', optExpiries: [], optChain: null,
   optContractType: 'CALL', optContracts: '1', optSelectedRow: null, optChainLoading: false,
+  // AI news: keyed by ticker -> { loading, points, error, ts }
+  aiNews: {},
+  // AI chat: keyed by ticker -> { messages: [{role,text}], loading, inputVal }
+  aiChat: {},
 };
 // chart cache: key = "TICKER-period" => prices[]
 const CC = {};
@@ -1065,6 +1077,8 @@ function renderPortfolio() {
 // ── TRADE ────────────────────────────────────────────────────────
 function renderTrade() {
   const el = document.getElementById('tab-trade');
+  const _savedChat = document.getElementById('trade-chat-panel')?.innerHTML ?? null;
+  const _savedNews = document.getElementById('trade-news-panel')?.innerHTML ?? null;
   const drafts = S.orders.filter(o => o.status === 'DRAFT');
   const bars = drafts.map(o => `
     <div class="submit-bar">
@@ -1117,9 +1131,15 @@ function renderTrade() {
         <div id="trade-error" class="error-msg" style="display:none;margin-top:12px"></div>
       </div>
       <div class="card" id="trade-price-card"></div>
-    </div>`;
+    </div>
+    <div id="trade-chat-panel"></div>
+    <div id="trade-news-panel"></div>`;
 
-  updateTradePriceCard(); // populate the price card without touching the form
+  if (_savedChat !== null) document.getElementById('trade-chat-panel').innerHTML = _savedChat;
+  if (_savedNews !== null) document.getElementById('trade-news-panel').innerHTML = _savedNews;
+  updateTradePriceCard();
+  updateNewsPanel('trade-news-panel', S.tradeStock);
+  renderChatPanel('trade-chat-panel', S.tradeStock);
 }
 
 function setTradeType(type) {
@@ -1207,11 +1227,135 @@ function updateTradeEstimate() {
   }
 }
 
+// ── AI News ──────────────────────────────────────────────────────────────────
+
+const _AI_NEWS_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function loadAiNews(ticker) {
+  if (!ticker) return;
+  const cached = S.aiNews[ticker];
+  // only skip re-fetch on a successful cached result — errors always retry
+  if (cached && !cached.loading && !cached.error && cached.points && Date.now() - cached.ts < _AI_NEWS_TTL) return;
+  S.aiNews[ticker] = { loading: true, points: null, error: null, ts: Date.now() };
+  _refreshAllNewsPanels();
+
+  const timeout = new Promise(resolve =>
+    setTimeout(() => resolve({ ok: false, data: { error: 'Gemini is busy — try selecting the ticker again.' } }), 20000)
+  );
+  const r = await Promise.race([api('GET', `/ai-news/${ticker}/`), timeout]);
+
+  if (r.ok) {
+    S.aiNews[ticker] = { loading: false, points: r.data.points || [], error: null, ts: Date.now() };
+  } else {
+    // don't cache errors — delete so next selection retries fresh
+    delete S.aiNews[ticker];
+    S.aiNews[ticker] = { loading: false, points: null, error: r.data?.error || 'Failed to load AI news', ts: 0 };
+  }
+  _refreshAllNewsPanels();
+}
+
+function _refreshAllNewsPanels() {
+  updateNewsPanel('trade-news-panel', S.tradeStock);
+  updateNewsPanel('cfd-news-panel',   S.cfdStock);
+  updateNewsPanel('opt-news-panel',   S.optTicker);
+  renderChatPanel('trade-chat-panel', S.tradeStock);
+  renderChatPanel('cfd-chat-panel',   S.cfdStock);
+  renderChatPanel('opt-chat-panel',   S.optTicker);
+}
+
+// Tracks the last stateKey rendered per panel id — survives DOM rebuilds
+const _newsPanelState = {};
+
+function updateNewsPanel(id, ticker) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!ticker) { el.innerHTML = ''; delete _newsPanelState[id]; return; }
+  const news = S.aiNews[ticker];
+  if (!news) { el.innerHTML = ''; delete _newsPanelState[id]; return; }
+
+  const stateKey = ticker + ':' + (news.loading ? 'loading' : news.error ? 'error' : 'ok:' + (news.points?.length ?? 0));
+  // animate only when the result is genuinely new; just re-inject silently on tab rebuilds
+  const animate = _newsPanelState[id] !== stateKey;
+  _newsPanelState[id] = stateKey;
+
+  if (news.loading) {
+    el.innerHTML = `
+      <div style="margin-top:12px;padding:14px 16px;background:var(--card);border:1px solid var(--sep);border-radius:12px">
+        <div style="font-size:12px;font-weight:600;color:var(--label2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">
+          AI News Overview — ${ticker}
+        </div>
+        <div style="color:var(--label2);font-size:13px">Gathering latest news...</div>
+      </div>`;
+    return;
+  }
+
+  if (news.error) {
+    const errMsg = news.error.includes('RESOURCE_EXHAUSTED') || news.error.includes('quota')
+      ? 'Gemini API quota exceeded — check your API key at aistudio.google.com'
+      : news.error.includes('GEMINI_API_KEY')
+        ? 'Gemini API key not configured — add GEMINI_API_KEY to .env'
+        : news.error.includes('NOT_FOUND') || news.error.includes('404')
+          ? 'Gemini model unavailable — check your API key'
+          : news.error.includes('busy') || news.error.includes('UNAVAILABLE')
+            ? 'Gemini is busy — re-select the ticker to retry'
+            : 'AI news unavailable right now — re-select the ticker to retry';
+    el.innerHTML = `
+      <div style="margin-top:12px;padding:14px 16px;background:var(--card);border:1px solid var(--sep);border-radius:12px">
+        <div style="font-size:12px;font-weight:600;color:var(--label2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">
+          AI News Overview — ${ticker}
+        </div>
+        <div style="color:var(--label3);font-size:12px">${errMsg}</div>
+      </div>`;
+    return;
+  }
+
+  if (!news.points || news.points.length === 0) {
+    el.innerHTML = `
+      <div style="margin-top:12px;padding:14px 16px;background:var(--card);border:1px solid var(--sep);border-radius:12px">
+        <div style="font-size:12px;font-weight:600;color:var(--label2);text-transform:uppercase;letter-spacing:.5px">
+          AI News Overview — ${ticker}
+        </div>
+        <div style="color:var(--label3);font-size:13px;margin-top:6px">No relevant news found right now.</div>
+      </div>`;
+    return;
+  }
+
+  const items = news.points.map((p, i) => {
+    const liStyle = animate
+      ? `opacity:0;animation:newsItemIn .35s cubic-bezier(.25,.46,.45,.94) ${i * 60}ms forwards`
+      : `opacity:1`;
+    const indirectTag = p.indirect
+      ? `<span title="${p.reason||''}" style="display:inline-block;font-size:10px;font-weight:600;background:rgba(255,149,0,.15);color:#FF9500;border-radius:4px;padding:1px 6px;margin-left:6px;cursor:default;vertical-align:middle">INDIRECT</span>`
+      : '';
+    const reasonNote = p.indirect && p.reason
+      ? `<div style="font-size:11px;color:var(--label3);margin-top:2px;padding-left:2px">${p.reason}</div>`
+      : '';
+    const link = p.url
+      ? `<a href="${p.url}" target="_blank" rel="noopener" style="color:var(--label);text-decoration:none">${p.text}</a>`
+      : p.text;
+    return `<li style="margin-bottom:10px;line-height:1.45;${liStyle}">${link}${indirectTag}${reasonNote}</li>`;
+  }).join('');
+
+  const cardAnim = animate ? 'animation:newsPanelIn .4s cubic-bezier(.34,1.4,.64,1) forwards' : '';
+  el.innerHTML = `
+    <div style="margin-top:12px;padding:14px 16px;background:var(--card);border:1px solid var(--sep);border-radius:12px;${cardAnim}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="font-size:12px;font-weight:600;color:var(--label2);text-transform:uppercase;letter-spacing:.5px">
+          AI News Overview — ${ticker}
+        </div>
+        <div style="font-size:11px;color:var(--label3)">Powered by Gemini</div>
+      </div>
+      <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--label)">
+        ${items}
+      </ul>
+    </div>`;
+}
+
 let _tradePriceTimer;
 function onTradeTickerChange() {
   clearTimeout(_tradePriceTimer);
   const t = S.tradeStock.trim();
-  if (!t) { S.tradePrice = null; S.tc.ticker = ''; S.tc.data = null; updateTradePriceCard(); return; }
+  if (!t) { S.tradePrice = null; S.tc.ticker = ''; S.tc.data = null; updateTradePriceCard(); updateNewsPanel('trade-news-panel', ''); return; }
   _tradePriceTimer = setTimeout(async () => {
     const r = await api('GET', `/price/${t}/`);
     if (r.ok) S.tradePrice = r.data;
@@ -1219,8 +1363,117 @@ function onTradeTickerChange() {
       S.tc.ticker = t;
       S.tc.data = await getChartData(t, S.tc.period, S.tc.interval);
     }
-    updateTradePriceCard(); // update only the price panel, leave the form alone
+    updateTradePriceCard();
+    loadAiNews(t);
+    renderChatPanel('trade-chat-panel', t);
   }, 400);
+}
+
+// ── AI Chat ───────────────────────────────────────────────────────────────────
+
+const _chatPanelState = {};
+let   _chatActivePanelId = null; // which panel input currently has focus
+
+function renderChatPanel(id, ticker) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!ticker) { el.innerHTML = ''; delete _chatPanelState[id]; return; }
+
+  const chat = S.aiChat[ticker] || (S.aiChat[ticker] = { messages: [], loading: false, inputVal: '' });
+  const stateKey = `${ticker}:${chat.messages.length}:${chat.loading}`;
+  // skip only if state is unchanged AND the div still has content (not wiped by a tab rebuild)
+  if (_chatPanelState[id] === stateKey && el.children.length > 0) return;
+  const animate = _chatPanelState[id] !== stateKey || el.children.length === 0;
+  _chatPanelState[id] = stateKey;
+
+  const dotAnim = (d) => `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--label3);animation:pulse 1.2s ${d}s infinite"></span>`;
+  const typingBubble = `
+    <div style="display:flex;justify-content:flex-start;margin-bottom:8px">
+      <div style="padding:10px 14px;border-radius:12px 12px 12px 2px;background:var(--gray6);display:flex;gap:4px;align-items:center">
+        ${dotAnim(0)}${dotAnim(.2)}${dotAnim(.4)}
+      </div>
+    </div>`;
+
+  const msgsHtml = chat.messages.map(m => {
+    const isUser = m.role === 'user';
+    const text   = m.text.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+    return `<div style="display:flex;justify-content:${isUser?'flex-end':'flex-start'};margin-bottom:8px">
+      <div style="max-width:85%;padding:9px 13px;line-height:1.5;font-size:13px;
+                  border-radius:${isUser?'14px 14px 3px 14px':'14px 14px 14px 3px'};
+                  background:${isUser?'var(--blue)':'var(--gray6)'};
+                  color:${isUser?'#fff':'var(--label)'}">
+        ${text}
+      </div>
+    </div>`;
+  }).join('') + (chat.loading ? typingBubble : '');
+
+  const cardAnim = animate ? 'animation:newsPanelIn .4s cubic-bezier(.34,1.4,.64,1) forwards' : '';
+  el.innerHTML = `
+    <div style="margin-top:12px;padding:14px 16px;background:var(--card);border:1px solid var(--sep);border-radius:12px;${cardAnim}">
+      <div style="font-size:12px;font-weight:600;color:var(--label2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">
+        Ask About ${ticker}
+      </div>
+      ${chat.messages.length > 0 ? `
+        <div id="${id}-msgs" style="max-height:240px;overflow-y:auto;margin-bottom:10px;padding-right:2px">
+          ${msgsHtml}
+        </div>` : ''}
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="${id}-input" class="input-field"
+               style="flex:1;margin:0;font-size:13px;height:38px"
+               placeholder="Ask about ${ticker}…"
+               value="${(chat.inputVal||'').replace(/"/g,'&quot;')}"
+               oninput="(S.aiChat['${ticker}']||{}).inputVal=this.value"
+               onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat('${ticker}','${id}')}">
+        <button class="btn-primary"
+                style="width:auto;padding:0 18px;height:38px;font-size:13px;flex-shrink:0"
+                onclick="sendChat('${ticker}','${id}')"
+                ${chat.loading ? 'disabled' : ''}>
+          ${chat.loading ? '…' : 'Ask'}
+        </button>
+      </div>
+    </div>`;
+
+  // scroll messages to bottom
+  const msgsEl = document.getElementById(`${id}-msgs`);
+  if (msgsEl) msgsEl.scrollTop = msgsEl.scrollHeight;
+
+  // restore focus if this panel's input was active before re-render
+  if (_chatActivePanelId === id) {
+    const inp = document.getElementById(`${id}-input`);
+    if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+  }
+}
+
+async function sendChat(ticker, panelId) {
+  const chat = S.aiChat[ticker] || (S.aiChat[ticker] = { messages: [], loading: false, inputVal: '' });
+  const q = (chat.inputVal || '').trim();
+  if (!q || chat.loading) return;
+
+  _chatActivePanelId = panelId;
+  const historyBeforeQ = [...chat.messages]; // snapshot before adding current question
+  chat.messages.push({ role: 'user', text: q });
+  chat.inputVal  = '';
+  chat.loading   = true;
+  delete _chatPanelState[panelId];
+  renderChatPanel(panelId, ticker);
+
+  const r = await api('POST', `/ai-chat/${ticker}/`, { question: q, history: historyBeforeQ });
+
+  chat.loading = false;
+  let answerText;
+  if (r.ok) {
+    answerText = r.data.answer;
+  } else {
+    const err = r.data?.error || '';
+    answerText = err.includes('RESOURCE_EXHAUSTED') || err.includes('quota')
+      ? 'Gemini API quota exceeded — try again later.'
+      : err.includes('busy') || err.includes('UNAVAILABLE')
+        ? 'Gemini is busy — try again in a moment.'
+        : 'Sorry, something went wrong. Please try again.';
+  }
+  chat.messages.push({ role: 'model', text: answerText });
+  delete _chatPanelState[panelId];
+  renderChatPanel(panelId, ticker);
 }
 
 async function setTradePeriod(period, btn) {
@@ -2098,6 +2351,8 @@ window.addEventListener('resize', () => {
 // ── CFD ──────────────────────────────────────────────────────────
 function renderCFD() {
   const el = document.getElementById('tab-cfd');
+  const _savedChat = document.getElementById('cfd-chat-panel')?.innerHTML ?? null;
+  const _savedNews = document.getElementById('cfd-news-panel')?.innerHTML ?? null;
   const open   = S.cfdPositions.filter(p => p.is_open);
   const closed = S.cfdPositions.filter(p => !p.is_open);
 
@@ -2202,8 +2457,14 @@ function renderCFD() {
       </div>
       <div class="card" id="cfd-price-card"></div>
     </div>
+    <div id="cfd-chat-panel"></div>
+    <div id="cfd-news-panel"></div>
     ${closedHtml}`;
+  if (_savedChat !== null) document.getElementById('cfd-chat-panel').innerHTML = _savedChat;
+  if (_savedNews !== null) document.getElementById('cfd-news-panel').innerHTML = _savedNews;
   updateCFDPriceCard();
+  updateNewsPanel('cfd-news-panel', S.cfdStock);
+  renderChatPanel('cfd-chat-panel', S.cfdStock);
 }
 
 function updateCFDLivePrices() {
@@ -2247,7 +2508,7 @@ let _cfdPriceTimer;
 function onCFDTickerChange() {
   clearTimeout(_cfdPriceTimer);
   const t = S.cfdStock.trim();
-  if (!t) { S.cfdPrice = null; S.cc.ticker = ''; S.cc.data = null; updateCFDPriceCard(); return; }
+  if (!t) { S.cfdPrice = null; S.cc.ticker = ''; S.cc.data = null; updateCFDPriceCard(); updateNewsPanel('cfd-news-panel', ''); return; }
   _cfdPriceTimer = setTimeout(async () => {
     const r = await api('GET', `/price/${t}/`);
     if (r.ok) { S.cfdPrice = r.data; S.holdingPrices[t] = r.data; }
@@ -2256,6 +2517,8 @@ function onCFDTickerChange() {
       S.cc.data = await getChartData(t, S.cc.period, S.cc.interval);
     }
     updateCFDPriceCard();
+    loadAiNews(t);
+    renderChatPanel('cfd-chat-panel', t);
   }, 400);
 }
 
@@ -2426,6 +2689,8 @@ async function doCloseCFD(posId, btn) {
 function renderOptions() {
   const el = document.getElementById('tab-options');
   if (!el) return;
+  const _savedChat = document.getElementById('opt-chat-panel')?.innerHTML ?? null;
+  const _savedNews = document.getElementById('opt-news-panel')?.innerHTML ?? null;
   const isChain = S.optSubTab !== 'positions';
   const openCount = S.optPositions.filter(p => p.status === 'OPEN').length;
 
@@ -2618,7 +2883,13 @@ function renderOptions() {
         My Positions${openCount>0?' ('+openCount+')':''}
       </button>
     </div>
-    ${content}`;
+    ${content}
+    <div id="opt-chat-panel"></div>
+    <div id="opt-news-panel"></div>`;
+  if (_savedChat !== null) document.getElementById('opt-chat-panel').innerHTML = _savedChat;
+  if (_savedNews !== null) document.getElementById('opt-news-panel').innerHTML = _savedNews;
+  updateNewsPanel('opt-news-panel', S.optTicker);
+  renderChatPanel('opt-chat-panel', S.optTicker);
 }
 
 function _buildChainTable(rows) {
@@ -2679,6 +2950,8 @@ async function loadOptExpiries() {
   if (!S.optTicker) return;
   S.optExpiries = []; S.optExpiry = ''; S.optChain = null; S.optSelectedRow = null;
   renderOptions();
+  loadAiNews(S.optTicker);
+  renderChatPanel('opt-chat-panel', S.optTicker);
   const r = await api('GET', `/options/chain/${S.optTicker}/`);
   if (!r.ok) { showToast('Could not load expiries: ' + (r.data?.error || 'error')); return; }
   S.optExpiries = r.data.expiries || [];

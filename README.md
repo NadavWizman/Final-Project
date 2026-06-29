@@ -132,6 +132,7 @@ Open **http://127.0.0.1:8000** in your browser.
 | `DEBUG` | `True` | Set to `False` in production |
 | `ALLOWED_HOSTS` | `127.0.0.1,localhost` | Comma-separated allowed host names |
 | `ORACLE_URL` | `127.0.0.1:8001` | Oracle gRPC address used by the price proxy |
+| `GEMINI_API_KEY` | *(empty)* | Enables AI news & chat — get a free key at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
 
 ### Nodes (`nodes/.env.example`)
 
