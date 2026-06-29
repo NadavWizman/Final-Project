@@ -497,6 +497,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 16l4-8 4 4 4-6"/></svg>
       CFD
     </button>
+    <button class="tab-btn" onclick="switchTab('options',this)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      Options
+    </button>
   </div>
 
   <div class="content">
@@ -504,6 +508,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
     <div id="tab-trade" style="display:none"></div>
     <div id="tab-activity" style="display:none"></div>
     <div id="tab-cfd"      style="display:none"></div>
+    <div id="tab-options"  style="display:none"></div>
   </div>
 </div>
 
@@ -792,6 +797,10 @@ const S = {
   // CFD state
   cfdPositions: [],
   cfdDir: 'BUY', cfdStock: '', cfdQty: '', cfdLeverage: 10, cfdPrice: null, cfdStopLoss: '', cfdTakeProfit: '',
+  // Options state
+  optPositions: [], optSubTab: 'chain',
+  optTicker: '', optExpiry: '', optExpiries: [], optChain: null,
+  optContractType: 'CALL', optContracts: '1', optSelectedRow: null, optChainLoading: false,
 };
 // chart cache: key = "TICKER-period" => prices[]
 const CC = {};
@@ -881,12 +890,13 @@ function updateHeader() {
 }
 
 async function loadData() {
-  const [pRes, oRes, cfdRes] = await Promise.all([
-    api('GET','/portfolio/'), api('GET','/orders/'), api('GET','/cfd/'),
+  const [pRes, oRes, cfdRes, optRes] = await Promise.all([
+    api('GET','/portfolio/'), api('GET','/orders/'), api('GET','/cfd/'), api('GET','/options/'),
   ]);
   if (pRes.ok)   { S.portfolio = pRes.data; updateHeader(); }
   if (oRes.ok)   { S.orders = oRes.data; }
   if (cfdRes.ok) { S.cfdPositions = cfdRes.data.cfd_positions || []; }
+  if (optRes.ok) { S.optPositions = optRes.data || []; }
   if (S.pendingDraft) {
     const u = S.orders.find(o => o.id === S.pendingDraft);
     if (u && u.status === 'CONFIRMED') {
@@ -930,6 +940,7 @@ async function refreshHoldingPrices() {
   const tickers = new Set();
   S.portfolio?.holdings?.forEach(h => tickers.add(h.ticker));
   S.cfdPositions?.filter(p => p.is_open)?.forEach(p => tickers.add(p.stock));
+  S.optPositions?.filter(p => p.status === 'OPEN')?.forEach(p => tickers.add(p.stock));
   if (!tickers.size) return;
   const tickerArr = [...tickers];
   const results = await Promise.all(tickerArr.map(t => api('GET', `/price/${t}/`)));
@@ -944,6 +955,7 @@ async function refreshHoldingPrices() {
   if (changed) {
     if (S.tab === 'portfolio') renderPortfolio();
     if (S.tab === 'cfd')       updateCFDLivePrices();
+    if (S.tab === 'options')   renderOptions();
   }
 }
 
@@ -952,7 +964,7 @@ function switchTab(tab, btn) {
   S.tab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  ['portfolio','trade','activity','cfd'].forEach(t =>
+  ['portfolio','trade','activity','cfd','options'].forEach(t =>
     document.getElementById('tab-'+t).style.display = t === tab ? '' : 'none');
   renderActiveTab();
 }
@@ -973,6 +985,11 @@ function renderActiveTab() {
       updateCFDLivePrices();
     } else {
       renderCFD();
+    }
+  }
+  if (S.tab === 'options') {
+    if (!document.activeElement?.closest?.('#tab-options')) {
+      renderOptions();
     }
   }
 }
@@ -1051,8 +1068,11 @@ function renderTrade() {
                   onclick="setTradeType('SELL')">SELL</button>
         </div>
         <div class="field-label">Ticker Symbol</div>
-        <input class="input-field" placeholder="e.g. AAPL, NVDA, MSFT" value="${S.tradeStock}"
+        <input id="trade-ticker-input" class="input-field" placeholder="e.g. AAPL, NVDA, MSFT" value="${S.tradeStock}"
                oninput="S.tradeStock=this.value.toUpperCase();this.value=S.tradeStock;onTradeTickerChange()">
+        <div style="font-size:11px;color:var(--label2);margin:4px 0 8px">
+          Popular: ${['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','NFLX','AMD','INTC'].map(t=>`<span onclick="S.tradeStock='${t}';const el=document.getElementById('trade-ticker-input');if(el)el.value='${t}';onTradeTickerChange()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join('')}
+        </div>
         <div class="field-label">Quantity</div>
         <input class="input-field" type="number" min="1" placeholder="Shares" value="${S.tradeQty}"
                oninput="S.tradeQty=this.value;updateTradeEstimate();checkTradeQty()">
@@ -2120,6 +2140,9 @@ function renderCFD() {
         <input class="input-field" id="cfd-ticker" placeholder="e.g. AAPL, NVDA, MSFT"
                value="${S.cfdStock}"
                oninput="S.cfdStock=this.value.toUpperCase();this.value=S.cfdStock;onCFDTickerChange()">
+        <div style="font-size:11px;color:var(--label2);margin:4px 0 8px">
+          Popular: ${['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','NFLX','AMD','INTC'].map(t=>`<span onclick="S.cfdStock='${t}';const el=document.getElementById('cfd-ticker');if(el)el.value='${t}';onCFDTickerChange()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join('')}
+        </div>
         <div class="field-label">Quantity</div>
         <input class="input-field" id="cfd-qty" type="number" min="1" placeholder="Units"
                value="${S.cfdQty}"
@@ -2359,6 +2382,331 @@ async function doCloseCFD(posId, btn) {
   const pnl  = parseFloat(r.data.pnl);
   const sign = pnl >= 0 ? '+' : '';
   showToast(`✅ Closed · P&L ${sign}${fmt$(pnl)}`);
+  await loadData();
+}
+
+// ── OPTIONS ──────────────────────────────────────────────────────
+function renderOptions() {
+  const el = document.getElementById('tab-options');
+  if (!el) return;
+  const isChain = S.optSubTab !== 'positions';
+  const openCount = S.optPositions.filter(p => p.status === 'OPEN').length;
+
+  let content = '';
+  if (isChain) {
+    let chainContent = '';
+    if (S.optChainLoading) {
+      chainContent = loadingHtml();
+    } else if (S.optChain) {
+      const rows = S.optContractType === 'CALL' ? S.optChain.calls : S.optChain.puts;
+      chainContent = _buildChainTable(rows);
+      if (S.optSelectedRow) {
+        const row = S.optSelectedRow;
+        const contracts = parseInt(S.optContracts) || 1;
+        const indicativePremium = row.ask > 0 ? row.ask : row.lastPrice;
+        const indicativeCost = indicativePremium * contracts * 100;
+        const maxProfit = S.optContractType === 'CALL' ? 'Unlimited' : fmt$(row.strike * contracts * 100);
+        chainContent += `
+          <div style="border:1px solid var(--blue);border-radius:12px;padding:14px;margin-top:12px;background:rgba(0,122,255,.04)">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <div style="font-weight:700;font-size:14px">
+                ${S.optTicker} ${S.optContractType} · Strike ${fmt$(row.strike)} · Exp ${S.optExpiry}
+              </div>
+              <button onclick="S.optSelectedRow=null;renderOptions()"
+                style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--label2);line-height:1">✕</button>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+              <div>
+                <div class="field-label">Indicative ask (per share)</div>
+                <div style="font-size:16px;font-weight:700;color:var(--red)">${fmt$(indicativePremium)}</div>
+              </div>
+              <div>
+                <div class="field-label">Contracts (×100 shares)</div>
+                <input class="modal-input" type="number" min="1" step="1" value="${S.optContracts}"
+                  id="opt-contracts-input"
+                  oninput="S.optContracts=this.value;const tc=document.getElementById('opt-total-cost');if(tc)tc.textContent=fmt$(${indicativePremium}*parseFloat(this.value||1)*100)"
+                  style="margin-bottom:0">
+              </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--label2);margin-bottom:6px">
+              <span>Est. cost: <strong id="opt-total-cost" style="color:var(--label)">${fmt$(indicativeCost)}</strong></span>
+              <span>Max loss: <strong>premium paid</strong> · Max profit: <strong>${maxProfit}</strong></span>
+            </div>
+            <div style="font-size:11px;color:var(--label2);margin-bottom:10px;opacity:.7">
+              ⚡ Premium verified server-side at purchase — actual price may differ slightly from indicative.
+            </div>
+            <div id="opt-buy-error" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px"></div>
+            <div style="display:flex;gap:8px">
+              <button class="btn-modal" style="flex:1;background:var(--gray5);color:var(--label)"
+                onclick="S.optSelectedRow=null;renderOptions()">Cancel</button>
+              <button class="btn-modal blue" id="opt-buy-btn" style="flex:1" onclick="doOpenOption()">
+                Buy ${contracts} Contract${contracts!==1?'s':''}
+              </button>
+            </div>
+          </div>`;
+      }
+    }
+
+    const expiriesHtml = S.optExpiries.length > 0 ? `
+      <div style="margin-top:8px">
+        <div class="field-label">Expiry Date</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select class="modal-input" style="margin-bottom:0;flex:1"
+            onchange="S.optExpiry=this.value;S.optChain=null;S.optSelectedRow=null;loadOptChain()">
+            ${S.optExpiries.map(d => `<option value="${d}"${d===S.optExpiry?' selected':''}>${d}</option>`).join('')}
+          </select>
+          <div style="display:flex;gap:0;border-radius:8px;overflow:hidden;border:1px solid var(--sep);flex-shrink:0">
+            <button onclick="S.optContractType='CALL';S.optSelectedRow=null;renderOptions()"
+              style="padding:8px 14px;border:none;font-size:12px;font-weight:700;cursor:pointer;
+                     background:${S.optContractType==='CALL'?'var(--blue)':'var(--gray6)'};
+                     color:${S.optContractType==='CALL'?'#fff':'var(--label)'}">CALL</button>
+            <button onclick="S.optContractType='PUT';S.optSelectedRow=null;renderOptions()"
+              style="padding:8px 14px;border:none;font-size:12px;font-weight:700;cursor:pointer;
+                     background:${S.optContractType==='PUT'?'var(--red)':'var(--gray6)'};
+                     color:${S.optContractType==='PUT'?'#fff':'var(--label)'}">PUT</button>
+          </div>
+        </div>
+      </div>` : '';
+
+    const SP500_HINT = ['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','NFLX','AMD','INTC'];
+    const illiquid = S.optChain && (() => {
+      const rows = S.optContractType === 'CALL' ? S.optChain.calls : S.optChain.puts;
+      return rows.length > 0 && rows.every(r => r.bid <= 0 && r.ask <= 0);
+    })();
+    content = `
+      <div style="display:flex;gap:8px;margin-top:12px;align-items:flex-end">
+        <div style="flex:1">
+          <div class="field-label">Ticker (S&P 500 only)</div>
+          <input class="modal-input" type="text" placeholder="e.g. AAPL, TSLA, NVDA" value="${S.optTicker}"
+            style="text-transform:uppercase;margin-bottom:0"
+            oninput="S.optTicker=this.value.trim().toUpperCase()"
+            onkeydown="if(event.key==='Enter')loadOptExpiries()">
+        </div>
+        <button class="btn-modal blue" style="height:38px;padding:0 20px;flex-shrink:0;width:auto" onclick="loadOptExpiries()">Load</button>
+      </div>
+      <div style="font-size:11px;color:var(--label2);margin-top:4px">
+        Popular: ${SP500_HINT.map(t=>`<span onclick="S.optTicker='${t}';loadOptExpiries()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join('')}
+      </div>
+      ${illiquid ? `<div style="margin-top:8px;padding:8px 12px;background:rgba(255,149,0,.1);border-radius:8px;font-size:12px;color:var(--label2)">
+        ⚠️ <strong>${S.optTicker}</strong> options have no bid/ask — the market is illiquid. Try a more liquid ticker like AAPL or TSLA for real prices.
+      </div>` : ''}
+      ${expiriesHtml}
+      ${chainContent}`;
+  } else {
+    const open   = S.optPositions.filter(p => p.status === 'OPEN');
+    const closed = S.optPositions.filter(p => p.status !== 'OPEN');
+
+    const openHtml = open.length ? open.map(pos => {
+      const sp       = S.holdingPrices[pos.stock]?.execution_price ? parseFloat(S.holdingPrices[pos.stock].execution_price) : null;
+      const strike   = parseFloat(pos.strike);
+      const intrinsic = sp !== null
+        ? (pos.contract_type === 'CALL' ? Math.max(0, sp - strike) : Math.max(0, strike - sp))
+        : null;
+      const curVal  = intrinsic !== null ? intrinsic * pos.contracts * 100 : null;
+      const tc      = parseFloat(pos.total_cost);
+      const livePnl = curVal !== null ? curVal - tc : null;
+      const isITM   = intrinsic !== null && intrinsic > 0;
+      const expDate  = new Date(pos.expiry + 'T00:00:00');
+      const daysLeft = Math.ceil((expDate - new Date()) / 86400000);
+      const expLabel = daysLeft <= 7 ? `${daysLeft}d left` : `exp ${pos.expiry}`;
+      const side     = pos.contract_type === 'CALL' ? 'long' : 'short';
+      let pnlHtml;
+      if (sp !== null) {
+        const cls = livePnl >= 0 ? 'pos' : 'neg';
+        pnlHtml = `<div class="cfd-pnl ${cls}">${livePnl>=0?'+':''}${fmt$(livePnl)}</div>
+                   <div class="cfd-sub">Intrinsic ${fmt$(intrinsic)}/sh</div>`;
+      } else {
+        pnlHtml = `<div class="cfd-pnl" style="color:var(--label2)">—</div>
+                   <div class="cfd-sub">Fetching…</div>`;
+      }
+      return `<div class="cfd-card ${side}">
+        <span class="cfd-dir-badge ${side}">${pos.contract_type}</span>
+        <div class="cfd-info">
+          <div class="cfd-ticker">${pos.stock} <span style="font-size:13px;color:var(--label2);font-weight:500">strike ${fmt$(pos.strike)}</span>${isITM?' <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(52,199,89,.12);padding:2px 6px;border-radius:4px;vertical-align:middle">ITM</span>':''}</div>
+          <div class="cfd-meta">${pos.contracts} contract${pos.contracts!==1?'s':''} · paid ${fmt$(pos.premium_paid)}/sh · ${expLabel}</div>
+        </div>
+        <div class="cfd-right">${pnlHtml}</div>
+        <div style="display:flex;gap:8px">
+          ${isITM ? `<button class="btn-small blue" style="font-size:11px;padding:5px 10px" onclick="doExerciseOption(${pos.id},this)">Exercise</button>` : ''}
+          <button class="btn-small" style="font-size:11px;padding:5px 10px;background:var(--gray5);color:var(--label)" onclick="doCloseOption(${pos.id},this)">Close</button>
+        </div>
+      </div>`;
+    }).join('')
+    : `<div class="empty-state"><div class="icon">📋</div>
+        <h3>No open positions</h3><p>Buy contracts from the Options Chain tab.</p></div>`;
+
+    const closedHtml = closed.length ? `
+      <div class="section-title" style="margin-top:28px">History</div>
+      <div class="orders-list">${closed.map(pos => {
+        const pnl  = pos.pnl !== null ? parseFloat(pos.pnl) : null;
+        const sign = pnl !== null && pnl >= 0 ? '+' : '';
+        const side = pos.contract_type === 'CALL' ? 'buy' : 'sell';
+        const badgeCls = pos.status === 'EXERCISED' ? 'badge-confirmed'
+                       : pos.status === 'CLOSED'    ? 'badge-confirmed'
+                       : 'badge-rejected';
+        return `<div class="order-row ${side}">
+          <div class="order-info">
+            <div class="order-title" style="color:${pos.contract_type==='CALL'?'var(--green)':'var(--red)'}">
+              ${pos.contract_type} ${pos.stock} · strike ${fmt$(pos.strike)}
+            </div>
+            <div class="order-sub">
+              <span class="status-badge ${badgeCls}">${pos.status}</span>
+              &nbsp;· ${pos.contracts} contract${pos.contracts!==1?'s':''} · exp ${pos.expiry}
+            </div>
+          </div>
+          <div class="order-right">
+            <div class="order-price" style="color:${pnl!==null&&pnl>=0?'var(--green)':'var(--red)'}">
+              ${pnl !== null ? sign+fmt$(pnl) : '—'}
+            </div>
+            <div class="order-date">Cost ${fmt$(pos.total_cost)}</div>
+          </div>
+        </div>`;
+      }).join('')}</div>` : '';
+
+    content = `<div class="section-title">Open Positions</div>
+      <div class="cfd-positions">${openHtml}</div>
+      ${closedHtml}`;
+  }
+
+  el.innerHTML = `
+    <div style="display:flex;gap:0;margin:12px 0 0;border-radius:10px;overflow:hidden;border:1px solid var(--sep)">
+      <button onclick="setOptSubTab('chain')"
+        style="flex:1;padding:10px;border:none;font-size:13px;font-weight:600;cursor:pointer;
+               background:${isChain?'var(--blue)':'var(--gray6)'};color:${isChain?'#fff':'var(--label)'}">
+        Options Chain
+      </button>
+      <button onclick="setOptSubTab('positions')"
+        style="flex:1;padding:10px;border:none;font-size:13px;font-weight:600;cursor:pointer;
+               background:${!isChain?'var(--blue)':'var(--gray6)'};color:${!isChain?'#fff':'var(--label)'}">
+        My Positions${openCount>0?' ('+openCount+')':''}
+      </button>
+    </div>
+    ${content}`;
+}
+
+function _buildChainTable(rows) {
+  if (!rows || rows.length === 0) {
+    return `<div style="padding:24px;text-align:center;color:var(--label2)">No contracts available for this expiry.</div>`;
+  }
+  const headerCols = ['Strike','Bid','Ask','Last','IV','Vol','OI'];
+  const header = `<tr style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--label2);border-bottom:1px solid var(--sep)">
+    ${headerCols.map(c=>`<th style="text-align:left;padding:8px 6px;font-weight:600">${c}</th>`).join('')}
+    <th></th></tr>`;
+  const bodyRows = rows.map((row, i) => {
+    const isITM = row.inTheMoney;
+    const iv    = row.impliedVolatility ? (row.impliedVolatility*100).toFixed(1)+'%' : '—';
+    const vol   = row.volume      > 0 ? parseInt(row.volume).toLocaleString()      : '—';
+    const oi    = row.openInterest > 0 ? parseInt(row.openInterest).toLocaleString() : '—';
+    return `<tr onclick="selectOptRow(${i})" style="cursor:pointer;${isITM?'background:rgba(52,199,89,.06);':''}">
+      <td style="padding:8px 6px;font-weight:600">${isITM?'<span style="color:var(--green);margin-right:4px;font-size:10px">●</span>':''}${fmt$(row.strike)}</td>
+      <td style="padding:8px 6px;color:var(--label2)">${row.bid>0?fmt$(row.bid):'—'}</td>
+      <td style="padding:8px 6px;color:var(--red)">${row.ask>0?fmt$(row.ask):'—'}</td>
+      <td style="padding:8px 6px">${row.lastPrice>0?fmt$(row.lastPrice):'—'}</td>
+      <td style="padding:8px 6px;font-size:12px">${iv}</td>
+      <td style="padding:8px 6px;font-size:12px">${vol}</td>
+      <td style="padding:8px 6px;font-size:12px">${oi}</td>
+      <td style="padding:8px 6px"><button class="btn-small blue" style="font-size:11px;padding:3px 10px"
+        onclick="event.stopPropagation();selectOptRow(${i})">Buy</button></td>
+    </tr>`;
+  }).join('');
+  const afterHoursBanner = '';
+  return `<div style="margin-top:12px;border:1px solid var(--sep);border-radius:10px;overflow:hidden">
+    ${afterHoursBanner}
+    <div style="max-height:300px;overflow-y:auto;overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead style="position:sticky;top:0;background:var(--card);z-index:1">${header}</thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function setOptSubTab(tab) {
+  S.optSubTab = tab;
+  renderOptions();
+}
+
+function selectOptRow(idx) {
+  const rows = S.optContractType === 'CALL' ? S.optChain?.calls : S.optChain?.puts;
+  if (!rows || idx < 0 || idx >= rows.length) return;
+  S.optSelectedRow = rows[idx];
+  S.optContracts = '1';
+  renderOptions();
+  setTimeout(() => {
+    const panel = document.getElementById('opt-buy-btn');
+    if (panel) panel.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }, 60);
+}
+
+async function loadOptExpiries() {
+  if (!S.optTicker) return;
+  S.optExpiries = []; S.optExpiry = ''; S.optChain = null; S.optSelectedRow = null;
+  renderOptions();
+  const r = await api('GET', `/options/chain/${S.optTicker}/`);
+  if (!r.ok) { showToast('Could not load expiries: ' + (r.data?.error || 'error')); return; }
+  S.optExpiries = r.data.expiries || [];
+  if (S.optExpiries.length === 0) { showToast(`No options found for ${S.optTicker}`); renderOptions(); return; }
+  S.optExpiry = S.optExpiries[0];
+  await loadOptChain();
+}
+
+async function loadOptChain() {
+  if (!S.optTicker || !S.optExpiry) return;
+  S.optChainLoading = true; S.optChain = null; S.optSelectedRow = null;
+  renderOptions();
+  const r = await api('GET', `/options/chain/${S.optTicker}/?expiry=${S.optExpiry}`);
+  S.optChainLoading = false;
+  if (!r.ok) { showToast('Could not load chain: ' + (r.data?.error || 'error')); }
+  else { S.optChain = r.data; }
+  renderOptions();
+}
+
+async function doOpenOption() {
+  const row = S.optSelectedRow;
+  if (!row) return;
+  const errEl = document.getElementById('opt-buy-error');
+  if (errEl) errEl.style.display = 'none';
+  const contracts = parseInt(S.optContracts) || 0;
+  if (contracts <= 0) {
+    if (errEl) { errEl.textContent = 'Enter a valid number of contracts.'; errEl.style.display = ''; }
+    return;
+  }
+  const btn = document.getElementById('opt-buy-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Verifying price…'; }
+  const r = await api('POST', '/options/open/', {
+    ticker: S.optTicker, contract_type: S.optContractType,
+    strike: row.strike, expiry: S.optExpiry, contracts,
+  });
+  if (btn) { btn.disabled = false; }
+  if (!r.ok) {
+    if (errEl) { errEl.textContent = r.data?.error || 'Failed to open position.'; errEl.style.display = ''; }
+    else showToast(r.data?.error || 'Failed to open position.');
+    return;
+  }
+  showToast(`Bought ${contracts} ${S.optContractType} contract${contracts!==1?'s':''} · Premium ${fmt$(r.data.premium_paid)}/sh · Cost ${fmt$(r.data.total_cost)}`);
+  S.optSelectedRow = null;
+  await loadData();
+}
+
+async function doCloseOption(posId, btn) {
+  if (!confirm('Sell this option contract at its current market price?\n\nThis captures both intrinsic value and any remaining time value.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  const r = await api('POST', `/options/${posId}/close/`);
+  if (btn) { btn.disabled = false; btn.textContent = 'Close'; }
+  if (!r.ok) { showToast('Failed to close: ' + (r.data?.error || 'error')); return; }
+  const pnl = parseFloat(r.data.pnl);
+  showToast(`Sold @ ${fmt$(r.data.close_premium)}/sh · P&L ${pnl>=0?'+':''}${fmt$(pnl)}`);
+  await loadData();
+}
+
+async function doExerciseOption(posId, btn) {
+  if (!confirm('Exercise this option?\n\nYou will receive the intrinsic value in cash (current stock price − strike × 100 shares × contracts).\nNote: any remaining time value is forfeited.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  const r = await api('POST', `/options/${posId}/exercise/`);
+  if (btn) { btn.disabled = false; btn.textContent = 'Exercise'; }
+  if (!r.ok) { showToast('Exercise failed: ' + (r.data?.error || 'error')); return; }
+  const pnl = parseFloat(r.data.pnl);
+  showToast(`Exercised · Stock ${fmt$(r.data.stock_price)} · Cash received ${fmt$(r.data.cash_received)} · P&L ${pnl>=0?'+':''}${fmt$(pnl)}`);
   await loadData();
 }
 

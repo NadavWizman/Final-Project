@@ -141,7 +141,41 @@ class SLTPLevel(models.Model):
         return f"{self.level_type} {self.quantity}@{self.price} ({target})"
 
 
-# 7. Node consensus approvals table
+# 7. Options positions
+class OptionPosition(models.Model):
+    CONTRACT_TYPES = [('CALL', 'Call'), ('PUT', 'Put')]
+    STATUS_CHOICES = [
+        ('OPEN',      'Open'),
+        ('CLOSED',    'Closed'),
+        ('EXERCISED', 'Exercised'),
+        ('EXPIRED',   'Expired'),
+    ]
+
+    user          = models.ForeignKey(User, on_delete=models.CASCADE, related_name='option_positions')
+    stock         = models.ForeignKey(Stock, on_delete=models.CASCADE)
+    contract_type = models.CharField(max_length=4, choices=CONTRACT_TYPES)
+    strike        = models.DecimalField(max_digits=15, decimal_places=4)
+    expiry        = models.DateField()
+    contracts     = models.IntegerField()                  # each contract = 100 shares
+    premium_paid  = models.DecimalField(max_digits=15, decimal_places=4)  # per share
+    status        = models.CharField(max_length=10, choices=STATUS_CHOICES, default='OPEN')
+    opened_at     = models.DateTimeField(auto_now_add=True)
+    closed_at     = models.DateTimeField(null=True, blank=True)
+    close_premium = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    pnl           = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    nonce         = models.CharField(max_length=64, unique=True, null=True, blank=True)
+    signature     = models.TextField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'status'], name='opt_user_status_idx'),
+        ]
+
+    def __str__(self):
+        return f"Option {self.contract_type} {self.stock_id} @{self.strike} exp {self.expiry}"
+
+
+# 8. Node consensus approvals table
 class OrderApproval(models.Model):
     # link to the specific order
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='approvals')

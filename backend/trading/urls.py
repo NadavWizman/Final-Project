@@ -4,6 +4,8 @@ from .views import (
     OrderViewSet, portfolio_view, register_view, deposit_view,
     price_view, history_view, cfd_positions_view, close_cfd_view,
     sltp_view, sltp_delete_view,
+    option_chain_view, option_positions_view, open_option_view,
+    close_option_view, exercise_option_view,
 )
 
 router = DefaultRouter()
@@ -11,13 +13,18 @@ router.register(r'orders', OrderViewSet, basename='order')
 
 urlpatterns = [
     path('', include(router.urls)),
-    path('portfolio/',                portfolio_view,     name='portfolio'),
-    path('register/',                 register_view,      name='register'),
-    path('deposit/',                  deposit_view,       name='deposit'),
-    path('price/<str:ticker>/',       price_view,         name='price'),
-    path('history/<str:ticker>/',     history_view,       name='history'),
-    path('cfd/',                      cfd_positions_view, name='cfd-positions'),
-    path('cfd/<int:pk>/close/',       close_cfd_view,     name='cfd-close'),
-    path('sltp/',                     sltp_view,          name='sltp'),
-    path('sltp/<int:pk>/',            sltp_delete_view,   name='sltp-delete'),
+    path('portfolio/',                portfolio_view,         name='portfolio'),
+    path('register/',                 register_view,          name='register'),
+    path('deposit/',                  deposit_view,           name='deposit'),
+    path('price/<str:ticker>/',       price_view,             name='price'),
+    path('history/<str:ticker>/',     history_view,           name='history'),
+    path('cfd/',                      cfd_positions_view,     name='cfd-positions'),
+    path('cfd/<int:pk>/close/',       close_cfd_view,         name='cfd-close'),
+    path('sltp/',                     sltp_view,              name='sltp'),
+    path('sltp/<int:pk>/',            sltp_delete_view,       name='sltp-delete'),
+    path('options/',                  option_positions_view,  name='options-list'),
+    path('options/open/',             open_option_view,       name='options-open'),
+    path('options/<int:pk>/close/',   close_option_view,      name='options-close'),
+    path('options/<int:pk>/exercise/',exercise_option_view,   name='options-exercise'),
+    path('options/chain/<str:ticker>/',option_chain_view,     name='options-chain'),
 ]

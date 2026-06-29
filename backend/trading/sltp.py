@@ -33,6 +33,7 @@ def _loop():
             close_old_connections()
             _check_stocks()
             _check_cfds()
+            _check_options()
         except Exception:
             logger.exception('[SLTP] Unhandled error in monitor loop')
         time.sleep(15)
@@ -186,3 +187,57 @@ def _check_cfds():
             pass
         except Exception:
             logger.exception('[SLTP] Failed to trigger CFD level #%d', lv.pk)
+
+
+# ── Options expiry ───────────────────────────────────────────
+
+def _check_options():
+    from django.db import transaction
+    from django.utils import timezone as tz
+    from .models import OptionPosition, Wallet
+
+    today = tz.now().date()
+    positions = list(
+        OptionPosition.objects.filter(status='OPEN', expiry__lt=today)
+        .select_related('user', 'stock')
+    )
+    if not positions:
+        return
+
+    tickers = {p.stock.ticker for p in positions}
+    prices  = {t: _oracle_price(t) for t in tickers}
+
+    for pos in positions:
+        price = prices.get(pos.stock.ticker)
+        if price is None:
+            continue
+        try:
+            with transaction.atomic():
+                pos_f = OptionPosition.objects.select_for_update().get(pk=pos.pk, status='OPEN')
+                total_cost = pos_f.premium_paid * pos_f.contracts * 100
+
+                if pos_f.contract_type == 'CALL':
+                    intrinsic = max(Decimal('0'), price - pos_f.strike)
+                else:
+                    intrinsic = max(Decimal('0'), pos_f.strike - price)
+
+                cash_received = intrinsic * pos_f.contracts * 100
+                pnl_val       = cash_received - total_cost
+                new_status    = 'EXERCISED' if intrinsic > 0 else 'EXPIRED'
+
+                wallet = Wallet.objects.select_for_update().get(user=pos_f.user)
+                wallet.balance += cash_received
+                wallet.save()
+
+                pos_f.status        = new_status
+                pos_f.pnl           = pnl_val
+                pos_f.close_premium = intrinsic
+                pos_f.closed_at     = tz.now()
+                pos_f.save()
+
+                logger.info('[OPTIONS] Position #%d → %s (intrinsic=%s pnl=%s)',
+                            pos.pk, new_status, intrinsic, pnl_val)
+        except OptionPosition.DoesNotExist:
+            pass
+        except Exception:
+            logger.exception('[OPTIONS] Failed to handle expiry for position #%d', pos.pk)
