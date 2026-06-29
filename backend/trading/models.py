@@ -56,16 +56,24 @@ class Order(models.Model):
     ]
 
     TRADE_TYPES = [
-        ('STOCK', 'Stock'),
-        ('CFD',   'CFD'),
+        ('STOCK',     'Stock'),
+        ('CFD',       'CFD'),
+        ('CFD_CLOSE', 'CFD Close'),
+        ('OPTION',    'Option'),
+        ('OPT_CLOSE', 'Option Close'),
+        ('OPT_EXER',  'Option Exercise'),
     ]
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders')
     stock = models.ForeignKey(Stock, on_delete=models.CASCADE)
     order_type = models.CharField(max_length=4, choices=ORDER_TYPES)
-    trade_type = models.CharField(max_length=5, choices=TRADE_TYPES, default='STOCK')
+    trade_type = models.CharField(max_length=9, choices=TRADE_TYPES, default='STOCK')
     quantity = models.DecimalField(max_digits=15, decimal_places=4)
-    leverage = models.IntegerField(null=True, blank=True)  # CFD only — e.g. 5 means 5x
+    leverage = models.IntegerField(null=True, blank=True)
+    option_contract_type = models.CharField(max_length=4, null=True, blank=True)
+    option_strike        = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    option_expiry        = models.DateField(null=True, blank=True)
+    position_id          = models.IntegerField(null=True, blank=True)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='DRAFT')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

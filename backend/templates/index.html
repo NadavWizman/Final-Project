@@ -787,6 +787,7 @@ const S = {
   holdingPrices: {},
   tradePrice: null, tradeType: 'BUY', tradeStock: '', tradeQty: '', tradeLimitPrice: '', tradeStopLoss: '', tradeTakeProfit: '', tradeNonce: genNonce(),
   pendingDraft: null,
+  pendingCloses: {},
   // chart state (never reset on data refresh)
   tc: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
   cc: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
@@ -902,10 +903,29 @@ async function loadData() {
     if (u && u.status === 'CONFIRMED') {
       if (u.trade_type === 'CFD') {
         showToast('✅ CFD position opened at ' + fmt$(u.execution_price));
+      } else if (u.trade_type === 'OPTION') {
+        showToast('✅ Option position opened · Premium ' + fmt$(u.execution_price) + '/sh');
       } else {
         showToast('✅ Order confirmed at ' + fmt$(u.execution_price));
       }
       S.pendingDraft = null;
+    }
+  }
+  for (const [posKey, orderId] of Object.entries(S.pendingCloses)) {
+    const u = S.orders.find(o => o.id === orderId);
+    if (!u) continue;
+    if (u.status === 'CONFIRMED') {
+      if (u.trade_type === 'CFD_CLOSE') {
+        showToast('✅ CFD closed at ' + fmt$(u.execution_price));
+      } else if (u.trade_type === 'OPT_CLOSE') {
+        showToast('✅ Option sold · Premium ' + fmt$(u.execution_price) + '/sh');
+      } else if (u.trade_type === 'OPT_EXER') {
+        showToast('✅ Option exercised at ' + fmt$(u.execution_price));
+      }
+      delete S.pendingCloses[posKey];
+    } else if (u.status === 'REJECTED') {
+      showToast('⚠️ Close order rejected — ' + (u.trade_type === 'OPT_EXER' ? 'option may be out of the money' : 'try again'));
+      delete S.pendingCloses[posKey];
     }
   }
   // Auto-create SLTPLevel records for any newly-confirmed orders that had SL/TP set at creation
@@ -1943,19 +1963,31 @@ function renderActivity() {
   const sorted = [...S.orders].sort((a,b) => b.id - a.id);
   el.innerHTML = `<div class="section-title">Order History</div>
     <div class="orders-list">${sorted.map(o => {
-      const isBuy  = o.order_type === 'BUY';
-      const isCFD  = o.trade_type === 'CFD';
-      const label  = isCFD ? (isBuy ? 'LONG' : 'SHORT') : o.order_type;
-      const cfdTag = isCFD ? `<span style="font-size:10px;background:rgba(0,122,255,.12);color:var(--blue);padding:2px 7px;border-radius:10px;font-weight:700;margin-left:4px">CFD ${o.leverage}x</span>` : '';
+      const isBuy     = o.order_type === 'BUY';
+      const isCFD     = o.trade_type === 'CFD';
+      const isCFDClose= o.trade_type === 'CFD_CLOSE';
+      const isOpt     = o.trade_type === 'OPTION';
+      const isOptClose= o.trade_type === 'OPT_CLOSE';
+      const isOptExer = o.trade_type === 'OPT_EXER';
+      const label = isCFD      ? (isBuy ? 'LONG' : 'SHORT')
+                  : isCFDClose ? 'CLOSE CFD'
+                  : isOpt      ? 'BUY OPTION'
+                  : isOptClose ? 'SELL OPTION'
+                  : isOptExer  ? 'EXERCISE'
+                  : o.order_type;
+      const cfdTag = (isCFD || isCFDClose) ? `<span style="font-size:10px;background:rgba(0,122,255,.12);color:var(--blue);padding:2px 7px;border-radius:10px;font-weight:700;margin-left:4px">CFD${isCFD?' '+o.leverage+'x':''}</span>` : '';
+      const optTag = (isOpt||isOptClose||isOptExer) ? `<span style="font-size:10px;background:rgba(52,199,89,.12);color:var(--green);padding:2px 7px;border-radius:10px;font-weight:700;margin-left:4px">OPTION</span>` : '';
       const total  = o.execution_price
-        ? (isCFD ? fmt$(parseFloat(o.execution_price)*parseFloat(o.quantity)/o.leverage)+' margin'
-                 : fmt$(parseFloat(o.execution_price)*parseFloat(o.quantity)))
+        ? (isCFD     ? fmt$(parseFloat(o.execution_price)*parseFloat(o.quantity)/o.leverage)+' margin'
+         : isCFDClose? fmt$(parseFloat(o.execution_price)*parseFloat(o.quantity))+' P&L ref'
+         : (isOpt||isOptClose||isOptExer) ? fmt$(parseFloat(o.execution_price))+'/sh premium'
+                     : fmt$(parseFloat(o.execution_price)*parseFloat(o.quantity)))
         : '—';
       const perSh  = o.execution_price ? fmt$(parseFloat(o.execution_price)) + '/share' : 'Pending';
       return `<div class="order-row ${isBuy?'buy':'sell'}">
         <div class="order-info">
           <div class="order-title" style="color:${isBuy?'var(--green)':'var(--red)'}">
-            ${label} ${parseFloat(o.quantity)} ${o.stock}${cfdTag}
+            ${label} ${parseFloat(o.quantity)} ${o.stock}${cfdTag}${optTag}
           </div>
           <div class="order-sub">
             <span class="status-badge badge-${o.status.toLowerCase()}">${o.status}</span>
@@ -2373,15 +2405,20 @@ function doPlaceCFD() {
 }
 
 async function doCloseCFD(posId, btn) {
-  btn.disabled = true;
-  btn.textContent = '…';
-  const r = await api('POST', `/cfd/${posId}/close/`, {});
-  btn.disabled = false;
-  btn.textContent = 'Close';
-  if (!r.ok) { showToast('⚠️ ' + (r.data.error || 'Close failed')); return; }
-  const pnl  = parseFloat(r.data.pnl);
-  const sign = pnl >= 0 ? '+' : '';
-  showToast(`✅ Closed · P&L ${sign}${fmt$(pnl)}`);
+  const pos = S.cfdPositions.find(p => p.id === posId);
+  if (!pos) return;
+  btn.disabled = true; btn.textContent = '…';
+  const nonce = genNonce();
+  const createRes = await api('POST', '/orders/', {
+    stock: pos.stock, order_type: 'SELL', trade_type: 'CFD_CLOSE',
+    quantity: pos.quantity, nonce, position_id: pos.id,
+  });
+  btn.disabled = false; btn.textContent = 'Close';
+  if (!createRes.ok) { showToast('⚠️ ' + (createRes.data?.error || 'Order failed')); return; }
+  const submitRes = await api('POST', `/orders/${createRes.data.id}/submit/`, {});
+  if (!submitRes.ok) { showToast('⚠️ ' + (submitRes.data?.error || 'Submit failed')); return; }
+  showToast('⚡ Submitted — consensus in progress…');
+  S.pendingCloses[`cfd-${pos.id}`] = createRes.data.id;
   await loadData();
 }
 
@@ -2672,43 +2709,83 @@ async function doOpenOption() {
     return;
   }
   const btn = document.getElementById('opt-buy-btn');
-  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Verifying price…'; }
-  const r = await api('POST', '/options/open/', {
-    ticker: S.optTicker, contract_type: S.optContractType,
-    strike: row.strike, expiry: S.optExpiry, contracts,
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Submitting…'; }
+
+  const nonce = genNonce();
+
+  // Step 1: create DRAFT order (same pipeline as stocks/CFDs)
+  const createRes = await api('POST', '/orders/', {
+    stock: S.optTicker, order_type: 'BUY', trade_type: 'OPTION',
+    quantity: contracts, nonce,
+    option_contract_type: S.optContractType,
+    option_strike: row.strike,
+    option_expiry: S.optExpiry,
   });
-  if (btn) { btn.disabled = false; }
-  if (!r.ok) {
-    if (errEl) { errEl.textContent = r.data?.error || 'Failed to open position.'; errEl.style.display = ''; }
-    else showToast(r.data?.error || 'Failed to open position.');
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Buy ' + contracts + ' Contract' + (contracts !== 1 ? 's' : ''); }
+  if (!createRes.ok) {
+    const msg = createRes.data?.option_contract_type?.[0] || createRes.data?.option_strike?.[0] ||
+                createRes.data?.option_expiry?.[0] || createRes.data?.nonce?.[0] ||
+                createRes.data?.error || 'Order creation failed';
+    if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
+    else showToast('⚠️ ' + msg);
     return;
   }
-  showToast(`Bought ${contracts} ${S.optContractType} contract${contracts!==1?'s':''} · Premium ${fmt$(r.data.premium_paid)}/sh · Cost ${fmt$(r.data.total_cost)}`);
+
+  const orderId = createRes.data.id;
+
+  // Step 2: sign + submit to consensus pipeline
+  const submitRes = await api('POST', `/orders/${orderId}/submit/`, {});
+  if (!submitRes.ok) {
+    if (errEl) { errEl.textContent = 'Submit failed: ' + (submitRes.data?.error || 'Unknown'); errEl.style.display = ''; }
+    else showToast('⚠️ Submit failed: ' + (submitRes.data?.error || 'Unknown'));
+    return;
+  }
+
+  showToast('⚡ Submitted — consensus in progress…');
+  S.pendingDraft = orderId;
   S.optSelectedRow = null;
   await loadData();
 }
 
 async function doCloseOption(posId, btn) {
+  const pos = S.optPositions.find(p => p.id === posId);
+  if (!pos) return;
   if (!confirm('Sell this option contract at its current market price?\n\nThis captures both intrinsic value and any remaining time value.')) return;
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
-  const r = await api('POST', `/options/${posId}/close/`);
+  const nonce = genNonce();
+  const createRes = await api('POST', '/orders/', {
+    stock: pos.stock, order_type: 'SELL', trade_type: 'OPT_CLOSE',
+    quantity: pos.contracts, nonce, position_id: pos.id,
+  });
   if (btn) { btn.disabled = false; btn.textContent = 'Close'; }
-  if (!r.ok) { showToast('Failed to close: ' + (r.data?.error || 'error')); return; }
-  const pnl = parseFloat(r.data.pnl);
-  showToast(`Sold @ ${fmt$(r.data.close_premium)}/sh · P&L ${pnl>=0?'+':''}${fmt$(pnl)}`);
+  if (!createRes.ok) { showToast('⚠️ ' + (createRes.data?.error || 'Order failed')); return; }
+  const submitRes = await api('POST', `/orders/${createRes.data.id}/submit/`, {});
+  if (!submitRes.ok) { showToast('⚠️ ' + (submitRes.data?.error || 'Submit failed')); return; }
+  showToast('⚡ Submitted — consensus in progress…');
+  S.pendingCloses[`opt-${pos.id}`] = createRes.data.id;
   await loadData();
 }
 
 async function doExerciseOption(posId, btn) {
+  const pos = S.optPositions.find(p => p.id === posId);
+  if (!pos) return;
   if (!confirm('Exercise this option?\n\nYou will receive the intrinsic value in cash (current stock price − strike × 100 shares × contracts).\nNote: any remaining time value is forfeited.')) return;
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
-  const r = await api('POST', `/options/${posId}/exercise/`);
+  const nonce = genNonce();
+  const createRes = await api('POST', '/orders/', {
+    stock: pos.stock, order_type: 'SELL', trade_type: 'OPT_EXER',
+    quantity: pos.contracts, nonce, position_id: pos.id,
+  });
   if (btn) { btn.disabled = false; btn.textContent = 'Exercise'; }
-  if (!r.ok) { showToast('Exercise failed: ' + (r.data?.error || 'error')); return; }
-  const pnl = parseFloat(r.data.pnl);
-  showToast(`Exercised · Stock ${fmt$(r.data.stock_price)} · Cash received ${fmt$(r.data.cash_received)} · P&L ${pnl>=0?'+':''}${fmt$(pnl)}`);
+  if (!createRes.ok) { showToast('⚠️ ' + (createRes.data?.error || 'Order failed')); return; }
+  const submitRes = await api('POST', `/orders/${createRes.data.id}/submit/`, {});
+  if (!submitRes.ok) { showToast('⚠️ ' + (submitRes.data?.error || 'Submit failed')); return; }
+  showToast('⚡ Submitted — consensus in progress…');
+  S.pendingCloses[`opt-${pos.id}`] = createRes.data.id;
   await loadData();
 }
+
 
 // ── HELPERS ──────────────────────────────────────────────────────
 function fmt$(v) {

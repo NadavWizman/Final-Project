@@ -10,7 +10,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition
 from .serializers import OrderSerializer, SLTPLevelSerializer
-from .crypto_utils import generate_key_pair, sign_order, verify_signature, sign_option_order
+from .crypto_utils import generate_key_pair, sign_order, verify_signature
 from django.contrib.auth.models import User
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
@@ -197,6 +197,222 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "leverage":      leverage,
                     "margin_used":   str(margin),
                 })
+
+            # --- close a CFD position ---
+            if order.trade_type == 'CFD_CLOSE':
+                try:
+                    pos = CFDPosition.objects.select_for_update().get(
+                        pk=order.position_id, user=order.user, is_open=True
+                    )
+                except CFDPosition.DoesNotExist:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {'error': 'CFD position not found or already closed'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                close_price = execution_price
+                pnl = (close_price - pos.entry_price) * pos.quantity if pos.direction == 'LONG' \
+                      else (pos.entry_price - close_price) * pos.quantity
+                cash_returned = pos.margin_used + pnl
+                if cash_returned < Decimal('0'):
+                    cash_returned = Decimal('0')
+
+                wallet.balance += cash_returned
+                wallet.save()
+
+                pos.is_open     = False
+                pos.close_price = close_price
+                pos.pnl         = pnl
+                pos.closed_at   = timezone.now()
+                pos.save()
+
+                order.execution_price = close_price
+                order.status = 'CONFIRMED'
+                order.save()
+
+                return Response({
+                    'status':    'success',
+                    'message':   'CFD position closed after gRPC consensus.',
+                    'direction': pos.direction,
+                    'pnl':       str(pnl),
+                })
+
+            # --- close an option position (sell at market premium) ---
+            if order.trade_type == 'OPT_CLOSE':
+                try:
+                    pos = OptionPosition.objects.select_for_update().get(
+                        pk=order.position_id, user=order.user, status='OPEN'
+                    )
+                except OptionPosition.DoesNotExist:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {'error': 'Option position not found or already closed'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                try:
+                    import yfinance as yf
+                    chain   = yf.Ticker(pos.stock.ticker).option_chain(pos.expiry.isoformat())
+                    df      = chain.calls if pos.contract_type == 'CALL' else chain.puts
+                    mask    = (df['strike'] - float(pos.strike)).abs() < 0.01
+                    opt_row = df[mask]
+                    if opt_row.empty:
+                        raise ValueError('No market row found')
+                    bid  = float(opt_row.iloc[0].get('bid',       0) or 0)
+                    ask  = float(opt_row.iloc[0].get('ask',       0) or 0)
+                    last = float(opt_row.iloc[0].get('lastPrice', 0) or 0)
+                    mid  = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+                    if mid <= 0:
+                        raise ValueError('No valid price')
+                    close_premium = Decimal(str(round(mid, 4)))
+                except Exception:
+                    # fallback: intrinsic value from oracle stock price
+                    if pos.contract_type == 'CALL':
+                        close_premium = max(Decimal('0'), execution_price - pos.strike)
+                    else:
+                        close_premium = max(Decimal('0'), pos.strike - execution_price)
+
+                total_cost    = pos.premium_paid * pos.contracts * 100
+                cash_received = close_premium * pos.contracts * 100
+                pnl           = cash_received - total_cost
+
+                wallet.balance += cash_received
+                wallet.save()
+
+                pos.status        = 'CLOSED'
+                pos.pnl           = pnl
+                pos.close_premium = close_premium
+                pos.closed_at     = timezone.now()
+                pos.save()
+
+                order.execution_price = close_premium
+                order.status = 'CONFIRMED'
+                order.save()
+
+                return Response({
+                    'status':  'success',
+                    'message': 'Option position closed after gRPC consensus.',
+                    'pnl':     str(pnl),
+                })
+
+            # --- exercise an option (cash-settled at intrinsic value) ---
+            if order.trade_type == 'OPT_EXER':
+                try:
+                    pos = OptionPosition.objects.select_for_update().get(
+                        pk=order.position_id, user=order.user, status='OPEN'
+                    )
+                except OptionPosition.DoesNotExist:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {'error': 'Option position not found or already closed'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                stock_price = execution_price
+                if pos.contract_type == 'CALL':
+                    intrinsic = stock_price - pos.strike
+                else:
+                    intrinsic = pos.strike - stock_price
+                if intrinsic <= 0:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {'error': f'Option is out of the money (intrinsic value ≤ 0)'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                total_cost    = pos.premium_paid * pos.contracts * 100
+                cash_received = intrinsic * pos.contracts * 100
+                pnl           = cash_received - total_cost
+
+                wallet.balance += cash_received
+                wallet.save()
+
+                pos.status        = 'EXERCISED'
+                pos.pnl           = pnl
+                pos.close_premium = intrinsic
+                pos.closed_at     = timezone.now()
+                pos.save()
+
+                order.execution_price = stock_price
+                order.status = 'CONFIRMED'
+                order.save()
+
+                return Response({
+                    'status':    'success',
+                    'message':   'Option exercised after gRPC consensus.',
+                    'intrinsic': str(intrinsic),
+                    'pnl':       str(pnl),
+                })
+
+            # --- option order — premium fetched from yfinance server-side ---
+            if order.trade_type == 'OPTION':
+                try:
+                    import yfinance as yf
+                    expiry_str = order.option_expiry.isoformat()
+                    chain = yf.Ticker(order.stock.ticker).option_chain(expiry_str)
+                    df    = chain.calls if order.option_contract_type == 'CALL' else chain.puts
+                    mask  = (df['strike'] - float(order.option_strike)).abs() < 0.01
+                    opt_row = df[mask]
+                    if opt_row.empty:
+                        order.status = 'REJECTED'
+                        order.save()
+                        return Response(
+                            {'error': f'No market data for {order.stock.ticker} {order.option_contract_type} @{order.option_strike} exp {expiry_str}'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    bid  = float(opt_row.iloc[0].get('bid',       0) or 0)
+                    ask  = float(opt_row.iloc[0].get('ask',       0) or 0)
+                    last = float(opt_row.iloc[0].get('lastPrice', 0) or 0)
+                    mid  = (bid + ask) / 2 if ask > 0 else last
+                    if mid <= 0:
+                        order.status = 'REJECTED'
+                        order.save()
+                        return Response(
+                            {'error': 'No valid market price available for this option contract'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    premium   = Decimal(str(round(mid, 4)))
+                    contracts = int(order.quantity)
+                    total_cost = premium * contracts * 100
+
+                    if wallet.balance < total_cost:
+                        order.status = 'REJECTED'
+                        order.save()
+                        return Response(
+                            {'error': f'Insufficient funds: need ${total_cost:.2f}, have ${wallet.balance:.2f}'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    wallet.balance -= total_cost
+                    wallet.save()
+
+                    OptionPosition.objects.create(
+                        user=order.user, stock=order.stock,
+                        contract_type=order.option_contract_type,
+                        strike=order.option_strike,
+                        expiry=order.option_expiry,
+                        contracts=contracts,
+                        premium_paid=premium,
+                    )
+                    order.execution_price = premium
+                    order.status = 'CONFIRMED'
+                    order.save()
+
+                    return Response({
+                        'status':     'success',
+                        'message':    'Option position opened after gRPC consensus.',
+                        'premium':    str(premium),
+                        'total_cost': str(total_cost),
+                        'contracts':  contracts,
+                    })
+                except Exception as e:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {'error': f'Option execution failed: {e}'},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
 
             # --- regular stock order ---
             total_value = order.quantity * execution_price
@@ -405,52 +621,6 @@ def cfd_positions_view(request):
     return Response({"cfd_positions": data})
 
 
-# ============================================================
-# 7. CFD close position
-# ============================================================
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def close_cfd_view(request, pk):
-    try:
-        pos = CFDPosition.objects.get(pk=pk, user=request.user, is_open=True)
-    except CFDPosition.DoesNotExist:
-        return Response({"error": "Open CFD position not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    try:
-        stub, pb = _get_oracle_stub()
-        resp = stub.GetPrice(pb.PriceRequest(ticker=pos.stock.ticker), timeout=5)
-        close_price = Decimal(str(resp.execution_price))
-    except Exception as e:
-        return Response({"error": f"Oracle unavailable: {e}"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-    if pos.direction == 'LONG':
-        pnl = (close_price - pos.entry_price) * pos.quantity
-    else:
-        pnl = (pos.entry_price - close_price) * pos.quantity
-
-    with transaction.atomic():
-        wallet = request.user.wallet
-        wallet.balance += pos.margin_used + pnl
-        if wallet.balance < 0:
-            wallet.balance = Decimal('0')
-        wallet.save()
-
-        pos.is_open     = False
-        pos.close_price = close_price
-        pos.pnl         = pnl
-        pos.closed_at   = timezone.now()
-        pos.save()
-
-    return Response({
-        "status":           "closed",
-        "stock":            pos.stock.ticker,
-        "direction":        pos.direction,
-        "entry_price":      str(pos.entry_price),
-        "close_price":      str(close_price),
-        "pnl":              str(pnl),
-        "margin_returned":  str(pos.margin_used),
-        "new_balance":      str(wallet.balance),
-    })
 
 
 def _get_oracle_stub():
@@ -625,240 +795,8 @@ def option_positions_view(request):
     return Response(data)
 
 
-# ============================================================
-# 10. Open an option position
-# ============================================================
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def open_option_view(request):
-    import uuid as _uuid
-    ticker        = str(request.data.get('ticker', '')).upper()
-    contract_type = request.data.get('contract_type')
-    raw_strike    = request.data.get('strike')
-    raw_expiry    = request.data.get('expiry')
-    raw_contracts = request.data.get('contracts', 1)
-
-    if ticker not in SP500_TICKERS:
-        return Response({'error': f'{ticker} is not in the allowed ticker list'}, status=status.HTTP_400_BAD_REQUEST)
-    if contract_type not in ('CALL', 'PUT'):
-        return Response({'error': 'contract_type must be CALL or PUT'}, status=status.HTTP_400_BAD_REQUEST)
-    try:
-        strike    = Decimal(str(raw_strike))
-        contracts = int(raw_contracts)
-        if strike <= 0 or contracts <= 0:
-            raise ValueError
-    except (InvalidOperation, TypeError, ValueError):
-        return Response({'error': 'Invalid strike or contracts'}, status=status.HTTP_400_BAD_REQUEST)
-    try:
-        from datetime import date as date_cls
-        expiry_date = date_cls.fromisoformat(str(raw_expiry))
-    except (ValueError, TypeError):
-        return Response({'error': 'Invalid expiry date (YYYY-MM-DD expected)'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # --- Server-side price verification (client-submitted premium is never trusted) ---
-    try:
-        import yfinance as yf
-        chain = yf.Ticker(ticker).option_chain(str(raw_expiry))
-        df    = chain.calls if contract_type == 'CALL' else chain.puts
-        mask  = (df['strike'] - float(strike)).abs() < 0.01
-        row   = df[mask]
-        if row.empty:
-            return Response(
-                {'error': f'No market data for {ticker} {contract_type} @{strike} exp {raw_expiry}'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        bid  = float(row.iloc[0].get('bid',       0) or 0)
-        ask  = float(row.iloc[0].get('ask',       0) or 0)
-        last = float(row.iloc[0].get('lastPrice', 0) or 0)
-        mid  = (bid + ask) / 2 if ask > 0 else last
-        if mid <= 0:
-            return Response(
-                {'error': 'No valid market price available for this contract'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        premium = Decimal(str(round(mid, 4)))
-    except Exception as e:
-        return Response(
-            {'error': f'Could not verify market price: {e}'},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-
-    total_cost = premium * contracts * 100
-
-    try:
-        stock_obj = Stock.objects.get(ticker=ticker)
-    except Stock.DoesNotExist:
-        return Response({'error': f'{ticker} not found in stock catalog'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # --- ECDSA signing — creates a cryptographic audit trail for the option purchase ---
-    nonce = str(_uuid.uuid4())
-    try:
-        profile     = request.user.profile
-        option_data = {
-            'ticker':        ticker,
-            'contract_type': contract_type,
-            'strike':        str(strike),
-            'expiry':        str(raw_expiry),
-            'contracts':     str(contracts),
-            'premium':       str(premium),
-            'nonce':         nonce,
-        }
-        signature = sign_option_order(profile.ecdsa_private_key, option_data)
-    except Exception as e:
-        return Response({'error': f'Could not sign order: {e}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    with transaction.atomic():
-        wallet = Wallet.objects.select_for_update().get(user=request.user)
-        if wallet.balance < total_cost:
-            return Response(
-                {'error': f'Insufficient funds. Need ${total_cost:.2f}, have ${wallet.balance:.2f}'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        wallet.balance -= total_cost
-        wallet.save()
-
-        pos = OptionPosition.objects.create(
-            user=request.user, stock=stock_obj,
-            contract_type=contract_type, strike=strike,
-            expiry=expiry_date, contracts=contracts, premium_paid=premium,
-            nonce=nonce, signature=signature,
-        )
-
-    return Response({
-        'id':            pos.id,
-        'stock':         pos.stock.ticker,
-        'contract_type': pos.contract_type,
-        'strike':        str(pos.strike),
-        'expiry':        pos.expiry.isoformat(),
-        'contracts':     pos.contracts,
-        'premium_paid':  str(pos.premium_paid),
-        'total_cost':    str(total_cost),
-        'status':        pos.status,
-    }, status=status.HTTP_201_CREATED)
 
 
-# ============================================================
-# 11. Close an option position (yfinance mid-price, falls back to intrinsic)
-# ============================================================
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def close_option_view(request, pk):
-    try:
-        pos = OptionPosition.objects.get(pk=pk, user=request.user, status='OPEN')
-    except OptionPosition.DoesNotExist:
-        return Response({'error': 'Open option position not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    # Try yfinance for current market mid-price
-    close_premium = None
-    try:
-        import yfinance as yf
-        chain = yf.Ticker(pos.stock.ticker).option_chain(pos.expiry.isoformat())
-        df = chain.calls if pos.contract_type == 'CALL' else chain.puts
-        mask = (df['strike'] - float(pos.strike)).abs() < 0.01
-        row  = df[mask]
-        if not row.empty:
-            bid = float(row.iloc[0].get('bid', 0) or 0)
-            ask = float(row.iloc[0].get('ask', 0) or 0)
-            mid = (bid + ask) / 2 if bid > 0 and ask > 0 else float(row.iloc[0].get('lastPrice', 0) or 0)
-            if mid > 0:
-                close_premium = Decimal(str(round(mid, 4)))
-    except Exception:
-        pass
-
-    # Fallback: intrinsic value from oracle
-    if close_premium is None:
-        try:
-            stub, pb = _get_oracle_stub()
-            resp = stub.GetPrice(pb.PriceRequest(ticker=pos.stock.ticker), timeout=5)
-            stock_price = Decimal(str(resp.execution_price))
-        except Exception as e:
-            return Response({'error': f'Oracle unavailable: {e}'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        if pos.contract_type == 'CALL':
-            close_premium = max(Decimal('0'), stock_price - pos.strike)
-        else:
-            close_premium = max(Decimal('0'), pos.strike - stock_price)
-
-    total_cost    = pos.premium_paid * pos.contracts * 100
-    cash_received = close_premium * pos.contracts * 100
-    pnl           = cash_received - total_cost
-
-    with transaction.atomic():
-        wallet = Wallet.objects.select_for_update().get(user=request.user)
-        wallet.balance += cash_received
-        wallet.save()
-        pos.status        = 'CLOSED'
-        pos.pnl           = pnl
-        pos.close_premium = close_premium
-        pos.closed_at     = timezone.now()
-        pos.save()
-
-    return Response({
-        'status':        'closed',
-        'close_premium': str(close_premium),
-        'pnl':           str(pnl),
-        'cash_received': str(cash_received),
-        'new_balance':   str(wallet.balance),
-    })
-
-
-# ============================================================
-# 12. Exercise an option (cash-settled at intrinsic value)
-# ============================================================
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def exercise_option_view(request, pk):
-    try:
-        pos = OptionPosition.objects.get(pk=pk, user=request.user, status='OPEN')
-    except OptionPosition.DoesNotExist:
-        return Response({'error': 'Open option position not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    if pos.expiry < timezone.now().date():
-        return Response({'error': 'Option has already expired'}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        stub, pb = _get_oracle_stub()
-        resp = stub.GetPrice(pb.PriceRequest(ticker=pos.stock.ticker), timeout=5)
-        stock_price = Decimal(str(resp.execution_price))
-    except Exception as e:
-        return Response({'error': f'Oracle unavailable: {e}'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-
-    if pos.contract_type == 'CALL':
-        intrinsic = stock_price - pos.strike
-        if intrinsic <= 0:
-            return Response(
-                {'error': f'CALL is out of the money (stock ${stock_price} ≤ strike ${pos.strike})'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-    else:
-        intrinsic = pos.strike - stock_price
-        if intrinsic <= 0:
-            return Response(
-                {'error': f'PUT is out of the money (stock ${stock_price} ≥ strike ${pos.strike})'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-    total_cost    = pos.premium_paid * pos.contracts * 100
-    cash_received = intrinsic * pos.contracts * 100
-    pnl           = cash_received - total_cost
-
-    with transaction.atomic():
-        wallet = Wallet.objects.select_for_update().get(user=request.user)
-        wallet.balance += cash_received
-        wallet.save()
-        pos.status        = 'EXERCISED'
-        pos.pnl           = pnl
-        pos.close_premium = stock_price
-        pos.closed_at     = timezone.now()
-        pos.save()
-
-    return Response({
-        'status':        'exercised',
-        'stock_price':   str(stock_price),
-        'intrinsic':     str(intrinsic),
-        'pnl':           str(pnl),
-        'cash_received': str(cash_received),
-        'new_balance':   str(wallet.balance),
-    })
 
 
 @api_view(['GET'])

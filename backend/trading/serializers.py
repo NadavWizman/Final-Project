@@ -48,6 +48,8 @@ class OrderSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'user', 'stock', 'order_type', 'trade_type', 'quantity',
             'leverage', 'limit_price',
+            'option_contract_type', 'option_strike', 'option_expiry',
+            'position_id',
             'status', 'created_at', 'execution_price',
             'nonce', 'signature', 'public_key',
         ]
@@ -82,6 +84,16 @@ class OrderSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"leverage": "Leverage is required for CFD orders."})
         if trade_type == 'STOCK' and leverage:
             raise serializers.ValidationError({"leverage": "Leverage only applies to CFD orders."})
+        if trade_type == 'OPTION':
+            if not data.get('option_contract_type') or data['option_contract_type'] not in ('CALL', 'PUT'):
+                raise serializers.ValidationError({"option_contract_type": "Must be CALL or PUT for OPTION orders."})
+            if not data.get('option_strike') or data['option_strike'] <= 0:
+                raise serializers.ValidationError({"option_strike": "Required and must be > 0 for OPTION orders."})
+            if not data.get('option_expiry'):
+                raise serializers.ValidationError({"option_expiry": "Required for OPTION orders."})
+        if trade_type in ('CFD_CLOSE', 'OPT_CLOSE', 'OPT_EXER'):
+            if not data.get('position_id'):
+                raise serializers.ValidationError({"position_id": "Required for close/exercise orders."})
         return data
 
     def validate_nonce(self, value):
