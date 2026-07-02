@@ -598,18 +598,30 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
       <input type="hidden" id="m-nonce">
       <div class="field-label">Quantity</div>
       <input class="modal-input" id="m-qty" type="number" min="1" placeholder="Shares"
-             oninput="updateModalEstimate();checkModalQty()">
+             oninput="updateModalEstimate();checkModalQty();updateModalSLTPPreview()">
       <div class="qty-warning" id="m-qty-warning"></div>
       <div class="field-label" style="margin-top:2px">Limit Price <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(optional)</span></div>
       <input class="modal-input" id="m-limit" type="number" min="0.01" step="0.01" placeholder="Max price per share">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:2px">
         <div>
           <div class="field-label" style="color:var(--red)">Stop Loss</div>
-          <input class="modal-input" id="m-sl" type="number" min="0.01" step="0.01" placeholder="Auto-sell below" style="margin-bottom:0">
+          <input class="modal-input" id="m-sl" type="number" min="0.01" step="0.01" placeholder="Auto-sell below" style="margin-bottom:0" oninput="updateModalSLTPPreview()">
+          <div style="display:flex;align-items:center;gap:5px;margin-top:5px">
+            <span style="font-size:11px;color:var(--label2);flex-shrink:0">Qty:</span>
+            <input class="modal-input" id="m-sl-qty" type="number" min="0.01" step="0.01" placeholder="all"
+                   style="flex:1;padding:5px 7px;font-size:12px;margin-bottom:0" oninput="updateModalSLTPPreview()">
+            <span id="modal-sl-pnl" style="font-size:12px;font-weight:700;flex-shrink:0;min-width:48px;text-align:right"></span>
+          </div>
         </div>
         <div>
           <div class="field-label" style="color:var(--green)">Take Profit</div>
-          <input class="modal-input" id="m-tp" type="number" min="0.01" step="0.01" placeholder="Auto-sell above" style="margin-bottom:0">
+          <input class="modal-input" id="m-tp" type="number" min="0.01" step="0.01" placeholder="Auto-sell above" style="margin-bottom:0" oninput="updateModalSLTPPreview()">
+          <div style="display:flex;align-items:center;gap:5px;margin-top:5px">
+            <span style="font-size:11px;color:var(--label2);flex-shrink:0">Qty:</span>
+            <input class="modal-input" id="m-tp-qty" type="number" min="0.01" step="0.01" placeholder="all"
+                   style="flex:1;padding:5px 7px;font-size:12px;margin-bottom:0" oninput="updateModalSLTPPreview()">
+            <span id="modal-tp-pnl" style="font-size:12px;font-weight:700;flex-shrink:0;min-width:48px;text-align:right"></span>
+          </div>
         </div>
       </div>
       <div class="modal-estimate">
@@ -729,16 +741,20 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
         <button class="segment-btn active-buy" id="sltp-type-sl" onclick="setSLTPType('SL')" style="flex:1">Stop Loss</button>
         <button class="segment-btn" id="sltp-type-tp" onclick="setSLTPType('TP')" style="flex:1">Take Profit</button>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
         <div>
           <div class="field-label">Price ($)</div>
-          <input class="modal-input" id="sltp-price" type="number" min="0.01" step="0.01" placeholder="Trigger price" style="margin-bottom:0">
+          <input class="modal-input" id="sltp-price" type="number" min="0.01" step="0.01" placeholder="Trigger price" style="margin-bottom:0" oninput="updateSLTPPreview()">
         </div>
         <div>
-          <div class="field-label">Quantity</div>
-          <input class="modal-input" id="sltp-qty" type="number" min="0.01" step="0.01" placeholder="Shares / units" style="margin-bottom:0">
+          <div class="field-label" style="display:flex;justify-content:space-between;align-items:center">
+            <span>Quantity</span>
+            <span id="sltp-max-hint" onclick="setSLTPMaxQty()" style="cursor:pointer;color:var(--blue);font-weight:500;text-transform:none;letter-spacing:0;font-size:11px"></span>
+          </div>
+          <input class="modal-input" id="sltp-qty" type="number" min="0.01" step="0.01" placeholder="Shares / units" style="margin-bottom:0" oninput="updateSLTPPreview()">
         </div>
       </div>
+      <div id="sltp-pnl-preview" style="display:none;font-size:13px;font-weight:600;text-align:center;padding:6px 10px;border-radius:8px;margin-bottom:8px;background:var(--gray6)"></div>
       <div id="sltp-add-error" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px"></div>
       <button class="btn-modal blue" id="sltp-add-btn" onclick="doAddSLTPLevel()">+ Add Level</button>
     </div>
@@ -805,7 +821,8 @@ const S = {
   refreshTimer: null, priceTimer: null,
   // CFD state
   cfdPositions: [],
-  cfdDir: 'BUY', cfdStock: '', cfdQty: '', cfdLeverage: 10, cfdPrice: null, cfdStopLoss: '', cfdTakeProfit: '',
+  cfdDir: 'BUY', cfdStock: '', cfdQty: '', cfdLeverage: 10, cfdPrice: null, cfdStopLoss: '', cfdTakeProfit: '', cfdSlQty: '', cfdTpQty: '',
+  tradeSlQty: '', tradeTpQty: '',
   // Options state
   optPositions: [], optSubTab: 'chain',
   optTicker: '', optExpiry: '', optExpiries: [], optChain: null,
@@ -951,14 +968,14 @@ async function loadData() {
           new Date(p.opened_at).getTime() >= pend.submittedAt - 5000
         );
         if (pos) {
-          if (pend.sl) await api('POST', '/sltp/', { cfd_id: pos.id, level_type: 'SL', price: pend.sl, quantity: pend.qty });
-          if (pend.tp) await api('POST', '/sltp/', { cfd_id: pos.id, level_type: 'TP', price: pend.tp, quantity: pend.qty });
+          if (pend.sl) await api('POST', '/sltp/', { cfd_id: pos.id, level_type: 'SL', price: pend.sl, quantity: pend.slQty || pend.qty });
+          if (pend.tp) await api('POST', '/sltp/', { cfd_id: pos.id, level_type: 'TP', price: pend.tp, quantity: pend.tpQty || pend.qty });
         }
       } else {
         const holding = S.portfolio?.holdings?.find(h => h.ticker === pend.ticker);
         if (holding) {
-          if (pend.sl) await api('POST', '/sltp/', { position_id: holding.id, level_type: 'SL', price: pend.sl, quantity: pend.qty });
-          if (pend.tp) await api('POST', '/sltp/', { position_id: holding.id, level_type: 'TP', price: pend.tp, quantity: pend.qty });
+          if (pend.sl) await api('POST', '/sltp/', { position_id: holding.id, level_type: 'SL', price: pend.sl, quantity: pend.slQty || pend.qty });
+          if (pend.tp) await api('POST', '/sltp/', { position_id: holding.id, level_type: 'TP', price: pend.tp, quantity: pend.tpQty || pend.qty });
         }
       }
     } catch (_) {}
@@ -1054,7 +1071,7 @@ function renderPortfolio() {
             <button class="btn-small gray" style="flex:1;font-size:11px;padding:5px 8px"
               onclick="event.stopPropagation();openModal('${h.ticker}','${safeName}',${qty})">Trade</button>
             <button class="btn-small blue" style="flex:1;font-size:11px;padding:5px 8px"
-              onclick="event.stopPropagation();openSLTPModal('position',${h.id},'${h.ticker} · ${qty} shares',${qty})">SL/TP</button>
+              onclick="event.stopPropagation();openSLTPModal('position',${h.id},'${h.ticker} · ${qty} shares',${qty},${S.holdingPrices[h.ticker]?parseFloat(S.holdingPrices[h.ticker].execution_price):'null'},'LONG')">SL/TP</button>
           </div>
         </div>`;
     }).join('');
@@ -1119,12 +1136,28 @@ function renderTrade() {
           <div>
             <div class="field-label" style="color:var(--red)">Stop Loss <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
             <input class="input-field" type="number" min="0.01" step="0.01" placeholder="Auto-sell below"
-                   value="${S.tradeStopLoss}" oninput="S.tradeStopLoss=this.value">
+                   value="${S.tradeStopLoss}" oninput="S.tradeStopLoss=this.value;updateTradeSLTPPreview()">
+            <div style="display:flex;align-items:center;gap:5px;margin-top:5px">
+              <span style="font-size:11px;color:var(--label2);flex-shrink:0">Qty:</span>
+              <input class="input-field" id="trade-sl-qty" type="number" min="0.01" step="0.01"
+                     placeholder="${S.tradeQty||'all'}" value="${S.tradeSlQty}"
+                     style="flex:1;padding:5px 7px;font-size:12px"
+                     oninput="S.tradeSlQty=this.value;updateTradeSLTPPreview()">
+              <span id="trade-sl-pnl" style="font-size:12px;font-weight:700;flex-shrink:0;min-width:48px;text-align:right"></span>
+            </div>
           </div>
           <div>
             <div class="field-label" style="color:var(--green)">Take Profit <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
             <input class="input-field" type="number" min="0.01" step="0.01" placeholder="Auto-sell above"
-                   value="${S.tradeTakeProfit}" oninput="S.tradeTakeProfit=this.value">
+                   value="${S.tradeTakeProfit}" oninput="S.tradeTakeProfit=this.value;updateTradeSLTPPreview()">
+            <div style="display:flex;align-items:center;gap:5px;margin-top:5px">
+              <span style="font-size:11px;color:var(--label2);flex-shrink:0">Qty:</span>
+              <input class="input-field" id="trade-tp-qty" type="number" min="0.01" step="0.01"
+                     placeholder="${S.tradeQty||'all'}" value="${S.tradeTpQty}"
+                     style="flex:1;padding:5px 7px;font-size:12px"
+                     oninput="S.tradeTpQty=this.value;updateTradeSLTPPreview()">
+              <span id="trade-tp-pnl" style="font-size:12px;font-weight:700;flex-shrink:0;min-width:48px;text-align:right"></span>
+            </div>
           </div>
         </div>
         <button class="btn-primary" id="place-btn" onclick="doPlaceOrder()">Place Order</button>
@@ -1520,6 +1553,12 @@ async function openModal(ticker, name, qty) {
   document.getElementById('m-error').style.display = 'none';
   document.getElementById('m-qty').value   = '';
   document.getElementById('m-nonce').value = genNonce();
+  const mSlQty = document.getElementById('m-sl-qty'); if (mSlQty) mSlQty.value = '';
+  const mTpQty = document.getElementById('m-tp-qty'); if (mTpQty) mTpQty.value = '';
+  const mSl = document.getElementById('m-sl'); if (mSl) mSl.value = '';
+  const mTp = document.getElementById('m-tp'); if (mTp) mTp.value = '';
+  const mSlPnl = document.getElementById('modal-sl-pnl'); if (mSlPnl) mSlPnl.textContent = '';
+  const mTpPnl = document.getElementById('modal-tp-pnl'); if (mTpPnl) mTpPnl.textContent = '';
   document.getElementById('m-estimate').textContent = '—';
   document.getElementById('m-action-btn').className   = 'btn-modal green';
   document.getElementById('m-action-btn').textContent = 'Buy';
@@ -1619,7 +1658,9 @@ function doModalTrade() {
   if (!qty || parseFloat(qty) <= 0) { showErr(errEl, 'Enter a valid quantity.'); return; }
   if (limitPrice && parseFloat(limitPrice) <= 0) { showErr(errEl, 'Limit price must be greater than 0.'); return; }
   const price = S.modal.price;
-  showConfirm({ stock: ticker, type, qty, nonce, price, limitPrice, stopLoss, takeProfit, source: 'modal' });
+  const stopLossQty   = document.getElementById('m-sl-qty')?.value || '';
+  const takeProfitQty = document.getElementById('m-tp-qty')?.value || '';
+  showConfirm({ stock: ticker, type, qty, nonce, price, limitPrice, stopLoss, takeProfit, stopLossQty, takeProfitQty, source: 'modal' });
 }
 
 function closeModal()      { document.getElementById('stock-modal').classList.remove('open'); }
@@ -1893,8 +1934,8 @@ function addHover(canvas, s, tooltipId, crosshairId) {
 let _pendingOrder = null;
 const _pendingSLTP = {}; // nonce → {ticker,qty,tradeType,dir,sl,tp,submittedAt}
 
-function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, tradeType = 'STOCK', leverage = null, stopLoss = '', takeProfit = '' }) {
-  _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source, tradeType, leverage, stopLoss, takeProfit };
+function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, tradeType = 'STOCK', leverage = null, stopLoss = '', takeProfit = '', stopLossQty = '', takeProfitQty = '' }) {
+  _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source, tradeType, leverage, stopLoss, takeProfit, stopLossQty, takeProfitQty };
   const isBuy  = type === 'BUY';
   const isCFD  = tradeType === 'CFD';
   const label  = isCFD ? (isBuy ? 'LONG' : 'SHORT') : type;
@@ -1932,6 +1973,41 @@ function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, trade
   } else {
     limitRow.style.display = 'none';
   }
+
+  // SL row
+  let slRow = document.getElementById('confirm-sl-row');
+  if (!slRow) {
+    slRow = document.createElement('div');
+    slRow.id = 'confirm-sl-row';
+    slRow.className = 'confirm-row';
+    slRow.innerHTML = '<span class="c-label" style="color:var(--red)">Stop loss</span><span class="c-value" id="confirm-sl-val"></span>';
+    limitRow.insertAdjacentElement('afterend', slRow);
+  }
+  if (stopLoss && parseFloat(stopLoss) > 0) {
+    slRow.style.display = '';
+    const slQtyLabel = stopLossQty && parseFloat(stopLossQty) > 0 ? ` × ${parseFloat(stopLossQty)} units` : ` × all`;
+    document.getElementById('confirm-sl-val').textContent = fmt$(stopLoss) + '/share' + slQtyLabel;
+  } else {
+    slRow.style.display = 'none';
+  }
+
+  // TP row
+  let tpRow = document.getElementById('confirm-tp-row');
+  if (!tpRow) {
+    tpRow = document.createElement('div');
+    tpRow.id = 'confirm-tp-row';
+    tpRow.className = 'confirm-row';
+    tpRow.innerHTML = '<span class="c-label" style="color:var(--green)">Take profit</span><span class="c-value" id="confirm-tp-val"></span>';
+    slRow.insertAdjacentElement('afterend', tpRow);
+  }
+  if (takeProfit && parseFloat(takeProfit) > 0) {
+    tpRow.style.display = '';
+    const tpQtyLabel = takeProfitQty && parseFloat(takeProfitQty) > 0 ? ` × ${parseFloat(takeProfitQty)} units` : ` × all`;
+    document.getElementById('confirm-tp-val').textContent = fmt$(takeProfit) + '/share' + tpQtyLabel;
+  } else {
+    tpRow.style.display = 'none';
+  }
+
   const btn = document.getElementById('confirm-ok-btn');
   btn.className   = `btn-modal ${isBuy?'green':'red'}`;
   btn.textContent = isCFD ? 'Open Position' : 'Confirm';
@@ -1950,16 +2026,20 @@ function maybeCloseConfirm(e) {
 
 // ── SL/TP LEVEL MANAGER ──────────────────────────────────────────
 // kind: 'position' (stock holding) | 'cfd' (CFD position)
-let _sltpTarget = null;  // { kind, id, maxQty }
+let _sltpTarget = null;  // { kind, id, maxQty, entryPrice, direction }
 let _sltpType   = 'SL';  // currently selected type in add form
+let _sltpLevels = [];    // cached levels for remaining-qty calc
 
-function openSLTPModal(kind, id, headline, maxQty) {
-  _sltpTarget = { kind, id, maxQty };
+function openSLTPModal(kind, id, headline, maxQty, entryPrice, direction) {
+  _sltpTarget = { kind, id, maxQty, entryPrice: parseFloat(entryPrice) || null, direction: direction || 'LONG' };
   _sltpType   = 'SL';
+  _sltpLevels = [];
   document.getElementById('sltp-headline').textContent = headline;
   document.getElementById('sltp-price').value = '';
   document.getElementById('sltp-qty').value   = '';
   document.getElementById('sltp-add-error').style.display = 'none';
+  document.getElementById('sltp-pnl-preview').style.display = 'none';
+  document.getElementById('sltp-max-hint').textContent = '';
   setSLTPType('SL');
   document.getElementById('sltp-modal').classList.add('open');
   loadSLTPLevels();
@@ -1980,6 +2060,80 @@ function setSLTPType(type) {
   const tpBtn = document.getElementById('sltp-type-tp');
   slBtn.className = `segment-btn ${type==='SL' ? 'active-sell' : ''}`;
   tpBtn.className = `segment-btn ${type==='TP' ? 'active-buy'  : ''}`;
+  _updateSLTPMaxHint();
+  updateSLTPPreview();
+}
+
+function _sltpRemainingQty() {
+  if (!_sltpTarget) return 0;
+  const used = _sltpLevels
+    .filter(lv => lv.level_type === _sltpType && !lv.triggered)
+    .reduce((s, lv) => s + parseFloat(lv.quantity), 0);
+  return Math.max(0, _sltpTarget.maxQty - used);
+}
+
+function _updateSLTPMaxHint() {
+  const hint = document.getElementById('sltp-max-hint');
+  if (!hint || !_sltpTarget) return;
+  const rem = _sltpRemainingQty();
+  hint.textContent = rem > 0 ? `use all (${rem})` : '';
+}
+
+function setSLTPMaxQty() {
+  const rem = _sltpRemainingQty();
+  if (rem <= 0) return;
+  document.getElementById('sltp-qty').value = rem;
+  updateSLTPPreview();
+}
+
+function updateSLTPPreview() {
+  const el = document.getElementById('sltp-pnl-preview');
+  if (!el) return;
+  const price = parseFloat(document.getElementById('sltp-price').value);
+  const qty   = parseFloat(document.getElementById('sltp-qty').value);
+  if (!price || !qty || !_sltpTarget?.entryPrice) { el.style.display = 'none'; return; }
+  const pnl   = _sltpTarget.direction === 'LONG'
+    ? (price - _sltpTarget.entryPrice) * qty
+    : (_sltpTarget.entryPrice - price) * qty;
+  const sign  = pnl >= 0 ? '+' : '';
+  const color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+  el.style.display = '';
+  el.style.color = color;
+  el.textContent = `Est. P&L at trigger: ${sign}${fmt$(pnl)}`;
+}
+
+// ── Pre-execution SL/TP P&L helpers ──────────────────────────────
+function _updateSLTPPnl(elId, triggerPrice, qty, entryPrice, isLong) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!triggerPrice || !qty || !entryPrice) { el.textContent = ''; return; }
+  const pnl  = isLong ? (triggerPrice - entryPrice) * qty : (entryPrice - triggerPrice) * qty;
+  const sign = pnl >= 0 ? '+' : '';
+  el.textContent = `${sign}${fmt$(pnl)}`;
+  el.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+}
+
+function updateCFDSLTPPreview() {
+  const entry = parseFloat(S.cfdPrice?.execution_price);
+  const isLong = S.cfdDir === 'BUY';
+  const defQty = parseFloat(S.cfdQty) || 0;
+  _updateSLTPPnl('cfd-sl-pnl', parseFloat(S.cfdStopLoss),   parseFloat(S.cfdSlQty)||defQty, entry, isLong);
+  _updateSLTPPnl('cfd-tp-pnl', parseFloat(S.cfdTakeProfit), parseFloat(S.cfdTpQty)||defQty, entry, isLong);
+}
+
+function updateTradeSLTPPreview() {
+  const entry = parseFloat(S.tradePrice?.execution_price);
+  const defQty = parseFloat(S.tradeQty) || 0;
+  _updateSLTPPnl('trade-sl-pnl', parseFloat(S.tradeStopLoss),   parseFloat(S.tradeSlQty)||defQty, entry, true);
+  _updateSLTPPnl('trade-tp-pnl', parseFloat(S.tradeTakeProfit), parseFloat(S.tradeTpQty)||defQty, entry, true);
+}
+
+function updateModalSLTPPreview() {
+  const entry  = parseFloat(S.modal.price);
+  const defQty = parseFloat(document.getElementById('m-qty')?.value) || 0;
+  const isLong = S.modal.tradeType === 'BUY';
+  _updateSLTPPnl('modal-sl-pnl', parseFloat(document.getElementById('m-sl')?.value),  defQty, entry, isLong);
+  _updateSLTPPnl('modal-tp-pnl', parseFloat(document.getElementById('m-tp')?.value), defQty, entry, isLong);
 }
 
 async function loadSLTPLevels() {
@@ -1988,21 +2142,32 @@ async function loadSLTPLevels() {
   const r = await api('GET', `/sltp/?${param}`);
   const list = document.getElementById('sltp-levels-list');
   if (!r.ok) { list.innerHTML = `<div style="color:var(--red);font-size:13px">Failed to load levels.</div>`; return; }
-  const levels = r.data;
-  if (!levels.length) {
+  _sltpLevels = r.data;
+  _updateSLTPMaxHint();
+  if (!_sltpLevels.length) {
     list.innerHTML = `<div style="color:var(--label2);font-size:13px;padding-bottom:10px">No active levels. Add one below.</div>`;
     return;
   }
+  const unit = _sltpTarget.kind === 'position' ? 'shares' : 'units';
   list.innerHTML = `
     <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;color:var(--label2);margin-bottom:8px">Active Levels</div>
-    ${levels.map(lv => {
-      const isSL   = lv.level_type === 'SL';
-      const color  = isSL ? 'var(--red)' : 'var(--green)';
-      const bgClr  = isSL ? 'rgba(255,69,58,.12)' : 'rgba(52,199,89,.12)';
-      const fired  = lv.triggered;
-      return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--sep);opacity:${fired?0.5:1}">
+    ${_sltpLevels.map(lv => {
+      const isSL  = lv.level_type === 'SL';
+      const color = isSL ? 'var(--red)' : 'var(--green)';
+      const bgClr = isSL ? 'rgba(255,69,58,.12)' : 'rgba(52,199,89,.12)';
+      const fired = lv.triggered;
+      let pnlHtml = '';
+      if (_sltpTarget.entryPrice) {
+        const pnl  = _sltpTarget.direction === 'LONG'
+          ? (parseFloat(lv.price) - _sltpTarget.entryPrice) * parseFloat(lv.quantity)
+          : (_sltpTarget.entryPrice - parseFloat(lv.price)) * parseFloat(lv.quantity);
+        const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        pnlHtml = `<span style="font-size:12px;color:${pnlColor};font-weight:600">${pnl>=0?'+':''}${fmt$(pnl)}</span>`;
+      }
+      return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--sep);opacity:${fired?0.5:1}">
         <span style="background:${bgClr};color:${color};padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;min-width:28px;text-align:center">${lv.level_type}</span>
-        <span style="flex:1;font-size:13px">${fmt$(lv.price)} &times; ${parseFloat(lv.quantity)} ${_sltpTarget.kind==='position'?'shares':'units'}</span>
+        <span style="flex:1;font-size:13px">${fmt$(lv.price)} &times; ${parseFloat(lv.quantity)} ${unit}</span>
+        ${pnlHtml}
         ${fired
           ? `<span style="font-size:11px;color:var(--label2)">Triggered</span>`
           : `<button class="btn-small gray" style="padding:4px 10px;font-size:11px" onclick="doDeleteSLTPLevel(${lv.id})">✕</button>`
@@ -2020,6 +2185,13 @@ async function doAddSLTPLevel() {
   const qty   = document.getElementById('sltp-qty').value;
   if (!price || parseFloat(price) <= 0) { errEl.textContent = 'Enter a valid price.'; errEl.style.display=''; return; }
   if (!qty   || parseFloat(qty)   <= 0) { errEl.textContent = 'Enter a valid quantity.'; errEl.style.display=''; return; }
+  const _rem = _sltpRemainingQty();
+  if (parseFloat(qty) > _rem + 0.0001) {
+    const unit = _sltpTarget.kind === 'position' ? 'shares' : 'units';
+    errEl.textContent = `Only ${_rem} ${unit} available for ${_sltpType} levels.`;
+    errEl.style.display = '';
+    return;
+  }
 
   const btn = document.getElementById('sltp-add-btn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
@@ -2051,7 +2223,7 @@ async function doDeleteSLTPLevel(levelId) {
 
 async function doConfirmedOrder() {
   if (!_pendingOrder) return;
-  const { stock, type, qty, nonce, limitPrice, source, tradeType = 'STOCK', leverage, stopLoss, takeProfit } = _pendingOrder;
+  const { stock, type, qty, nonce, limitPrice, source, tradeType = 'STOCK', leverage, stopLoss, takeProfit, stopLossQty, takeProfitQty } = _pendingOrder;
   const btn = document.getElementById('confirm-ok-btn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
 
@@ -2090,12 +2262,15 @@ async function doConfirmedOrder() {
   S.pendingDraft = orderId;
 
   // Store SL/TP intent for auto-creation after order confirms
-  if (type === 'BUY' && (stopLoss && parseFloat(stopLoss) > 0 || takeProfit && parseFloat(takeProfit) > 0)) {
+  // Allow BUY (stocks) and any direction CFD (BUY=LONG, SELL=SHORT)
+  if ((type === 'BUY' || tradeType === 'CFD') && (stopLoss && parseFloat(stopLoss) > 0 || takeProfit && parseFloat(takeProfit) > 0)) {
     _pendingSLTP[nonce] = {
       ticker: stock, qty, tradeType,
       dir: tradeType === 'CFD' ? (type === 'BUY' ? 'LONG' : 'SHORT') : null,
-      sl: (stopLoss   && parseFloat(stopLoss)   > 0) ? stopLoss   : null,
-      tp: (takeProfit && parseFloat(takeProfit) > 0) ? takeProfit : null,
+      sl:    (stopLoss   && parseFloat(stopLoss)   > 0) ? stopLoss   : null,
+      slQty: (stopLossQty   && parseFloat(stopLossQty)   > 0) ? stopLossQty   : qty,
+      tp:    (takeProfit && parseFloat(takeProfit) > 0) ? takeProfit : null,
+      tpQty: (takeProfitQty && parseFloat(takeProfitQty) > 0) ? takeProfitQty : qty,
       submittedAt: Date.now(),
     };
   }
@@ -2107,6 +2282,7 @@ async function doConfirmedOrder() {
     S.tradeLimitPrice = '';
     S.tradeStopLoss   = '';
     S.tradeTakeProfit = '';
+    S.tradeSlQty = ''; S.tradeTpQty = '';
     const inputs = document.querySelectorAll('#tab-trade input[type=number]');
     inputs.forEach(el => el.value = '');
     const warn = document.getElementById('trade-qty-warning');
@@ -2116,6 +2292,7 @@ async function doConfirmedOrder() {
     S.cfdQty        = '';
     S.cfdStopLoss   = '';
     S.cfdTakeProfit = '';
+    S.cfdSlQty = ''; S.cfdTpQty = '';
     const qtyEl = document.getElementById('cfd-qty');
     if (qtyEl) qtyEl.value = '';
     const slEl  = document.getElementById('cfd-sl');
@@ -2194,7 +2371,7 @@ function doPlaceOrder() {
   if (!qty || parseFloat(qty) <= 0) { showErr(errEl, 'Enter a valid quantity.'); return; }
   if (limitPrice && parseFloat(limitPrice) <= 0) { showErr(errEl, 'Limit price must be greater than 0.'); return; }
   const price = S.tradePrice ? S.tradePrice.execution_price : null;
-  showConfirm({ stock: stock.toUpperCase(), type, qty, nonce, price, limitPrice, stopLoss, takeProfit, source: 'trade' });
+  showConfirm({ stock: stock.toUpperCase(), type, qty, nonce, price, limitPrice, stopLoss, takeProfit, stopLossQty: S.tradeSlQty, takeProfitQty: S.tradeTpQty, source: 'trade' });
 }
 
 async function doSubmit(orderId) {
@@ -2381,7 +2558,7 @@ function renderCFD() {
       <div class="cfd-right">${pnlHtml}</div>
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn-small blue" style="font-size:11px;padding:5px 10px"
-          onclick="openSLTPModal('cfd',${pos.id},'${dir} ${parseFloat(pos.quantity)} ${pos.stock}',${parseFloat(pos.quantity)})">
+          onclick="openSLTPModal('cfd',${pos.id},'${dir} ${parseFloat(pos.quantity)} ${pos.stock}',${parseFloat(pos.quantity)},${parseFloat(pos.entry_price)},'${pos.direction}')">
           SL/TP</button>
         <button class="btn-small red" onclick="doCloseCFD(${pos.id},this)">Close</button>
       </div>
@@ -2443,13 +2620,29 @@ function renderCFD() {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div>
             <div class="field-label" style="color:var(--red)">Stop Loss <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
-            <input class="input-field" id="cfd-sl" type="number" min="0.01" step="0.01" placeholder="Auto-close at loss"
-                   value="${S.cfdStopLoss}" oninput="S.cfdStopLoss=this.value">
+            <input class="input-field" id="cfd-sl" type="number" min="0.01" step="0.01" placeholder="Trigger price"
+                   value="${S.cfdStopLoss}" oninput="S.cfdStopLoss=this.value;updateCFDSLTPPreview()">
+            <div style="display:flex;align-items:center;gap:5px;margin-top:5px">
+              <span style="font-size:11px;color:var(--label2);flex-shrink:0">Qty:</span>
+              <input class="input-field" id="cfd-sl-qty" type="number" min="0.01" step="0.01"
+                     placeholder="${S.cfdQty||'all'}" value="${S.cfdSlQty}"
+                     style="flex:1;padding:5px 7px;font-size:12px"
+                     oninput="S.cfdSlQty=this.value;updateCFDSLTPPreview()">
+              <span id="cfd-sl-pnl" style="font-size:12px;font-weight:700;flex-shrink:0;min-width:48px;text-align:right"></span>
+            </div>
           </div>
           <div>
             <div class="field-label" style="color:var(--green)">Take Profit <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
-            <input class="input-field" id="cfd-tp" type="number" min="0.01" step="0.01" placeholder="Auto-close at profit"
-                   value="${S.cfdTakeProfit}" oninput="S.cfdTakeProfit=this.value">
+            <input class="input-field" id="cfd-tp" type="number" min="0.01" step="0.01" placeholder="Trigger price"
+                   value="${S.cfdTakeProfit}" oninput="S.cfdTakeProfit=this.value;updateCFDSLTPPreview()">
+            <div style="display:flex;align-items:center;gap:5px;margin-top:5px">
+              <span style="font-size:11px;color:var(--label2);flex-shrink:0">Qty:</span>
+              <input class="input-field" id="cfd-tp-qty" type="number" min="0.01" step="0.01"
+                     placeholder="${S.cfdQty||'all'}" value="${S.cfdTpQty}"
+                     style="flex:1;padding:5px 7px;font-size:12px"
+                     oninput="S.cfdTpQty=this.value;updateCFDSLTPPreview()">
+              <span id="cfd-tp-pnl" style="font-size:12px;font-weight:700;flex-shrink:0;min-width:48px;text-align:right"></span>
+            </div>
           </div>
         </div>
         <button class="btn-primary" onclick="doPlaceCFD()">Open Position</button>
@@ -2663,6 +2856,7 @@ function doPlaceCFD() {
     nonce: genNonce(), price: S.cfdPrice?.execution_price,
     tradeType: 'CFD', leverage: S.cfdLeverage,
     stopLoss: S.cfdStopLoss, takeProfit: S.cfdTakeProfit,
+    stopLossQty: S.cfdSlQty, takeProfitQty: S.cfdTpQty,
     source: 'cfd',
   });
 }

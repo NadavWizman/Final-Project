@@ -820,7 +820,7 @@ _AI_NEWS_CACHE = {}   # ticker -> (timestamp, result)
 _AI_NEWS_TTL   = 300  # seconds
 
 _COMPANY_NAMES = {
-    'AAPL':'Apple','MSFT':'Microsoft','GOOGL':'Alphabet (Google)','AMZN':'Amazon',
+    'AAPL':'Apple','MSFT':'Microsoft','GOOGL':'Alphabet (Google)','GOOG':'Alphabet (Google)','AMZN':'Amazon',
     'NVDA':'NVIDIA','META':'Meta','TSLA':'Tesla','NFLX':'Netflix','AMD':'AMD',
     'INTC':'Intel','JPM':'JPMorgan Chase','V':'Visa','MA':'Mastercard',
     'KO':'Coca-Cola','BAC':'Bank of America','QCOM':'Qualcomm',
@@ -960,6 +960,29 @@ def ai_chat_view(request, ticker):
     from google.genai import errors as genai_errors, types as genai_types
     client = google_genai.Client(api_key=settings.GEMINI_API_KEY)
 
+    # Fetch live market data to ground the AI's answers in real numbers
+    market_context = ''
+    try:
+        import yfinance as yf
+        fi = yf.Ticker(ticker).fast_info
+
+        def _fmt_cap(v):
+            if not v: return 'N/A'
+            if v >= 1e12: return f'${v/1e12:.2f}T'
+            if v >= 1e9:  return f'${v/1e9:.2f}B'
+            return f'${v/1e6:.2f}M'
+
+        lines = ['\n\nCURRENT LIVE MARKET DATA (always use this, not your training data):']
+        if fi.last_price:      lines.append(f'- Price: ${fi.last_price:.2f}')
+        if fi.market_cap:      lines.append(f'- Market cap: {_fmt_cap(fi.market_cap)}')
+        if fi.day_high and fi.day_low:
+            lines.append(f"- Today's range: ${fi.day_low:.2f} – ${fi.day_high:.2f}")
+        if fi.year_high and fi.year_low:
+            lines.append(f'- 52-week range: ${fi.year_low:.2f} – ${fi.year_high:.2f}')
+        market_context = '\n'.join(lines)
+    except Exception:
+        pass
+
     system_instruction = (
         f"You are a concise stock market analyst assistant. "
         f"The user is currently viewing the stock {ticker} ({company}). "
@@ -967,6 +990,7 @@ def ai_chat_view(request, ticker):
         f"they are referring to {company} ({ticker}). "
         f"Answer questions about this company and its stock concisely. "
         f"Keep responses under 150 words unless more detail is clearly needed."
+        f"{market_context}"
     )
 
     # Build conversation: history (up to 10 prior messages) + current question
