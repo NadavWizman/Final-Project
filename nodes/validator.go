@@ -18,6 +18,11 @@ import (
 	pb "nodes/consensus"
 )
 
+// desyncPrefix marks a rejection caused purely by the Validator lagging behind.
+// The Validator emits "DESYNC head=<n> | ..." and the Leader parses <n> to know
+// which committed blocks to replay. Both sides must agree on this format.
+const desyncPrefix = "DESYNC head="
+
 // ValidatorServer implements the gRPC ConsensusServiceServer interface
 type ValidatorServer struct {
 	pb.UnimplementedConsensusServiceServer
@@ -51,6 +56,11 @@ func (s *ValidatorServer) Propose(ctx context.Context, req *pb.ProposeRequest) (
 	// check 1: chain connectivity
 	if err := s.chain.ValidateBlock(block); err != nil {
 		reason := fmt.Sprintf("chain validation failed: %v", err)
+		// If we are merely behind (missed commits while offline), tell the Leader
+		// where our chain ends so it can replay what we missed and re-ask.
+		if head := s.chain.HeadIndex(); block.Index > head+1 {
+			reason = fmt.Sprintf("%s%d | %s", desyncPrefix, head, reason)
+		}
 		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
 		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
 	}
@@ -103,9 +113,33 @@ func (s *ValidatorServer) Propose(ctx context.Context, req *pb.ProposeRequest) (
 	return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: true}, nil
 }
 
-// Commit receives an approved block and appends it to the local chain
+// Commit receives an approved block and appends it to the local chain.
+// It is also the channel the Leader uses to replay blocks a lagging node missed,
+// so it must be idempotent and must never append a block blindly.
 func (s *ValidatorServer) Commit(ctx context.Context, req *pb.CommitRequest) (*pb.CommitResponse, error) {
 	block := protoToBlock(req.Block)
+
+	// already held — a replayed commit, acknowledge without duplicating
+	if block.Index <= s.chain.HeadIndex() {
+		fmt.Printf("[%s] Block #%d already present | chain length: %d\n",
+			s.cfg.NodeName, block.Index, s.chain.Length())
+		return &pb.CommitResponse{
+			Status:      "already_present",
+			Index:       int32(block.Index),
+			ChainLength: int32(s.chain.Length()),
+		}, nil
+	}
+
+	// the block must connect to our own chain — verify before trusting the Leader
+	if err := s.chain.ValidateBlock(block); err != nil {
+		fmt.Printf("[%s] Commit REJECTED for block #%d: %v\n", s.cfg.NodeName, block.Index, err)
+		return &pb.CommitResponse{
+			Status:      fmt.Sprintf("rejected: %v", err),
+			Index:       int32(block.Index),
+			ChainLength: int32(s.chain.Length()),
+		}, nil
+	}
+
 	s.chain.Append(block)
 	fmt.Printf("[%s] Block #%d committed | chain length: %d\n",
 		s.cfg.NodeName, block.Index, s.chain.Length())

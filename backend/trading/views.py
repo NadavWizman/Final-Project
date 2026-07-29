@@ -105,6 +105,35 @@ class OrderViewSet(viewsets.ModelViewSet):
     # ----------------------------------------------------------------
     # execute_order — called once by the Leader node after gRPC consensus is reached
     # ----------------------------------------------------------------
+    # ----------------------------------------------------------------
+    # reject_order — the Leader reports that consensus could not be reached
+    # ----------------------------------------------------------------
+    @action(detail=True, methods=['post'])
+    def reject_order(self, request, pk=None):
+        # Only the consensus nodes may reject an order, never a regular user
+        if not request.user.is_staff:
+            return Response(
+                {"error": "Only consensus nodes may reject orders."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        reason = str(request.data.get('reason', 'consensus not reached'))[:200]
+
+        with transaction.atomic():
+            order = self.get_object()
+            order.refresh_from_db()
+
+            if order.status != 'SUBMITTED':
+                return Response(
+                    {"error": f"Only SUBMITTED orders can be rejected. Current status: {order.status}"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            order.status = 'REJECTED'
+            order.save()
+
+        return Response({"status": "rejected", "order_id": order.id, "reason": reason})
+
     @action(detail=True, methods=['post'])
     def execute_order(self, request, pk=None):
         execution_price_raw = request.data.get('execution_price')

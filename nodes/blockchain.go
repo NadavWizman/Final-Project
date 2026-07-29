@@ -95,6 +95,27 @@ func (c *Chain) Length() int {
 	return len(c.blocks)
 }
 
+// HeadIndex returns the index of the last block in the chain
+func (c *Chain) HeadIndex() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.blocks[len(c.blocks)-1].Index
+}
+
+// BlocksFrom returns every block with Index >= from, in order.
+// The Leader uses it to replay the blocks a lagging Validator missed.
+func (c *Chain) BlocksFrom(from int) []Block {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []Block
+	for _, b := range c.blocks {
+		if b.Index >= from {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 // Append adds a block to the chain and saves it to disk
 func (c *Chain) Append(b Block) {
 	c.mu.Lock()

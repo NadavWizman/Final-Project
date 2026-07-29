@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -32,18 +34,26 @@ type VoteResponse struct {
 	Reason  string `json:"reason"`
 }
 
+// oracleRetryWindow is how long the Leader keeps retrying an order while the
+// Oracle is unreachable. A brief outage should not kill a valid order, but an
+// Oracle that never returns must not leave the order queued forever.
+const oracleRetryWindow = 60 * time.Second
+
 // runLeader — main loop of the Leader
 func runLeader(cfg Config, chain *Chain) {
 	fmt.Printf("[%s] Leader mode — listening for new orders...\n", cfg.NodeName)
 	fmt.Printf("Validators: %v\n", cfg.ValidatorAddresses)
 
+	// when the Oracle first started failing, per order
+	outages := map[int]time.Time{}
+
 	for {
-		processLeaderCycle(cfg, chain)
+		processLeaderCycle(cfg, chain, outages)
 		time.Sleep(5 * time.Second)
 	}
 }
 
-func processLeaderCycle(cfg Config, chain *Chain) {
+func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 	orders, err := fetchOrders(cfg)
 	if err != nil {
 		log.Printf("[Leader] Error fetching orders: %v", err)
@@ -51,20 +61,43 @@ func processLeaderCycle(cfg Config, chain *Chain) {
 	}
 
 	found := false
+	submitted := map[int]bool{}
 	for _, order := range orders {
 		if order.Status != "SUBMITTED" {
 			continue
 		}
 		found = true
-		fmt.Printf("\n[Leader] Order #%d | %s %s %s\n",
-			order.ID, order.OrderType, order.Quantity, order.Stock)
+		submitted[order.ID] = true
 
 		// step 1: query Oracle
 		oracle, err := FetchPrice(cfg.OracleURL, order.Stock)
 		if err != nil {
-			log.Printf("[Leader] Oracle error: %v", err)
+			since, seen := outages[order.ID]
+			if !seen {
+				// report the outage once — repeating it every cycle adds nothing
+				log.Printf("[Leader] Oracle unreachable for order #%d: %v", order.ID, err)
+				fmt.Printf("[Leader] Retrying order #%d quietly for up to %s\n",
+					order.ID, oracleRetryWindow)
+				outages[order.ID] = time.Now()
+				continue
+			}
+			if waited := time.Since(since); waited >= oracleRetryWindow {
+				fmt.Printf("\n[Leader] Oracle still unreachable after %s — rejecting order #%d\n",
+					waited.Round(time.Second), order.ID)
+				if sendRejectOrder(cfg, order.ID, "price feed unavailable") {
+					fmt.Printf("[Leader] Order #%d marked REJECTED\n", order.ID)
+				}
+				delete(outages, order.ID)
+			}
 			continue
 		}
+		if _, recovered := outages[order.ID]; recovered {
+			fmt.Printf("[Leader] Oracle recovered for order #%d\n", order.ID)
+			delete(outages, order.ID)
+		}
+
+		fmt.Printf("\n[Leader] Order #%d | %s %s %s\n",
+			order.ID, order.OrderType, order.Quantity, order.Stock)
 		fmt.Printf("[Leader] Oracle: $%s\n", oracle.ExecutionPrice)
 
 		// step 2: build proposed block
@@ -86,6 +119,20 @@ func processLeaderCycle(cfg Config, chain *Chain) {
 		for _, addr := range cfg.ValidatorAddresses {
 			vote := askValidator(addr, block, oracle.ExecutionPrice, oracle.Timestamp,
 				order.Signature, order.PublicKey, signedMsg)
+
+			// A node that was offline rejects because its chain is behind, not because
+			// the block is bad. Replay what it missed, then let it vote again.
+			if !vote.Approve {
+				if head, behind := parseDesync(vote.Reason); behind {
+					fmt.Printf("[Leader] %s is behind at #%d (we are at #%d) — replaying %d block(s)\n",
+						vote.NodeID, head, chain.HeadIndex(), chain.HeadIndex()-head)
+					if resyncValidator(addr, chain, head) {
+						vote = askValidator(addr, block, oracle.ExecutionPrice, oracle.Timestamp,
+							order.Signature, order.PublicKey, signedMsg)
+					}
+				}
+			}
+
 			if vote.Approve {
 				approvals++
 				fmt.Printf("[Leader] Approved by %s\n", vote.NodeID)
@@ -110,10 +157,23 @@ func processLeaderCycle(cfg Config, chain *Chain) {
 				}
 			}
 		} else {
-			fmt.Printf("[Leader] Consensus failed for order #%d\n", order.ID)
+			// Mark the order REJECTED so it leaves the SUBMITTED queue — otherwise
+			// the Leader would re-propose the same failing order every cycle forever.
+			fmt.Printf("[Leader] Consensus failed for order #%d (%d/3) — rejecting\n",
+				order.ID, approvals)
+			if sendRejectOrder(cfg, order.ID, fmt.Sprintf("consensus not reached (%d/3 approvals)", approvals)) {
+				fmt.Printf("[Leader] Order #%d marked REJECTED\n", order.ID)
+			}
 		}
 
 		time.Sleep(300 * time.Millisecond)
+	}
+
+	// drop outage records for orders that are no longer awaiting consensus
+	for id := range outages {
+		if !submitted[id] {
+			delete(outages, id)
+		}
 	}
 
 	if !found {
@@ -152,12 +212,54 @@ func askValidator(address string, block Block, oraclePrice, oracleTimestamp,
 	return VoteResponse{NodeID: resp.NodeId, Approve: resp.Approve, Reason: resp.Reason}
 }
 
+// parseDesync reports whether a rejection was caused only by the Validator
+// lagging behind, and if so returns the index its chain currently ends at.
+func parseDesync(reason string) (int, bool) {
+	i := strings.Index(reason, desyncPrefix)
+	if i < 0 {
+		return 0, false
+	}
+	rest := reason[i+len(desyncPrefix):]
+	if end := strings.IndexAny(rest, " |"); end >= 0 {
+		rest = rest[:end]
+	}
+	head, err := strconv.Atoi(rest)
+	if err != nil {
+		return 0, false
+	}
+	return head, true
+}
+
+// resyncValidator replays every committed block the Validator missed, in order,
+// so it can rejoin consensus instead of rejecting every future proposal.
+func resyncValidator(address string, chain *Chain, validatorHead int) bool {
+	missing := chain.BlocksFrom(validatorHead + 1)
+	if len(missing) == 0 {
+		return false
+	}
+	for _, b := range missing {
+		if !sendCommit(address, b) {
+			fmt.Printf("[Leader] Resync of %s failed at block #%d\n", address, b.Index)
+			return false
+		}
+	}
+	fmt.Printf("[Leader] Resync complete — %s caught up to #%d\n", address, chain.HeadIndex())
+	return true
+}
+
 // broadcastCommit sends a Commit RPC to a Validator to finalize the block
 func broadcastCommit(address string, block Block) {
+	if sendCommit(address, block) {
+		fmt.Printf("[Leader] Block broadcast to %s succeeded\n", address)
+	}
+}
+
+// sendCommit delivers one block to a Validator and reports whether it now holds it
+func sendCommit(address string, block Block) bool {
 	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Printf("[Leader] Commit connection to %s failed: %v", address, err)
-		return
+		return false
 	}
 	defer conn.Close()
 
@@ -165,12 +267,16 @@ func broadcastCommit(address string, block Block) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = client.Commit(ctx, &pb.CommitRequest{Block: blockToProto(block)})
+	resp, err := client.Commit(ctx, &pb.CommitRequest{Block: blockToProto(block)})
 	if err != nil {
 		log.Printf("[Leader] Commit RPC to %s failed: %v", address, err)
-		return
+		return false
 	}
-	fmt.Printf("[Leader] Block broadcast to %s succeeded\n", address)
+	if resp.Status != "committed" && resp.Status != "already_present" {
+		log.Printf("[Leader] %s refused block #%d: %s", address, block.Index, resp.Status)
+		return false
+	}
+	return true
 }
 
 // blockToProto converts the local Block struct to a proto Block message
@@ -189,6 +295,31 @@ func blockToProto(b Block) *pb.Block {
 		PublicKey: b.PublicKey,
 		Hash:      b.Hash,
 	}
+}
+
+// sendRejectOrder tells Django that consensus failed, so the order stops being
+// re-proposed on every cycle and shows as REJECTED to the user.
+func sendRejectOrder(cfg Config, orderID int, reason string) bool {
+	body, _ := json.Marshal(map[string]string{"reason": reason})
+
+	url := fmt.Sprintf("%s/orders/%d/reject_order/", cfg.DjangoURL, orderID)
+	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req.SetBasicAuth(cfg.NodeName, cfg.NodePass)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("[Leader] Reject request failed: %v", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("[Leader] Reject rejected by Django (%d): %s", resp.StatusCode, string(respBody))
+		return false
+	}
+	return true
 }
 
 // sendExecuteOrder sends the POST request to Django — stays as HTTP

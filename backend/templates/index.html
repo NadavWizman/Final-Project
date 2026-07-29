@@ -1168,8 +1168,8 @@ function renderTrade() {
     <div id="trade-chat-panel"></div>
     <div id="trade-news-panel"></div>`;
 
-  if (_savedChat !== null) document.getElementById('trade-chat-panel').innerHTML = _savedChat;
-  if (_savedNews !== null) document.getElementById('trade-news-panel').innerHTML = _savedNews;
+  if (_savedChat !== null) { document.getElementById('trade-chat-panel').innerHTML = _savedChat; document.querySelector('#trade-chat-panel > div')?.style.setProperty('animation','none'); }
+  if (_savedNews !== null) { document.getElementById('trade-news-panel').innerHTML = _savedNews; document.querySelector('#trade-news-panel > div')?.style.setProperty('animation','none'); }
   updateTradePriceCard();
   updateNewsPanel('trade-news-panel', S.tradeStock);
   renderChatPanel('trade-chat-panel', S.tradeStock);
@@ -2653,8 +2653,8 @@ function renderCFD() {
     <div id="cfd-chat-panel"></div>
     <div id="cfd-news-panel"></div>
     ${closedHtml}`;
-  if (_savedChat !== null) document.getElementById('cfd-chat-panel').innerHTML = _savedChat;
-  if (_savedNews !== null) document.getElementById('cfd-news-panel').innerHTML = _savedNews;
+  if (_savedChat !== null) { document.getElementById('cfd-chat-panel').innerHTML = _savedChat; document.querySelector('#cfd-chat-panel > div')?.style.setProperty('animation','none'); }
+  if (_savedNews !== null) { document.getElementById('cfd-news-panel').innerHTML = _savedNews; document.querySelector('#cfd-news-panel > div')?.style.setProperty('animation','none'); }
   updateCFDPriceCard();
   updateNewsPanel('cfd-news-panel', S.cfdStock);
   renderChatPanel('cfd-chat-panel', S.cfdStock);
@@ -3080,8 +3080,8 @@ function renderOptions() {
     ${content}
     <div id="opt-chat-panel"></div>
     <div id="opt-news-panel"></div>`;
-  if (_savedChat !== null) document.getElementById('opt-chat-panel').innerHTML = _savedChat;
-  if (_savedNews !== null) document.getElementById('opt-news-panel').innerHTML = _savedNews;
+  if (_savedChat !== null) { document.getElementById('opt-chat-panel').innerHTML = _savedChat; document.querySelector('#opt-chat-panel > div')?.style.setProperty('animation','none'); }
+  if (_savedNews !== null) { document.getElementById('opt-news-panel').innerHTML = _savedNews; document.querySelector('#opt-news-panel > div')?.style.setProperty('animation','none'); }
   updateNewsPanel('opt-news-panel', S.optTicker);
   renderChatPanel('opt-chat-panel', S.optTicker);
 }

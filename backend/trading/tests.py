@@ -109,9 +109,14 @@ class PortfolioTests(TestCase):
         self.assertEqual(r.data['holdings'], [])
 
     def test_portfolio_requires_auth(self):
+        # SilentBasicAuthentication returns no WWW-Authenticate header so browsers
+        # never show their native credential dialog. DRF answers 403 rather than
+        # 401 when the authenticator supplies no header — that is the intended
+        # behaviour here, and the response must carry no challenge.
         anon = APIClient()
         r = anon.get('/api/portfolio/')
-        self.assertEqual(r.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertNotIn('WWW-Authenticate', r.headers)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -311,6 +316,7 @@ class OrderExecutionTests(TestCase):
         order = Order.objects.get(pk=self.order_id)
         self.assertEqual(order.status, 'REJECTED')
 
+
     def test_execute_limit_price_exceeded_rejects_buy(self):
         # Create a BUY order with limit_price = $50
         r = self.user_client.post('/api/orders/', {
@@ -372,3 +378,52 @@ class OrderExecutionTests(TestCase):
             'timestamp': _fresh_ts(),
         }, format='json')
         self.assertEqual(r2.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class OrderConsensusRejectionTests(TestCase):
+    """The Leader marks an order REJECTED when consensus cannot be reached,
+    so it leaves the SUBMITTED queue instead of being re-proposed forever."""
+
+    def setUp(self):
+        self.user = make_user()
+        make_stock('AAPL')
+        self.node = User.objects.create_user(username='node1', password='node1pass', is_staff=True)
+        self.node_client = APIClient()
+        self.node_client.force_authenticate(user=self.node)
+        self.user_client = APIClient()
+        self.user_client.force_authenticate(user=self.user)
+
+        r = self.user_client.post('/api/orders/', {
+            'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '10', 'nonce': 'rej001'
+        }, format='json')
+        self.order_id = r.data['id']
+        self.user_client.post(f'/api/orders/{self.order_id}/submit/')
+
+    def test_node_can_reject_after_failed_consensus(self):
+        r = self.node_client.post(f'/api/orders/{self.order_id}/reject_order/', {
+            'reason': 'consensus not reached (1/3 approvals)',
+        }, format='json')
+        self.assertEqual(r.status_code, 200)
+        order = Order.objects.get(pk=self.order_id)
+        self.assertEqual(order.status, 'REJECTED')
+
+    def test_rejection_leaves_balance_untouched(self):
+        self.node_client.post(f'/api/orders/{self.order_id}/reject_order/', {}, format='json')
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal('10000.00'))
+        self.assertFalse(Position.objects.filter(user=self.user).exists())
+
+    def test_regular_user_cannot_reject_orders(self):
+        r = self.user_client.post(f'/api/orders/{self.order_id}/reject_order/', {}, format='json')
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        order = Order.objects.get(pk=self.order_id)
+        self.assertEqual(order.status, 'SUBMITTED')
+
+    def test_cannot_reject_an_already_confirmed_order(self):
+        self.node_client.post(f'/api/orders/{self.order_id}/execute_order/', {
+            'execution_price': '100.00', 'timestamp': _fresh_ts(),
+        }, format='json')
+        r = self.node_client.post(f'/api/orders/{self.order_id}/reject_order/', {}, format='json')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        order = Order.objects.get(pk=self.order_id)
+        self.assertEqual(order.status, 'CONFIRMED')
