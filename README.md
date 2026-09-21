@@ -65,12 +65,14 @@ DRAFT → SUBMITTED → CONFIRMED
    and sends a `Propose` gRPC to both Validators.  
    Each Validator independently:
    - checks chain continuity (index + prev_hash) against **its own** chain
-   - queries the Oracle and verifies price is within 1 % of the Leader's price
+   - queries the Oracle and verifies the **block's** price is within 1 % of its own
    - checks the price is less than 60 seconds old
-   - verifies the user's ECDSA signature
-4. **≥ 2/3 approve** → Leader calls `/execute_order/` on Django, broadcasts `Commit` to Validators  
+   - verifies the ECDSA signature *and* that the signed order matches the block
+4. **≥ 2/3 approve** → Leader calls `/execute_order/` on Django, which independently
+   re-verifies the price against the Oracle, then broadcasts `Commit` to Validators  
 5. **CONFIRMED** — balances updated, block appended to all three chains  
-6. **REJECTED** — limit price violated, insufficient funds, or consensus not reached
+6. **REJECTED** — limit price violated, insufficient funds, price fails Django's
+   re-verification, or consensus not reached
 
 An order never stays queued indefinitely. If consensus fails, the Leader calls
 `/reject_order/` so the order leaves the queue instead of being re-proposed forever.
@@ -87,11 +89,32 @@ it to vote again, so it rejoins consensus automatically instead of rejecting eve
 future proposal. Validators also verify a block on `Commit`, not just on `Propose`,
 so a block that would leave a gap is refused rather than appended blindly.
 
+**Validators verify the block, not the envelope.** Each `Propose` carries the block
+alongside a signed-message and oracle-price envelope. A Validator checks the *block
+that will actually be committed*: its price must be within 1 % of the Validator's own
+Oracle lookup, and the signed order's trade fields (`order_type`, `quantity`, `stock`)
+must match the block. A missing signature is a rejection, not a skip. This closes the
+gap where a leader could keep an honest envelope while committing a forged block.
+
+**Authenticated channel.** Every node-to-node `Propose`/`Commit` call carries a shared
+cluster credential (`CLUSTER_SECRET`); a caller that cannot present it is rejected
+`Unauthenticated`, so a stranger who can merely reach the port cannot request votes or
+inject blocks.
+
+**Independent settlement price.** Django is the component that moves money, so it does
+not take the Leader's word for the execution price. `execute_order` re-queries the
+Oracle and rejects a price that diverges more than 2 % from the live market, failing
+closed if the price cannot be verified — closing the vector where a compromised leader
+gets an honest price approved by consensus but settles a real order at another.
+
 **What consensus protects — and what it does not.** Worth being precise about:
 
 | Attack | Caught? | Why |
 |--------|---------|-----|
 | Leader reports a manipulated price | ✅ | Validators query the Oracle themselves; > 1 % divergence is rejected |
+| Leader forges the block (honest envelope, manipulated block) | ✅ | Validators verify the committed block's price and that the signed order matches it |
+| Stranger sends blocks to a Validator's port | ✅ | Node-to-node gRPC requires the shared cluster credential |
+| Leader settles a real order at a manipulated price | ✅ | Django independently re-verifies the price against the Oracle before settling |
 | Order fields altered in the database (`quantity`, `stock`, `order_type`, `nonce`) | ✅ | Those fields are covered by the user's ECDSA signature |
 | Forged or replaced signature | ✅ | Verified independently by each Validator |
 | Tampering with committed chain history | ✅ | Each block hashes the previous one |
@@ -101,8 +124,10 @@ so a block that would leave a gap is refused rather than appended blindly.
 | All three nodes colluding | ❌ | 2/3 majority assumes at most one faulty node |
 
 In short: consensus protects the **integrity of the order as the user authorized it**
-and the **price it executes at**. It does not make Django's database tamper-proof —
-Django remains the trusted source of truth for balances and holdings.
+and the **price it executes at** — verified independently at the Validators, on the
+authenticated channel, and again at Django before settlement. It does not make Django's
+database tamper-proof: Django remains the trusted source of truth for balances and
+holdings.
 
 ---
 
@@ -184,7 +209,7 @@ Open **http://127.0.0.1:8000** in your browser.
 
 ## Demonstrating Consensus
 
-Four ways to show the system refusing a trade it should not execute.
+Several ways to show the system refusing a trade it should not execute.
 
 **1. Limit price violation** — a business rule, enforced by Django after consensus.  
 Place a BUY with a limit far below market. The nodes approve the block (it is
@@ -224,6 +249,29 @@ o.save()                   # signature is NOT regenerated
 
 Restart the Leader: both Validators report `ECDSA verification failed` → **1/3**.
 
+**5. Malicious proposer — a forged block from the network.**  
+`nodes/attacker/` is a stand-in for a compromised leader. It talks gRPC directly to
+the running Validators and asks them to vote on a block committing 1000 shares at
+$1.00 alongside an honestly-signed order for 1 share.
+
+```bash
+# with the Oracle and validators running:
+cd nodes
+
+# an outsider with no cluster credential
+go run ./attacker
+#   → rejected Unauthenticated — blocked at the door
+
+# a compromised insider that holds the credential
+CLUSTER_SECRET=tradedesk-dev-cluster-secret go run ./attacker
+#   → rejected: price divergence / signed order does not match block
+```
+
+Both are rejected: the authenticated channel stops the stranger, and the block
+cross-check stops the forgery even when the caller holds the credential. The tool
+doubles as a security regression test — if a future change reopens the hole, it goes
+back to being approved.
+
 ---
 
 ## Environment Variables
@@ -235,7 +283,7 @@ Restart the Leader: both Validators report `ECDSA verification failed` → **1/3
 | `SECRET_KEY` | insecure dev value | Django secret key — **change in production** |
 | `DEBUG` | `True` | Set to `False` in production |
 | `ALLOWED_HOSTS` | `127.0.0.1,localhost` | Comma-separated allowed host names |
-| `ORACLE_URL` | `127.0.0.1:8001` | Oracle gRPC address used by the price proxy |
+| `ORACLE_URL` | `127.0.0.1:8001` | Oracle gRPC address used by the price proxy and settlement price re-verification |
 | `GEMINI_API_KEY` | *(empty)* | Enables AI news & chat — get a free key at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
 
 ### Nodes (`nodes/.env.example`)
@@ -249,6 +297,7 @@ Restart the Leader: both Validators report `ECDSA verification failed` → **1/3
 | `DJANGO_URL` | `http://127.0.0.1:8000/api` | Backend API base URL |
 | `ORACLE_URL` | `127.0.0.1:8001` | Oracle gRPC address |
 | `VALIDATOR_ADDRESSES` | `localhost:9002,localhost:9003` | Comma-separated validator addresses (Leader only) |
+| `CLUSTER_SECRET` | `tradedesk-dev-cluster-secret` | Shared credential for node-to-node gRPC — all nodes must match; **change it for any real deployment** |
 
 ### Rogue Oracle (`oracle_service/rogue_oracle.py`)
 
@@ -283,12 +332,14 @@ cd backend
 python3 manage.py test trading --verbosity=2
 ```
 
-45 tests, all passing, covering: crypto utilities, registration, portfolio, deposits,
+50 tests, all passing, covering: crypto utilities, registration, portfolio, deposits,
 order creation (whitelist, nonce, quantity validation), order submission
 (ECDSA signature), full order execution (BUY/SELL, limit price, balance checks,
 stale timestamp), consensus rejection (node-only permission, balance left
 untouched, already-confirmed orders protected), partial CFD closes (proportional
-margin, LONG/SHORT P&L, quantity capping), and SL/TP consensus routing.
+margin, LONG/SHORT P&L, quantity capping), SL/TP consensus routing, and settlement
+price re-verification (honest price settles, divergent price rejected, Oracle
+outage fails closed).
 
 > **Note on 403 vs 401:** unauthenticated requests receive `403`, not `401`.
 > `trading/auth.py` defines `SilentBasicAuthentication`, which omits the
