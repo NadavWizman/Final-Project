@@ -181,24 +181,3 @@ class OptionPosition(models.Model):
 
     def __str__(self):
         return f"Option {self.contract_type} {self.stock_id} @{self.strike} exp {self.expiry}"
-
-
-# 8. Node consensus approvals table
-class OrderApproval(models.Model):
-    # link to the specific order
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='approvals')
-    # name of the node that approved (i.e. the username it authenticated with)
-    node_name = models.CharField(max_length=50)
-    # price this node received from the oracle
-    execution_price = models.DecimalField(max_digits=15, decimal_places=4)
-    timestamp = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        # prevents the same node from voting twice on the same order
-        unique_together = ('order', 'node_name')
-        indexes = [
-            models.Index(fields=['order'], name='approval_order_idx'),
-        ]
-
-    def __str__(self):
-        return f"Node {self.node_name} approved Order {self.order.id} at {self.execution_price}"

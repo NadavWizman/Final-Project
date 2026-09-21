@@ -14,8 +14,13 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	pb "nodes/consensus"
 )
+
+// clusterSecret is the shared credential the Leader presents on every node-to-node
+// call. Set once in runLeader from config; the validators verify it.
+var clusterSecret string
 
 // ProposeRequest — what the Leader sends to Validators (kept for reference, proto handles the wire)
 type ProposeRequest struct {
@@ -43,6 +48,7 @@ const oracleRetryWindow = 60 * time.Second
 func runLeader(cfg Config, chain *Chain) {
 	fmt.Printf("[%s] Leader mode — listening for new orders...\n", cfg.NodeName)
 	fmt.Printf("Validators: %v\n", cfg.ValidatorAddresses)
+	clusterSecret = cfg.ClusterSecret
 
 	// when the Oracle first started failing, per order
 	outages := map[int]time.Time{}
@@ -195,6 +201,7 @@ func askValidator(address string, block Block, oraclePrice, oracleTimestamp,
 	client := pb.NewConsensusServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = metadata.AppendToOutgoingContext(ctx, authTokenKey, clusterSecret)
 
 	resp, err := client.Propose(ctx, &pb.ProposeRequest{
 		Block:           blockToProto(block),
@@ -266,6 +273,7 @@ func sendCommit(address string, block Block) bool {
 	client := pb.NewConsensusServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = metadata.AppendToOutgoingContext(ctx, authTokenKey, clusterSecret)
 
 	resp, err := client.Commit(ctx, &pb.CommitRequest{Block: blockToProto(block)})
 	if err != nil {

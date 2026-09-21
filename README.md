@@ -45,7 +45,10 @@ node that restarts resumes from where it left off.
 | **Consensus** | Every order signed with ECDSA and approved by ≥ 2 of 3 independent nodes |
 
 A background thread (`trading/sltp.py`, started from `trading/apps.py`) polls every
-15 seconds and triggers any SL/TP level whose price has been reached.
+15 seconds and triggers any SL/TP level whose price has been reached. Stock and CFD
+triggers both create a **signed order at status `SUBMITTED`**, so an automatic close
+goes through node consensus exactly like a manual trade. Option expiry settles
+directly — it is an expiry event rather than a trade the user is authorising.
 
 ---
 
@@ -280,11 +283,12 @@ cd backend
 python3 manage.py test trading --verbosity=2
 ```
 
-36 tests, all passing, covering: crypto utilities, registration, portfolio, deposits,
+45 tests, all passing, covering: crypto utilities, registration, portfolio, deposits,
 order creation (whitelist, nonce, quantity validation), order submission
 (ECDSA signature), full order execution (BUY/SELL, limit price, balance checks,
-stale timestamp), and consensus rejection (node-only permission, balance left
-untouched, already-confirmed orders protected).
+stale timestamp), consensus rejection (node-only permission, balance left
+untouched, already-confirmed orders protected), partial CFD closes (proportional
+margin, LONG/SHORT P&L, quantity capping), and SL/TP consensus routing.
 
 > **Note on 403 vs 401:** unauthenticated requests receive `403`, not `401`.
 > `trading/auth.py` defines `SilentBasicAuthentication`, which omits the

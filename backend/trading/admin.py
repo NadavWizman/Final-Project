@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Stock, Wallet, Position, Order, OrderApproval, UserProfile
+from .models import Stock, Wallet, Position, Order, UserProfile
 
 
 @admin.register(Stock)
@@ -32,14 +32,6 @@ class OrderAdmin(admin.ModelAdmin):
     readonly_fields = ('signature', 'nonce', 'created_at', 'updated_at')
     ordering       = ('-created_at',)
     date_hierarchy = 'created_at'
-
-
-@admin.register(OrderApproval)
-class OrderApprovalAdmin(admin.ModelAdmin):
-    list_display  = ('order', 'node_name', 'execution_price', 'timestamp')
-    list_filter   = ('node_name',)
-    search_fields = ('order__id', 'node_name')
-    ordering      = ('-timestamp',)
 
 
 @admin.register(UserProfile)

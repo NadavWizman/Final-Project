@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -15,6 +17,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	pb "nodes/consensus"
 )
 
@@ -39,11 +44,33 @@ func runValidator(cfg Config, chain *Chain) {
 		log.Fatalf("[%s] Failed to listen: %v", cfg.NodeName, err)
 	}
 
-	srv := grpc.NewServer()
+	// Every RPC must present the shared cluster credential. Without this the
+	// Propose/Commit endpoints are open to anyone who can reach the port — a
+	// stranger on the network could ask for votes or inject blocks directly.
+	srv := grpc.NewServer(grpc.UnaryInterceptor(clusterAuthInterceptor(cfg.ClusterSecret)))
 	pb.RegisterConsensusServiceServer(srv, &ValidatorServer{cfg: cfg, chain: chain})
 
-	fmt.Printf("[%s] gRPC server ready\n", cfg.NodeName)
+	fmt.Printf("[%s] gRPC server ready (authenticated)\n", cfg.NodeName)
 	log.Fatal(srv.Serve(lis))
+}
+
+// authTokenKey is the gRPC metadata key carrying the shared cluster credential.
+const authTokenKey = "auth-token"
+
+// clusterAuthInterceptor rejects any RPC that does not present the shared secret.
+func clusterAuthInterceptor(secret string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
+		handler grpc.UnaryHandler) (any, error) {
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "missing cluster credential")
+		}
+		tokens := md.Get(authTokenKey)
+		if len(tokens) == 0 || subtle.ConstantTimeCompare([]byte(tokens[0]), []byte(secret)) != 1 {
+			return nil, status.Error(codes.Unauthenticated, "invalid cluster credential")
+		}
+		return handler(ctx, req)
+	}
 }
 
 // Propose receives a block proposal from the Leader, validates it, and returns a vote
@@ -85,28 +112,58 @@ func (s *ValidatorServer) Propose(ctx context.Context, req *pb.ProposeRequest) (
 		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
 	}
 
-	// check 4: price divergence < 1%
-	proposedPrice, err1 := strconv.ParseFloat(req.OraclePrice, 64)
+	// check 4: the COMMITTED price must be within 1% of my own oracle.
+	// We validate block.Price — the value that will be written to the chain —
+	// not req.OraclePrice. A dishonest leader can put an honest price in the
+	// envelope while committing a forged price in the block; checking only the
+	// envelope would wave that through.
+	committedPrice, err1 := strconv.ParseFloat(block.Price, 64)
 	myPrice, err2 := strconv.ParseFloat(myOracle.ExecutionPrice, 64)
-	if err1 == nil && err2 == nil && myPrice > 0 {
-		divergence := math.Abs(proposedPrice-myPrice) / myPrice * 100
-		if divergence > 1.0 {
-			reason := fmt.Sprintf("price divergence %.2f%% > 1%% (proposed=%.2f, mine=%.2f)",
-				divergence, proposedPrice, myPrice)
-			fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-			return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
-		}
+	if err1 != nil || err2 != nil || myPrice <= 0 {
+		reason := fmt.Sprintf("unusable price (block=%q, mine=%q)", block.Price, myOracle.ExecutionPrice)
+		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
+		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
+	}
+	if divergence := math.Abs(committedPrice-myPrice) / myPrice * 100; divergence > 1.0 {
+		reason := fmt.Sprintf("price divergence %.2f%% > 1%% (block=%.2f, mine=%.2f)",
+			divergence, committedPrice, myPrice)
+		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
+		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
 	}
 
-	// check 5: ECDSA signature verification
-	if req.Signature != "" && req.PublicKey != "" && req.SignedMessage != "" {
-		if err := verifyECDSA(req.PublicKey, req.SignedMessage, req.Signature); err != nil {
-			reason := fmt.Sprintf("ECDSA verification failed: %v", err)
-			fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-			return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
-		}
-		fmt.Printf("[%s] ECDSA signature valid\n", s.cfg.NodeName)
+	// check 5: ECDSA signature — present, valid, AND covering THIS block.
+	// The signature material must exist (a missing signature is a rejection, not
+	// a skip), and the signed order's trade fields must match the block we are
+	// asked to commit. This binds the signature to the payload instead of to a
+	// detached envelope the leader controls.
+	if req.Signature == "" || req.PublicKey == "" || req.SignedMessage == "" {
+		reason := "missing signature material"
+		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
+		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
 	}
+	var signed struct {
+		OrderType string `json:"order_type"`
+		Quantity  string `json:"quantity"`
+		Stock     string `json:"stock"`
+	}
+	if err := json.Unmarshal([]byte(req.SignedMessage), &signed); err != nil {
+		reason := fmt.Sprintf("unparseable signed message: %v", err)
+		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
+		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
+	}
+	if signed.OrderType != block.OrderType || signed.Quantity != block.Quantity || signed.Stock != block.Stock {
+		reason := fmt.Sprintf("signed order does not match block: signed %s %s %s, block %s %s %s",
+			signed.OrderType, signed.Quantity, signed.Stock,
+			block.OrderType, block.Quantity, block.Stock)
+		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
+		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
+	}
+	if err := verifyECDSA(req.PublicKey, req.SignedMessage, req.Signature); err != nil {
+		reason := fmt.Sprintf("ECDSA verification failed: %v", err)
+		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
+		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
+	}
+	fmt.Printf("[%s] ECDSA signature valid and matches block\n", s.cfg.NodeName)
 
 	fmt.Printf("[%s] APPROVE block #%d (oracle=$%s, mine=$%s)\n",
 		s.cfg.NodeName, block.Index, req.OraclePrice, myOracle.ExecutionPrice)

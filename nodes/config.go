@@ -14,6 +14,7 @@ type Config struct {
 	IsLeader           bool
 	ValidatorAddresses []string // addresses of the other nodes (used by Leader)
 	ListenPort         string   // HTTP server port (used by Validators)
+	ClusterSecret      string   // shared credential for node-to-node gRPC auth
 }
 
 func LoadConfig() Config {
@@ -58,6 +59,13 @@ func LoadConfig() Config {
 		oracleURL = "127.0.0.1:8001"
 	}
 
+	// Shared credential presented on every node-to-node gRPC call. All nodes must
+	// agree on it; a caller that cannot present it is not part of the cluster.
+	clusterSecret := os.Getenv("CLUSTER_SECRET")
+	if clusterSecret == "" {
+		clusterSecret = "tradedesk-dev-cluster-secret"
+	}
+
 	return Config{
 		NodeName:           name,
 		NodePass:           pass,
@@ -66,5 +74,6 @@ func LoadConfig() Config {
 		IsLeader:           isLeader,
 		ValidatorAddresses: validators,
 		ListenPort:         listenPort,
+		ClusterSecret:      clusterSecret,
 	}
 }

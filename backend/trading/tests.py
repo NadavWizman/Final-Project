@@ -4,8 +4,25 @@ from django.contrib.auth.models import User
 from rest_framework.test import APIClient
 from rest_framework import status
 
-from .models import Order, Wallet, Position, Stock, UserProfile, OrderApproval
+from unittest.mock import patch, MagicMock
+
+from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel
 from .crypto_utils import generate_key_pair, sign_order, verify_signature, _build_message
+
+
+def _patch_oracle(test, price='100.00', tolerance='1000'):
+    """Neutralise execute_order's independent price re-verification for tests that
+    are exercising other logic. Mocks the Oracle to a fixed price and widens the
+    tolerance so any execution price passes. Price-verification behaviour has its
+    own dedicated tests (OrderPriceVerificationTests)."""
+    p1 = patch('trading.views._get_oracle_stub')
+    factory = p1.start(); test.addCleanup(p1.stop)
+    stub = MagicMock()
+    stub.GetPrice.return_value = MagicMock(execution_price=str(price))
+    factory.return_value = (stub, MagicMock())
+
+    p2 = patch('trading.views.ORACLE_PRICE_TOLERANCE', Decimal(str(tolerance)))
+    p2.start(); test.addCleanup(p2.stop)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -276,6 +293,7 @@ class OrderExecutionTests(TestCase):
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
         self.user_client.force_authenticate(user=self.user)
+        _patch_oracle(self)
 
         r = self.user_client.post('/api/orders/', {
             'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '10', 'nonce': 'exec001'
@@ -392,6 +410,7 @@ class OrderConsensusRejectionTests(TestCase):
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
         self.user_client.force_authenticate(user=self.user)
+        _patch_oracle(self)
 
         r = self.user_client.post('/api/orders/', {
             'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '10', 'nonce': 'rej001'
@@ -427,3 +446,213 @@ class OrderConsensusRejectionTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
         order = Order.objects.get(pk=self.order_id)
         self.assertEqual(order.status, 'CONFIRMED')
+
+
+class CFDPartialCloseTests(TestCase):
+    """CFD_CLOSE honours the order quantity so an SL/TP level can close part of
+    a position. A manual close sends the full quantity and closes everything."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.stock = make_stock('AAPL')
+        self.node = User.objects.create_user(username='node1', password='node1pass', is_staff=True)
+        self.node_client = APIClient()
+        self.node_client.force_authenticate(user=self.node)
+        self.user_client = APIClient()
+        self.user_client.force_authenticate(user=self.user)
+        _patch_oracle(self)
+
+        # entry $100 x 10 shares at 10x leverage -> $1000 notional, $100 margin
+        self.pos = CFDPosition.objects.create(
+            user=self.user, stock=self.stock, direction='LONG',
+            quantity=Decimal('10'), entry_price=Decimal('100'),
+            leverage=10, margin_used=Decimal('100'),
+        )
+        self.user.wallet.balance = Decimal('9900.00')   # margin already deducted
+        self.user.wallet.save()
+
+    def _close(self, qty, price, nonce):
+        r = self.user_client.post('/api/orders/', {
+            'stock': 'AAPL', 'order_type': 'SELL', 'trade_type': 'CFD_CLOSE',
+            'quantity': str(qty), 'nonce': nonce, 'position_id': self.pos.id,
+        }, format='json')
+        oid = r.data['id']
+        self.user_client.post(f'/api/orders/{oid}/submit/')
+        return self.node_client.post(f'/api/orders/{oid}/execute_order/', {
+            'execution_price': str(price), 'timestamp': _fresh_ts(),
+        }, format='json')
+
+    def test_partial_close_returns_proportional_margin_and_keeps_position_open(self):
+        # close 4 of 10 at $110 -> margin 40 back, P&L (110-100)*4 = 40
+        r = self._close(4, '110.00', 'cfdpart1')
+        self.assertEqual(r.status_code, 200)
+        self.pos.refresh_from_db()
+        self.assertTrue(self.pos.is_open)
+        self.assertEqual(self.pos.quantity, Decimal('6.0000'))
+        self.assertEqual(self.pos.margin_used, Decimal('60.0000'))
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal('9980.00'))
+
+    def test_closing_the_remainder_marks_position_closed(self):
+        self._close(4, '110.00', 'cfdpart2')
+        r = self._close(6, '110.00', 'cfdpart3')
+        self.assertEqual(r.status_code, 200)
+        self.pos.refresh_from_db()
+        self.assertFalse(self.pos.is_open)
+        self.assertEqual(self.pos.quantity, Decimal('0.0000'))
+        self.assertEqual(self.pos.close_price, Decimal('110.0000'))
+        # total P&L across both closes: (110-100)*10 = 100
+        self.assertEqual(self.pos.pnl, Decimal('100.0000'))
+
+    def test_close_quantity_is_capped_at_position_size(self):
+        r = self._close(50, '110.00', 'cfdpart4')
+        self.assertEqual(r.status_code, 200)
+        self.pos.refresh_from_db()
+        self.assertFalse(self.pos.is_open)
+        self.assertEqual(self.pos.quantity, Decimal('0.0000'))
+
+    def test_short_close_profits_when_price_falls(self):
+        short = CFDPosition.objects.create(
+            user=self.user, stock=self.stock, direction='SHORT',
+            quantity=Decimal('5'), entry_price=Decimal('100'),
+            leverage=10, margin_used=Decimal('50'),
+        )
+        r = self.user_client.post('/api/orders/', {
+            'stock': 'AAPL', 'order_type': 'SELL', 'trade_type': 'CFD_CLOSE',
+            'quantity': '5', 'nonce': 'cfdshort1', 'position_id': short.id,
+        }, format='json')
+        oid = r.data['id']
+        self.user_client.post(f'/api/orders/{oid}/submit/')
+        self.node_client.post(f'/api/orders/{oid}/execute_order/', {
+            'execution_price': '90.00', 'timestamp': _fresh_ts(),
+        }, format='json')
+        short.refresh_from_db()
+        # SHORT profits as price falls: (100-90)*5 = 50
+        self.assertEqual(short.pnl, Decimal('50.0000'))
+
+
+class CFDStopLossRoutingTests(TestCase):
+    """A CFD stop-loss now creates a signed order for consensus instead of
+    settling straight to the wallet."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.stock = make_stock('AAPL')
+        self.pos = CFDPosition.objects.create(
+            user=self.user, stock=self.stock, direction='LONG',
+            quantity=Decimal('10'), entry_price=Decimal('100'),
+            leverage=10, margin_used=Decimal('100'),
+        )
+        self.level = SLTPLevel.objects.create(
+            cfd_position=self.pos, level_type='SL',
+            price=Decimal('95'), quantity=Decimal('4'),
+        )
+
+    def _run_monitor_at(self, price):
+        from . import sltp
+        with patch.object(sltp, '_oracle_price', return_value=Decimal(price)):
+            sltp._check_cfds()
+
+    def test_trigger_creates_submitted_cfd_close_order(self):
+        self._run_monitor_at('90.00')       # below the $95 stop
+        order = Order.objects.get(trade_type='CFD_CLOSE', user=self.user)
+        self.assertEqual(order.status, 'SUBMITTED')
+        self.assertEqual(order.quantity, Decimal('4.0000'))
+        self.assertEqual(order.position_id, self.pos.id)
+        self.assertIsNotNone(order.signature)
+
+    def test_order_signature_verifies(self):
+        self._run_monitor_at('90.00')
+        order = Order.objects.get(trade_type='CFD_CLOSE', user=self.user)
+        self.assertTrue(verify_signature(
+            self.user.profile.ecdsa_public_key,
+            {'stock': 'AAPL', 'order_type': 'SELL',
+             'quantity': str(order.quantity), 'nonce': order.nonce},
+            order.signature,
+        ))
+
+    def test_wallet_and_position_untouched_until_consensus_executes(self):
+        before = self.user.wallet.balance
+        self._run_monitor_at('90.00')
+        self.user.wallet.refresh_from_db()
+        self.pos.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, before)
+        self.assertEqual(self.pos.quantity, Decimal('10.0000'))
+        self.assertTrue(self.pos.is_open)
+
+    def test_level_marked_triggered_so_it_does_not_fire_twice(self):
+        self._run_monitor_at('90.00')
+        self.level.refresh_from_db()
+        self.assertTrue(self.level.triggered)
+        self._run_monitor_at('90.00')       # monitor runs again 15s later
+        self.assertEqual(Order.objects.filter(trade_type='CFD_CLOSE').count(), 1)
+
+    def test_level_does_not_trigger_above_stop_price(self):
+        self._run_monitor_at('99.00')
+        self.assertFalse(Order.objects.filter(trade_type='CFD_CLOSE').exists())
+        self.level.refresh_from_db()
+        self.assertFalse(self.level.triggered)
+
+
+class OrderPriceVerificationTests(TestCase):
+    """Django independently re-verifies the execution price against the Oracle
+    before settling, so a leader cannot settle at a price consensus never saw."""
+
+    def setUp(self):
+        self.user = make_user()
+        make_stock('AAPL')
+        self.node = User.objects.create_user(username='node1', password='node1pass', is_staff=True)
+        self.node_client = APIClient()
+        self.node_client.force_authenticate(user=self.node)
+        self.user_client = APIClient()
+        self.user_client.force_authenticate(user=self.user)
+
+        r = self.user_client.post('/api/orders/', {
+            'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '1', 'nonce': 'pv001'
+        }, format='json')
+        self.order_id = r.data['id']
+        self.user_client.post(f'/api/orders/{self.order_id}/submit/')
+
+    def _oracle(self, price):
+        stub = MagicMock()
+        stub.GetPrice.return_value = MagicMock(execution_price=str(price))
+        return patch('trading.views._get_oracle_stub', return_value=(stub, MagicMock()))
+
+    def _execute(self, price):
+        return self.node_client.post(f'/api/orders/{self.order_id}/execute_order/', {
+            'execution_price': str(price), 'timestamp': _fresh_ts(),
+        }, format='json')
+
+    def test_honest_price_executes(self):
+        with self._oracle('336.00'):
+            r = self._execute('336.00')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Order.objects.get(pk=self.order_id).status, 'CONFIRMED')
+
+    def test_small_movement_within_tolerance_executes(self):
+        # ~0.6% below the live price — genuine drift, must not be rejected
+        with self._oracle('336.00'):
+            r = self._execute('338.00')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Order.objects.get(pk=self.order_id).status, 'CONFIRMED')
+
+    def test_underpriced_settlement_is_rejected(self):
+        # the attack: consensus saw ~$336, the leader tries to settle at $1
+        with self._oracle('336.00'):
+            r = self._execute('1.00')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('diverges', r.data['error'])
+        self.assertEqual(Order.objects.get(pk=self.order_id).status, 'REJECTED')
+
+    def test_overpriced_settlement_is_rejected(self):
+        with self._oracle('336.00'):
+            r = self._execute('900.00')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.get(pk=self.order_id).status, 'REJECTED')
+
+    def test_oracle_unavailable_fails_closed(self):
+        # cannot verify → do not settle; order stays SUBMITTED so it can retry
+        with patch('trading.views._get_oracle_stub', side_effect=Exception('oracle down')):
+            r = self._execute('336.00')
+        self.assertEqual(r.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(Order.objects.get(pk=self.order_id).status, 'SUBMITTED')

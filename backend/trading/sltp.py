@@ -1,6 +1,10 @@
 """
 sltp.py — background thread that monitors multi-level stop-loss and take-profit triggers.
 Runs every 15 seconds. Started by TradingConfig.ready() on server startup.
+
+Stock and CFD triggers both create a signed order at status SUBMITTED, so the
+close goes through node consensus exactly like a manual trade. Option expiry is
+settled directly — it is an expiry event, not a trade the user is authorising.
 """
 
 import logging
@@ -121,14 +125,14 @@ def _check_stocks():
 
 def _check_cfds():
     from django.db import transaction
-    from .models import SLTPLevel, CFDPosition, Wallet
+    from .models import SLTPLevel, CFDPosition, Order
 
     levels = list(
         SLTPLevel.objects.filter(
             cfd_position__isnull=False,
             cfd_position__is_open=True,
             triggered=False,
-        ).select_related('cfd_position__user', 'cfd_position__stock')
+        ).select_related('cfd_position__user', 'cfd_position__stock', 'cfd_position__user__profile')
     )
     if not levels:
         return
@@ -153,40 +157,41 @@ def _check_cfds():
             continue
 
         try:
+            from .crypto_utils import sign_order
             with transaction.atomic():
                 lv_fresh  = SLTPLevel.objects.select_for_update().get(pk=lv.pk, triggered=False)
                 pos_fresh = CFDPosition.objects.select_for_update().get(pk=pos.pk, is_open=True)
 
-                close_qty      = min(lv_fresh.quantity, pos_fresh.quantity)
-                partial_margin = pos_fresh.margin_used * (close_qty / pos_fresh.quantity)
-                pnl = (price - pos_fresh.entry_price) * close_qty if pos_fresh.direction == 'LONG' \
-                      else (pos_fresh.entry_price - price) * close_qty
+                close_qty = min(lv_fresh.quantity, pos_fresh.quantity)
+                nonce     = str(uuid.uuid4())
+                profile   = pos_fresh.user.profile
+                order_data = {
+                    'stock':      pos_fresh.stock.ticker,
+                    'order_type': 'SELL',
+                    'quantity':   str(close_qty),
+                    'nonce':      nonce,
+                }
+                signature = sign_order(profile.ecdsa_private_key, order_data)
+                close = Order.objects.create(
+                    user=pos_fresh.user, stock=pos_fresh.stock,
+                    order_type='SELL', trade_type='CFD_CLOSE',
+                    quantity=close_qty, position_id=pos_fresh.pk,
+                    nonce=nonce, signature=signature, status='SUBMITTED',
+                )
 
-                wallet = Wallet.objects.select_for_update().get(user=pos_fresh.user)
-                wallet.balance += partial_margin + pnl
-                if wallet.balance < Decimal('0'):
-                    wallet.balance = Decimal('0')
-                wallet.save()
-
-                pos_fresh.quantity    -= close_qty
-                pos_fresh.margin_used -= partial_margin
-                if pos_fresh.quantity <= 0:
-                    pos_fresh.is_open     = False
-                    pos_fresh.close_price = price
-                    pos_fresh.pnl         = (pos_fresh.pnl or Decimal('0')) + pnl
-                    pos_fresh.closed_at   = timezone.now()
-                pos_fresh.save()
-
+                # Mark the level triggered now, not when the order executes — the
+                # monitor runs again in 15s and must not fire this level twice
+                # while the close order is still awaiting consensus.
                 lv_fresh.triggered    = True
                 lv_fresh.triggered_at = timezone.now()
                 lv_fresh.save(update_fields=['triggered', 'triggered_at'])
 
-            logger.info('[SLTP] CFD level #%d triggered (%s @%s qty=%s) P&L=%s',
-                        lv.pk, lv.level_type, lv.price, close_qty, pnl)
+            logger.info('[SLTP] CFD close order #%d for level #%d (%s @%s qty=%s) price=%s',
+                        close.id, lv.pk, lv.level_type, lv.price, close_qty, price)
         except (SLTPLevel.DoesNotExist, CFDPosition.DoesNotExist):
             pass
         except Exception:
-            logger.exception('[SLTP] Failed to trigger CFD level #%d', lv.pk)
+            logger.exception('[SLTP] Failed to create CFD close for level #%d', lv.pk)
 
 
 # ── Options expiry ───────────────────────────────────────────

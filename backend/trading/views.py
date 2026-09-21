@@ -26,6 +26,11 @@ SP500_TICKERS = {
     'IBM', 'SBUX', 'QCOM', 'GE', 'CAT', 'GS', 'MS', 'BLK', 'SPGI',
 }
 
+# Max allowed gap between the leader-reported execution price and Django's own
+# live Oracle lookup at settlement. Wide enough to absorb genuine market movement
+# in the seconds since the order was priced, tight enough to catch manipulation.
+ORACLE_PRICE_TOLERANCE = Decimal('0.02')  # 2%
+
 
 # ============================================================
 # 1. Order management
@@ -172,6 +177,34 @@ class OrderViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            # Independent price re-verification. Django is the component that
+            # actually moves money, so it must not take the leader's word for the
+            # execution price. The nodes agree the price is honest, but nothing
+            # binds that agreed price to what the leader then sends here — a
+            # compromised leader could get an honest price approved by consensus
+            # and settle at another. Re-query the Oracle and reject a divergent
+            # price. Fail closed: if the price can't be verified, don't settle.
+            try:
+                _stub, _oracle_pb2 = _get_oracle_stub()
+                _resp = _stub.GetPrice(_oracle_pb2.PriceRequest(ticker=order.stock.ticker), timeout=5)
+                live_price = Decimal(str(_resp.execution_price))
+            except Exception:
+                return Response(
+                    {"error": "Cannot verify execution price: Oracle unavailable."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            if live_price > 0:
+                divergence = abs(execution_price - live_price) / live_price
+                if divergence > ORACLE_PRICE_TOLERANCE:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {"error": f"Execution price ${execution_price} diverges "
+                                  f"{divergence * 100:.2f}% from live ${live_price} "
+                                  f"(limit {ORACLE_PRICE_TOLERANCE * 100:.0f}%)."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
             # limit-price check
             if order.limit_price:
                 if order.order_type == 'BUY' and execution_price > order.limit_price:
@@ -227,7 +260,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "margin_used":   str(margin),
                 })
 
-            # --- close a CFD position ---
+            # --- close a CFD position, fully or partially ---
             if order.trade_type == 'CFD_CLOSE':
                 try:
                     pos = CFDPosition.objects.select_for_update().get(
@@ -240,20 +273,36 @@ class OrderViewSet(viewsets.ModelViewSet):
                         {'error': 'CFD position not found or already closed'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
+
                 close_price = execution_price
-                pnl = (close_price - pos.entry_price) * pos.quantity if pos.direction == 'LONG' \
-                      else (pos.entry_price - close_price) * pos.quantity
-                cash_returned = pos.margin_used + pnl
+                # An SL/TP level may close only part of the position, so honour the
+                # order quantity and never close more than the position still holds.
+                close_qty = min(order.quantity, pos.quantity) if order.quantity else pos.quantity
+                if close_qty <= 0:
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {'error': 'Close quantity must be greater than zero.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                partial_margin = (pos.margin_used * (close_qty / pos.quantity)).quantize(Decimal('0.0001'))
+                pnl = (close_price - pos.entry_price) * close_qty if pos.direction == 'LONG' \
+                      else (pos.entry_price - close_price) * close_qty
+                cash_returned = partial_margin + pnl
                 if cash_returned < Decimal('0'):
                     cash_returned = Decimal('0')
 
                 wallet.balance += cash_returned
                 wallet.save()
 
-                pos.is_open     = False
-                pos.close_price = close_price
-                pos.pnl         = pnl
-                pos.closed_at   = timezone.now()
+                pos.quantity    -= close_qty
+                pos.margin_used -= partial_margin
+                pos.pnl          = (pos.pnl or Decimal('0')) + pnl
+                if pos.quantity <= 0:
+                    pos.is_open     = False
+                    pos.close_price = close_price
+                    pos.closed_at   = timezone.now()
                 pos.save()
 
                 order.execution_price = close_price
@@ -264,6 +313,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                     'status':    'success',
                     'message':   'CFD position closed after gRPC consensus.',
                     'direction': pos.direction,
+                    'quantity':  str(close_qty),
+                    'remaining': str(pos.quantity),
                     'pnl':       str(pnl),
                 })
 
