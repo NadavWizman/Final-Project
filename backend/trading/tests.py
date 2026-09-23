@@ -161,6 +161,21 @@ class DepositTests(TestCase):
         r = self.client.post('/api/deposit/', {'amount': '0'}, format='json')
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_deposit_rejects_non_finite_and_malformed_amounts(self):
+        for amount in ('Infinity', 'NaN', 'abc', '', None, '0.001'):
+            r = self.client.post('/api/deposit/', {'amount': amount}, format='json')
+            self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST, amount)
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal('10000.00'))
+
+    def test_deposit_above_cap_rejected_and_wallet_stays_usable(self):
+        r = self.client.post('/api/deposit/', {'amount': '1e30'}, format='json')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        r = self.client.post('/api/deposit/', {'amount': '10.50'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal('10010.50'))
+
 
 # ──────────────────────────────────────────────────────────────────
 # 5. Order creation

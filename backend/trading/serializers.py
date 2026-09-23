@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from django.contrib.auth.models import User
@@ -102,7 +104,20 @@ class OrderSerializer(serializers.ModelSerializer):
         return value
 
 
-# 6. SLTPLevel serializer
+# 6. Deposit serializer
+MAX_DEPOSIT = Decimal('1000000.00')
+
+
+class DepositSerializer(serializers.Serializer):
+    # DecimalField rejects NaN/Infinity and values that would overflow the
+    # wallet's DecimalField(max_digits=15, decimal_places=2).
+    amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2,
+        min_value=Decimal('0.01'), max_value=MAX_DEPOSIT,
+    )
+
+
+# 7. SLTPLevel serializer
 class SLTPLevelSerializer(serializers.ModelSerializer):
     class Meta:
         model = SLTPLevel

@@ -9,7 +9,7 @@ from django.db import transaction
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition
-from .serializers import OrderSerializer, SLTPLevelSerializer
+from .serializers import OrderSerializer, SLTPLevelSerializer, DepositSerializer
 from .crypto_utils import generate_key_pair, sign_order, verify_signature
 from django.contrib.auth.models import User
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -631,16 +631,11 @@ def register_view(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def deposit_view(request):
-    amount_raw = request.data.get('amount')
-    if not amount_raw:
-        return Response({"error": "amount is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-    try:
-        amount = Decimal(str(amount_raw))
-        if amount <= 0:
-            raise ValueError()
-    except Exception:
-        return Response({"error": "Invalid amount."}, status=status.HTTP_400_BAD_REQUEST)
+    serializer = DepositSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response({"error": "Invalid amount.", "details": serializer.errors},
+                        status=status.HTTP_400_BAD_REQUEST)
+    amount = serializer.validated_data['amount']
 
     wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'balance': Decimal('0.00')})
     wallet.balance += amount
