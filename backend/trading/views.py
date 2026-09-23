@@ -43,6 +43,10 @@ def _is_consensus_node(user):
 class OrderViewSet(viewsets.ModelViewSet):
     serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated]
+    # Orders are append-only: once created they change only through the
+    # submit / execute_order / reject_order lifecycle actions. Allowing PUT,
+    # PATCH or DELETE would let a user rewrite a signed order or its history.
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):
         # Node (staff) sees all orders — regular user sees only their own.

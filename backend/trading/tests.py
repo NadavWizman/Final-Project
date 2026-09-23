@@ -215,6 +215,24 @@ class OrderCreationTests(TestCase):
         }, format='json')
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_orders_cannot_be_modified_or_deleted(self):
+        r = self.client.post('/api/orders/', {
+            'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '1', 'nonce': 'immut1'
+        }, format='json')
+        oid = r.data['id']
+        self.client.post(f'/api/orders/{oid}/submit/')
+        for method in ('patch', 'put'):
+            r = getattr(self.client, method)(f'/api/orders/{oid}/', {
+                'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '1000', 'nonce': 'immut1',
+                'trade_type': 'CFD', 'leverage': 100,
+            }, format='json')
+            self.assertEqual(r.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(self.client.delete(f'/api/orders/{oid}/').status_code,
+                         status.HTTP_405_METHOD_NOT_ALLOWED)
+        order = Order.objects.get(pk=oid)
+        self.assertEqual(order.quantity, Decimal('1'))
+        self.assertEqual(order.trade_type, 'STOCK')
+
     def test_user_can_only_see_own_orders(self):
         other = make_user('bob')
         other_client = APIClient()
