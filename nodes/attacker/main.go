@@ -1,17 +1,22 @@
-// malicious_proposer — a stand-in for a compromised leader, used to demonstrate
-// a real gap in the consensus layer.
+// malicious_proposer — a stand-in for a compromised leader, used as a security
+// regression test for the consensus layer.
 //
 // It is NOT part of the running system. Like oracle_service/rogue_oracle.py it
 // only does something when a human launches it. It talks gRPC directly to the
-// UNMODIFIED validators on their (unauthenticated) ports and asks them to vote
-// on a block whose committed contents — 1000 shares at $1.00 — do not match the
-// honestly-signed order it presents alongside (1 share at market).
+// running validators and tries two attacks with a forged block — 1000 shares
+// at $1.00 — backed by a validly signed order it made up itself:
 //
-// The validators verify the signature against the honest envelope, never check
-// that the block matches it, and approve. That is the vulnerability.
+//  1. Propose: ask the validators to vote for the forged block.
+//  2. Commit:  skip voting and ask them to append the forged block directly.
+//
+// Both must be refused: without CLUSTER_SECRET the calls are Unauthenticated;
+// with it, Propose fails because the order does not exist in Django (and the
+// key is not the user's), and Commit fails because Django never certified the
+// block. If either is ever accepted, a defence has regressed.
 //
 //	Run from the nodes/ directory, with the Oracle and validators up:
-//	  go run ./attacker
+//	  go run ./attacker                                        # outsider
+//	  CLUSTER_SECRET=<value from nodes/.env> go run ./attacker # compromised insider
 package main
 
 import (
@@ -190,19 +195,44 @@ func main() {
 		}
 		if resp.Approve {
 			approvals++
-			fmt.Printf("  %s  ▶  APPROVE   (verified the signature, never checked the block)\n", resp.NodeId)
+			fmt.Printf("  %s  ▶  APPROVE   (forged block accepted!)\n", resp.NodeId)
 		} else {
 			fmt.Printf("  %s  ▶  REJECT    %s\n", resp.NodeId, resp.Reason)
 		}
 	}
 
+	// Attack 2: skip consensus and ask the validators to append the block.
+	commits := 0
+	for _, addr := range validators {
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if secret := os.Getenv("CLUSTER_SECRET"); secret != "" {
+			ctx = metadata.AppendToOutgoingContext(ctx, clusterauth.MetadataKey,
+				clusterauth.Token(secret, pbc.ConsensusService_Commit_FullMethodName, time.Now()))
+		}
+		resp, err := pbc.NewConsensusServiceClient(conn).Commit(ctx, &pbc.CommitRequest{Block: forged})
+		cancel()
+		conn.Close()
+		switch {
+		case err != nil:
+			fmt.Printf("  %s  ▶  COMMIT REFUSED   rpc error: %v\n", addr, err)
+		case resp.Status == "committed":
+			commits++
+			fmt.Printf("  %s  ▶  COMMIT ACCEPTED  (forged block appended!)\n", addr)
+		default:
+			fmt.Printf("  %s  ▶  COMMIT REFUSED   %s\n", addr, resp.Status)
+		}
+	}
+
 	fmt.Printf("\n%s\n", line)
-	if approvals == len(validators) {
-		fmt.Printf("  RESULT: %d/%d honest validators approved a FORGED block.\n", approvals, len(validators))
-		fmt.Printf("  With the leader's self-vote that is full consensus on a trade\n  the user never authorised. VULNERABILITY CONFIRMED.\n")
+	if approvals > 0 || commits > 0 {
+		fmt.Printf("  RESULT: forged block approved by %d and appended by %d validator(s).\n", approvals, commits)
+		fmt.Printf("  VULNERABILITY — a defence has regressed.\n")
 	} else {
-		fmt.Printf("  RESULT: %d/%d approved — the forged block was rejected.\n", approvals, len(validators))
-		fmt.Printf("  The validators now cross-check the block. DEFENCE HOLDS.\n")
+		fmt.Printf("  RESULT: every attempt was refused. DEFENCE HOLDS.\n")
 	}
 	fmt.Printf("%s\n\n", line)
 }
