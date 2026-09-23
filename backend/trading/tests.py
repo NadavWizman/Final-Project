@@ -99,9 +99,28 @@ class RegistrationTests(TestCase):
         self.assertIn('PUBLIC KEY', user.profile.ecdsa_public_key)
 
     def test_register_duplicate_username_rejected(self):
-        self.client.post('/api/register/', {'username': 'bob', 'password': 'p1'}, format='json')
-        r = self.client.post('/api/register/', {'username': 'bob', 'password': 'p2'}, format='json')
+        r1 = self.client.post('/api/register/', {'username': 'bob', 'password': 'Tr4de-desk-1'}, format='json')
+        self.assertEqual(r1.status_code, status.HTTP_201_CREATED)
+        r = self.client.post('/api/register/', {'username': 'bob', 'password': 'Tr4de-desk-2'}, format='json')
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(User.objects.filter(username='bob').count(), 1)
+
+    def test_register_weak_password_rejected(self):
+        for weak in ('1', 'password', '12345678', 'bob'):
+            r = self.client.post('/api/register/', {'username': 'bob', 'password': weak}, format='json')
+            self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST, weak)
+        self.assertFalse(User.objects.filter(username='bob').exists())
+
+    def test_register_invalid_username_rejected(self):
+        r = self.client.post('/api/register/', {'username': 'bad name!<>', 'password': 'Tr4de-desk-1'}, format='json')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_register_is_atomic(self):
+        with patch('trading.views.UserProfile.objects.create', side_effect=RuntimeError('boom')):
+            with self.assertRaises(RuntimeError):
+                self.client.post('/api/register/', {'username': 'carol', 'password': 'Tr4de-desk-1'}, format='json')
+        self.assertFalse(User.objects.filter(username='carol').exists())
+        self.assertFalse(Wallet.objects.filter(user__username='carol').exists())
 
     def test_register_missing_fields_rejected(self):
         r = self.client.post('/api/register/', {'username': 'bob'}, format='json')

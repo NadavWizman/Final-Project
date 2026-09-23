@@ -5,7 +5,9 @@ from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from django.db import transaction
+from django.db import transaction, IntegrityError
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.contrib.auth.password_validation import validate_password
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition
@@ -598,22 +600,37 @@ def register_view(request):
     username = request.data.get('username')
     password = request.data.get('password')
 
-    if not username or not password:
+    if not isinstance(username, str) or not isinstance(password, str) or not username or not password:
         return Response({"error": "username and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    username = username.strip()
+    try:
+        User._meta.get_field('username').run_validators(username)
+    except DjangoValidationError as e:
+        return Response({"error": " ".join(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        validate_password(password, user=User(username=username))
+    except DjangoValidationError as e:
+        return Response({"error": " ".join(e.messages)}, status=status.HTTP_400_BAD_REQUEST)
 
     if User.objects.filter(username=username).exists():
         return Response({"error": "Username already exists."}, status=status.HTTP_400_BAD_REQUEST)
 
-    user = User.objects.create_user(username=username, password=password)
-    Wallet.objects.create(user=user, balance=Decimal('10000.00'))
-
-    # generate an ECDSA key pair for every new user
+    # User, wallet and keys are created together or not at all, so a failure
+    # half-way never leaves an account without a wallet or signing keys.
     private_pem, public_pem = generate_key_pair()
-    UserProfile.objects.create(
-        user=user,
-        ecdsa_private_key=private_pem,
-        ecdsa_public_key=public_pem,
-    )
+    try:
+        with transaction.atomic():
+            user = User.objects.create_user(username=username, password=password)
+            Wallet.objects.create(user=user, balance=Decimal('10000.00'))
+            UserProfile.objects.create(
+                user=user,
+                ecdsa_private_key=private_pem,
+                ecdsa_public_key=public_pem,
+            )
+    except IntegrityError:
+        # two concurrent registrations raced past the exists() check
+        return Response({"error": "Username already exists."}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(
         {
