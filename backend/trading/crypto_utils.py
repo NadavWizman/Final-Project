@@ -83,7 +83,7 @@ def verify_signature(public_pem: str, order_data: dict, signature_b64: str) -> b
 SIGNED_ORDER_FIELDS = (
     "stock", "order_type", "trade_type", "quantity", "nonce", "leverage",
     "limit_price", "position_id", "option_contract_type", "option_strike",
-    "option_expiry",
+    "option_expiry", "stop_loss", "stop_loss_qty", "take_profit", "take_profit_qty",
 )
 
 _FOUR_DP = Decimal("0.0001")
@@ -114,6 +114,10 @@ def order_signing_payload(order) -> dict:
         "option_contract_type": order.option_contract_type,
         "option_strike":        order.option_strike,
         "option_expiry":        order.option_expiry,
+        "stop_loss":            order.stop_loss,
+        "stop_loss_qty":        order.stop_loss_qty,
+        "take_profit":          order.take_profit,
+        "take_profit_qty":      order.take_profit_qty,
     }
 
 

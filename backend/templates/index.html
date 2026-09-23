@@ -957,30 +957,6 @@ async function loadData() {
       delete S.pendingCloses[posKey];
     }
   }
-  // Auto-create SLTPLevel records for any newly-confirmed orders that had SL/TP set at creation
-  for (const [nonce, pend] of Object.entries(_pendingSLTP)) {
-    const confirmed = S.orders.find(o => o.nonce === nonce && o.status === 'CONFIRMED');
-    if (!confirmed) continue;
-    try {
-      if (pend.tradeType === 'CFD') {
-        const pos = S.cfdPositions?.find(p =>
-          p.is_open && p.stock === pend.ticker && p.direction === pend.dir &&
-          new Date(p.opened_at).getTime() >= pend.submittedAt - 5000
-        );
-        if (pos) {
-          if (pend.sl) await api('POST', '/sltp/', { cfd_id: pos.id, level_type: 'SL', price: pend.sl, quantity: pend.slQty || pend.qty });
-          if (pend.tp) await api('POST', '/sltp/', { cfd_id: pos.id, level_type: 'TP', price: pend.tp, quantity: pend.tpQty || pend.qty });
-        }
-      } else {
-        const holding = S.portfolio?.holdings?.find(h => h.ticker === pend.ticker);
-        if (holding) {
-          if (pend.sl) await api('POST', '/sltp/', { position_id: holding.id, level_type: 'SL', price: pend.sl, quantity: pend.slQty || pend.qty });
-          if (pend.tp) await api('POST', '/sltp/', { position_id: holding.id, level_type: 'TP', price: pend.tp, quantity: pend.tpQty || pend.qty });
-        }
-      }
-    } catch (_) {}
-    delete _pendingSLTP[nonce];
-  }
   await refreshHoldingPrices();
   renderActiveTab();
 }
@@ -1932,7 +1908,6 @@ function addHover(canvas, s, tooltipId, crosshairId) {
 
 // ── CONFIRM DIALOG ───────────────────────────────────────────────
 let _pendingOrder = null;
-const _pendingSLTP = {}; // nonce → {ticker,qty,tradeType,dir,sl,tp,submittedAt}
 
 function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, tradeType = 'STOCK', leverage = null, stopLoss = '', takeProfit = '', stopLossQty = '', takeProfitQty = '' }) {
   _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source, tradeType, leverage, stopLoss, takeProfit, stopLossQty, takeProfitQty };
@@ -2235,12 +2210,24 @@ async function doConfirmedOrder() {
   } else if (limitPrice && parseFloat(limitPrice) > 0) {
     body.limit_price = limitPrice;
   }
+  // SL/TP travel with the signed order and are attached server-side when it
+  // settles — nothing is lost if this tab is closed before confirmation.
+  if (type === 'BUY' || tradeType === 'CFD') {
+    if (stopLoss && parseFloat(stopLoss) > 0) {
+      body.stop_loss = stopLoss;
+      if (stopLossQty && parseFloat(stopLossQty) > 0) body.stop_loss_qty = stopLossQty;
+    }
+    if (takeProfit && parseFloat(takeProfit) > 0) {
+      body.take_profit = takeProfit;
+      if (takeProfitQty && parseFloat(takeProfitQty) > 0) body.take_profit_qty = takeProfitQty;
+    }
+  }
   const createRes = await api('POST', '/orders/', body);
 
   if (!createRes.ok) {
     btn.disabled = false; btn.textContent = 'Confirm';
     closeConfirm();
-    const msg = createRes.data.stock?.[0] || createRes.data.nonce?.[0] || createRes.data.error || 'Order failed';
+    const msg = createRes.data.error || Object.values(createRes.data || {}).flat()[0] || 'Order failed';
     showToast('⚠️ ' + msg);
     return;
   }
@@ -2263,19 +2250,6 @@ async function doConfirmedOrder() {
     : '⚡ Submitted — consensus in progress…');
   S.pendingDraft = orderId;
 
-  // Store SL/TP intent for auto-creation after order confirms
-  // Allow BUY (stocks) and any direction CFD (BUY=LONG, SELL=SHORT)
-  if ((type === 'BUY' || tradeType === 'CFD') && (stopLoss && parseFloat(stopLoss) > 0 || takeProfit && parseFloat(takeProfit) > 0)) {
-    _pendingSLTP[nonce] = {
-      ticker: stock, qty, tradeType,
-      dir: tradeType === 'CFD' ? (type === 'BUY' ? 'LONG' : 'SHORT') : null,
-      sl:    (stopLoss   && parseFloat(stopLoss)   > 0) ? stopLoss   : null,
-      slQty: (stopLossQty   && parseFloat(stopLossQty)   > 0) ? stopLossQty   : qty,
-      tp:    (takeProfit && parseFloat(takeProfit) > 0) ? takeProfit : null,
-      tpQty: (takeProfitQty && parseFloat(takeProfitQty) > 0) ? takeProfitQty : qty,
-      submittedAt: Date.now(),
-    };
-  }
 
   // Reset source form
   if (source === 'trade') {

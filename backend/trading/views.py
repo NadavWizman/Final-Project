@@ -337,6 +337,15 @@ def _reject(order, error, http_status=status.HTTP_400_BAD_REQUEST):
     return Response({"error": error}, status=http_status)
 
 
+def _attach_sltp(order, **target):
+    """Create the SL/TP levels requested with the order on the position it opened."""
+    for kind, price, qty in (('SL', order.stop_loss, order.stop_loss_qty),
+                             ('TP', order.take_profit, order.take_profit_qty)):
+        if price:
+            SLTPLevel.objects.create(level_type=kind, price=price,
+                                     quantity=qty or order.quantity, **target)
+
+
 def _confirm(order, execution_price):
     order.execution_price = execution_price
     order.status = 'CONFIRMED'
@@ -354,12 +363,13 @@ def _settle_cfd(order, wallet, execution_price, _quote):
 
     wallet.balance -= margin
     wallet.save()
-    CFDPosition.objects.create(
+    cfd = CFDPosition.objects.create(
         user=order.user, stock=order.stock,
         direction=direction, quantity=order.quantity,
         entry_price=execution_price, leverage=leverage,
         margin_used=margin,
     )
+    _attach_sltp(order, cfd_position=cfd)
     _confirm(order, execution_price)
     return Response({
         "status":      "success",
@@ -542,6 +552,7 @@ def _settle_stock(order, wallet, execution_price, _quote):
         position, _ = Position.objects.select_for_update().get_or_create(user=order.user, stock=order.stock)
         position.quantity += order.quantity
         position.save()
+        _attach_sltp(order, position=position)
     else:
         try:
             position = Position.objects.select_for_update().get(user=order.user, stock=order.stock)

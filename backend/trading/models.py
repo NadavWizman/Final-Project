@@ -80,9 +80,12 @@ class Order(models.Model):
     execution_price = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
     nonce = models.CharField(max_length=100, unique=True, null=True, blank=True)
     limit_price = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
-    stop_loss   = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
-    take_profit = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
-    sltp_triggered = models.BooleanField(default=False)  # prevents double-fire of SL/TP auto-sell
+    # Optional SL/TP to attach to the position this order opens. They are part
+    # of the signed order and become SLTPLevel rows when the order settles.
+    stop_loss       = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    stop_loss_qty   = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    take_profit     = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
+    take_profit_qty = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
     signature = models.TextField(null=True, blank=True)  # ECDSA signature of the order creator
     # hash of the consensus block this order settled under (quorum-certified)
     block_hash = models.CharField(max_length=64, null=True, blank=True)

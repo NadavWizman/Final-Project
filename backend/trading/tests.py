@@ -1220,3 +1220,59 @@ class CFDLiquidationTests(TestCase):
     def test_api_reports_liquidation_price(self):
         c = APIClient(); c.force_authenticate(user=self.user)
         self.assertEqual(c.get('/api/cfd/').data['cfd_positions'][0]['liquidation_price'], '92.00')
+
+
+class OrderSLTPTests(TestCase):
+    """SL/TP given with an order are signed with it and attached on settlement."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.stock = make_stock('AAPL')
+        self.uc = APIClient(); self.uc.force_authenticate(user=self.user)
+        self.node_client = ConsensusClient(); self.node_client.force_authenticate(user=make_node())
+        _patch_oracle(self)
+
+    def _place(self, **extra):
+        body = {'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '10', 'nonce': extra.pop('nonce', 'sl1')}
+        body.update(extra)
+        return self.uc.post('/api/orders/', body, format='json')
+
+    def _settle(self, oid):
+        self.uc.post(f'/api/orders/{oid}/submit/')
+        return self.node_client.post(f'/api/orders/{oid}/execute_order/', {
+            'execution_price': '100.00', 'timestamp': _fresh_ts()}, format='json')
+
+    def test_stock_buy_levels_created_on_settlement(self):
+        r = self._place(stop_loss='90', take_profit='120', take_profit_qty='4')
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(SLTPLevel.objects.count(), 0)          # nothing before consensus
+        self.assertEqual(self._settle(r.data['id']).status_code, 200)
+        levels = {l.level_type: l for l in SLTPLevel.objects.filter(position__user=self.user)}
+        self.assertEqual((levels['SL'].price, levels['SL'].quantity), (Decimal('90'), Decimal('10')))
+        self.assertEqual((levels['TP'].price, levels['TP'].quantity), (Decimal('120'), Decimal('4')))
+
+    def test_cfd_levels_attach_to_the_new_position(self):
+        r = self._place(nonce='sl2', trade_type='CFD', leverage=5, order_type='SELL',
+                        stop_loss='110', take_profit='80')
+        self.assertEqual(r.status_code, 201, r.data)
+        self._settle(r.data['id'])
+        cfd = CFDPosition.objects.get(user=self.user)
+        self.assertEqual(cfd.sltp_levels.count(), 2)
+
+    def test_sltp_is_covered_by_the_signature(self):
+        r = self._place(stop_loss='90')
+        self.uc.post(f"/api/orders/{r.data['id']}/submit/")
+        order = Order.objects.get(pk=r.data['id'])
+        tampered = order_signing_payload(order) | {'stop_loss': Decimal('1')}
+        self.assertFalse(verify_signature(self.user.profile.ecdsa_public_key, tampered, order.signature))
+
+    def test_invalid_sltp_rejected(self):
+        cases = [
+            {'stop_loss': '120', 'take_profit': '110'},             # SL above TP on a long
+            {'stop_loss': '90', 'stop_loss_qty': '11'},              # more than the order
+            {'stop_loss_qty': '5'},                                  # quantity without price
+            {'order_type': 'SELL', 'stop_loss': '90'},               # stock SELL opens nothing
+            {'stop_loss': '-1'},
+        ]
+        for i, extra in enumerate(cases):
+            self.assertEqual(self._place(nonce=f'bad{i}', **extra).status_code, 400, extra)
