@@ -18,6 +18,9 @@ nodes/chain_*.jsonl
 nodes/nodekey_*.hex
 nodes/pending_*.json*
 
+# Go build output (built by setup.sh / `go build -o nodes_bin .`)
+nodes/nodes_bin
+
 # macOS
 **/.DS_Store
 .DS_Store

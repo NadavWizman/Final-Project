@@ -16,6 +16,7 @@ echo ""
 
 # ── 1. Python dependencies ────────────────────────────────────────
 echo "[1/5] Installing Python dependencies..."
+command -v python3 &>/dev/null || { echo "      ✗ python3 not found"; exit 1; }
 pip3 install -r "$ROOT/requirements.txt" --quiet
 
 # ── 2. Secrets (.env files) ───────────────────────────────────────
@@ -46,7 +47,7 @@ fi
 
 # ── 3. Database ───────────────────────────────────────────────────
 echo "[3/5] Running Django migrations..."
-python3 "$BACKEND/manage.py" migrate --run-syncdb
+python3 "$BACKEND/manage.py" migrate
 
 echo "      Seeding S&P 500 stock catalog..."
 python3 "$BACKEND/manage.py" seed_stocks
@@ -56,21 +57,16 @@ python3 "$BACKEND/manage.py" create_node_users
 
 # ── 4. Go binary ─────────────────────────────────────────────────
 echo "[4/5] Building Go nodes binary..."
-if command -v go &>/dev/null; then
-    (cd "$NODES" && go build -o nodes_bin . && echo "      nodes_bin built successfully.")
-else
-    if [ -f "$NODES/nodes_bin" ]; then
-        echo "      Go not found — using pre-built nodes_bin (arm64 macOS)."
-    else
-        echo "      ⚠  Go not installed and no pre-built binary found."
-        echo "         Install Go from https://go.dev/dl/ and run: cd nodes && go build -o nodes_bin ."
-    fi
+if ! command -v go &>/dev/null; then
+    echo "      ✗ Go is not installed. Install Go 1.26+ from https://go.dev/dl/ and re-run setup.sh."
+    exit 1
 fi
+(cd "$NODES" && go build -o nodes_bin . && echo "      nodes_bin built successfully.")
 
 # ── 5. Done ───────────────────────────────────────────────────────
 echo "[5/5] Setup complete!"
 echo ""
-echo "To start the project, open four terminals and run:"
+echo "To start the project, open five terminals and run:"
 echo ""
 echo "  Terminal 1 — Oracle:"
 echo "    cd oracle_service && python3 oracle_server.py"
@@ -84,7 +80,7 @@ echo ""
 echo "  Terminal 4 — Node 3 (Validator):"
 echo "    cd nodes && NODE_NAME=node3 ./nodes_bin"
 echo ""
-echo "  Terminal 5 — Django:"
+echo "  Terminal 5 — Django (also runs the SL/TP monitor):"
 echo "    cd backend && python3 manage.py runserver"
 echo ""
 echo "  Then open: http://127.0.0.1:8000"
