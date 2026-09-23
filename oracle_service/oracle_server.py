@@ -4,6 +4,7 @@
                     only when nodes run on other hosts)
     ORACLE_CACHE_S  seconds a quote is reused (default 3)
 """
+import math
 import os
 import sys
 import threading
@@ -45,10 +46,14 @@ class OracleServicer(oracle_pb2_grpc.OracleServiceServicer):
         # 5 days of history so the last close is available before the open,
         # on weekends and on holidays, when a 1-day window is empty.
         data = yf.Ticker(yahoo_symbol(ticker)).history(period='5d')
-        if data.empty:
+        # Yahoo can append an incomplete bar whose Close is NaN (e.g. before the
+        # open); use the most recent bar that actually has a price.
+        closes = data['Close'].dropna() if 'Close' in data else data
+        closes = closes[closes > 0] if len(closes) else closes
+        if len(closes) == 0:
             return None, None
-        price = round(float(data['Close'].iloc[-1]), 2)
-        market_time = data.index[-1].to_pydatetime().astimezone(timezone.utc).isoformat()
+        price = round(float(closes.iloc[-1]), 2)
+        market_time = closes.index[-1].to_pydatetime().astimezone(timezone.utc).isoformat()
         with self._lock:
             self._cache[ticker] = (now, price, market_time)
         return price, market_time
@@ -57,7 +62,7 @@ class OracleServicer(oracle_pb2_grpc.OracleServiceServicer):
         ticker = request.ticker.upper()
         try:
             price, market_time = self._quote(ticker)
-            if price is None or price <= 0:
+            if price is None or not math.isfinite(price) or price <= 0:
                 context.set_code(grpc.StatusCode.NOT_FOUND)
                 context.set_details(f"No data found for {ticker}")
                 return oracle_pb2.PriceResponse()

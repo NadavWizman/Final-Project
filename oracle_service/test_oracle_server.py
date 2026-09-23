@@ -44,6 +44,20 @@ class OracleServerTests(unittest.TestCase):
             self._get(svc, 'AAPL')
         self.assertEqual(T.call_count, 1)
 
+    def test_incomplete_latest_bar_is_skipped(self):
+        # Yahoo sometimes appends a bar whose Close is NaN; never serve "nan"
+        with patch.object(o.yf, 'Ticker') as T:
+            T.return_value.history.return_value = _history(186.5, float('nan'))
+            resp, _ = self._get(o.OracleServicer(), 'AAPL')
+        self.assertEqual(resp.execution_price, '186.5')
+        self.assertTrue(resp.market_time.startswith('2026-09-21T20:00:00'))
+
+    def test_only_nan_is_not_found(self):
+        with patch.object(o.yf, 'Ticker') as T:
+            T.return_value.history.return_value = _history(float('nan'))
+            _, ctx = self._get(o.OracleServicer(), 'AAPL')
+        ctx.set_code.assert_called_once_with(o.grpc.StatusCode.NOT_FOUND)
+
     def test_no_data_is_not_found(self):
         with patch.object(o.yf, 'Ticker') as T:
             T.return_value.history.return_value = pd.DataFrame({'Close': []})
