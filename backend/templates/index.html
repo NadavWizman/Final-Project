@@ -2969,7 +2969,7 @@ function renderOptions() {
         Popular: ${SP500_HINT.map(t=>`<span onclick="S.optTicker='${t}';loadOptExpiries()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join('')}
       </div>
       ${illiquid ? `<div style="margin-top:8px;padding:8px 12px;background:rgba(255,149,0,.1);border-radius:8px;font-size:12px;color:var(--label2)">
-        ⚠️ <strong>${S.optTicker}</strong> options have no bid/ask — the market is illiquid. Try a more liquid ticker like AAPL or TSLA for real prices.
+        ⚠️ No live bid/ask for <strong>${esc(S.optTicker)}</strong> options right now — usually because the US options market is closed. Prices shown are the last trades, and an order fills at the last traded price (never below the option's intrinsic value).
       </div>` : ''}
       ${expiriesHtml}
       ${chainContent}`;
