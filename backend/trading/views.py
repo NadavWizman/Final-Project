@@ -17,12 +17,13 @@ import re
 from decimal import Decimal, InvalidOperation
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition, NodeKey
 from .roles import is_consensus_node
+from .oracle_client import get_stub as get_oracle_stub
 from .sltp import liquidation_price
 from .consensus import QUORUM, count_valid_votes, valid_public_key
 from .serializers import OrderSerializer, SLTPLevelSerializer, DepositSerializer
 from .crypto_utils import generate_key_pair, sign_order, verify_signature, order_signing_payload
 from django.contrib.auth.models import User
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import AllowAny
 
 # ============================================================
 # S&P 500 Whitelist — list of tickers allowed for trading
@@ -234,6 +235,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 )
 
             order.status = 'REJECTED'
+            order.reject_reason = reason
             order.save()
 
         return Response({"status": "rejected", "order_id": order.id, "reason": reason})
@@ -382,6 +384,7 @@ def _limit_satisfied(order, price):
 def _reject(order, error, http_status=status.HTTP_400_BAD_REQUEST):
     order.status = 'REJECTED'
     order.block_hash = None
+    order.reject_reason = str(error)[:200]
     order.save()
     return Response({"error": error}, status=http_status)
 
@@ -854,9 +857,11 @@ def history_view(_request, ticker):
         data = yf.Ticker(ticker.replace('.', '-')).history(period=period, interval=interval)
         if data.empty:
             return Response({"error": f"No data for {ticker}"}, status=status.HTTP_404_NOT_FOUND)
+        intraday = interval not in {'1d', '5d', '1wk', '1mo', '3mo'}
         prices = [
             {
-                "date":  str(row.Index.date()),
+                # intraday bars need the time too, or every bar of a day shares a label
+                "date":  row.Index.isoformat() if intraday else str(row.Index.date()),
                 "open":  round(float(row.Open),  2),
                 "high":  round(float(row.High),  2),
                 "low":   round(float(row.Low),   2),
@@ -901,20 +906,8 @@ def cfd_positions_view(request):
 
 
 def _get_oracle_stub():
-    """Returns a gRPC stub for the Oracle service, importing from the correct path."""
-    import sys, os
-    oracle_path = os.path.normpath(
-        os.path.join(os.path.dirname(__file__), '..', '..', 'oracle_service')
-    )
-    if oracle_path not in sys.path:
-        sys.path.insert(0, oracle_path)
-    import grpc                   # type: ignore
-    import oracle_pb2             # type: ignore
-    import oracle_pb2_grpc        # type: ignore
-    from django.conf import settings
-    oracle_url = getattr(settings, 'ORACLE_URL', '127.0.0.1:8001')
-    channel = grpc.insecure_channel(oracle_url)
-    return oracle_pb2_grpc.OracleServiceStub(channel), oracle_pb2
+    """(stub, oracle_pb2) for the Oracle — one shared channel per process."""
+    return get_oracle_stub()
 
 
 @api_view(['GET', 'POST'])
@@ -1002,6 +995,10 @@ def sltp_delete_view(request, pk):
             raise SLTPLevel.DoesNotExist
     except SLTPLevel.DoesNotExist:
         return Response({'error': 'Level not found'}, status=status.HTTP_404_NOT_FOUND)
+    if level.triggered:
+        # its close order already exists; deleting would erase the audit trail
+        return Response({'error': 'This level has already triggered and cannot be deleted.'},
+                        status=status.HTTP_400_BAD_REQUEST)
     level.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
 

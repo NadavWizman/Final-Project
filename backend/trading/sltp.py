@@ -58,22 +58,11 @@ def run_once():
 
 def _oracle_price(ticker) -> Decimal | None:
     try:
-        import sys, os
-        oracle_path = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), '..', '..', 'oracle_service')
-        )
-        if oracle_path not in sys.path:
-            sys.path.insert(0, oracle_path)
-        import grpc
-        import oracle_pb2
-        import oracle_pb2_grpc
-        from django.conf import settings
-        url = getattr(settings, 'ORACLE_URL', '127.0.0.1:8001')
-        ch  = grpc.insecure_channel(url)
-        stub = oracle_pb2_grpc.OracleServiceStub(ch)
+        from .oracle_client import get_stub
+        stub, oracle_pb2 = get_stub()
         resp = stub.GetPrice(oracle_pb2.PriceRequest(ticker=ticker), timeout=5)
-        ch.close()
-        return Decimal(str(resp.execution_price))
+        price = Decimal(str(resp.execution_price))
+        return price if price.is_finite() and price > 0 else None
     except Exception as e:
         logger.warning('[SLTP] Oracle error for %s: %s', ticker, e)
         return None

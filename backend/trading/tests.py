@@ -1336,3 +1336,48 @@ class MarketDataAndAIEndpointTests(TestCase):
         codes = [anon.post('/api/register/', {'username': f'u{i}', 'password': 'Tr4de-desk-1'},
                            format='json').status_code for i in range(25)]
         self.assertIn(429, codes)
+
+
+class SmallFixesTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user()
+        self.stock = make_stock('AAPL')
+        self.client = APIClient(); self.client.force_authenticate(user=self.user)
+
+    def test_triggered_level_cannot_be_deleted(self):
+        pos = Position.objects.create(user=self.user, stock=self.stock, quantity=Decimal('5'))
+        lv = SLTPLevel.objects.create(position=pos, level_type='SL', price=Decimal('90'),
+                                      quantity=Decimal('5'), triggered=True)
+        self.assertEqual(self.client.delete(f'/api/sltp/{lv.id}/').status_code, 400)
+        self.assertTrue(SLTPLevel.objects.filter(pk=lv.id).exists())
+
+    def test_reject_reason_is_stored_and_exposed(self):
+        r = self.client.post('/api/orders/', {'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '1',
+                                              'nonce': 'rr1'}, format='json')
+        self.client.post(f"/api/orders/{r.data['id']}/submit/")
+        node = APIClient(); node.force_authenticate(user=make_node())
+        node.post(f"/api/orders/{r.data['id']}/reject_order/", {'reason': 'consensus not reached (1 approvals)'},
+                  format='json')
+        self.assertEqual(self.client.get(f"/api/orders/{r.data['id']}/").data['reject_reason'],
+                         'consensus not reached (1 approvals)')
+
+    def test_intraday_history_keeps_the_time(self):
+        import pandas as pd
+        idx = pd.to_datetime(['2026-09-22 14:30', '2026-09-22 14:35']).tz_localize('UTC')
+        df = pd.DataFrame({'Open': [1, 2], 'High': [1, 2], 'Low': [1, 2], 'Close': [1, 2]}, index=idx)
+        with patch('yfinance.Ticker') as T:
+            T.return_value.history.return_value = df
+            r = self.client.get('/api/history/AAPL/?period=1d&interval=5m')
+        dates = [p['date'] for p in r.data['prices']]
+        self.assertEqual(len(set(dates)), 2)
+        self.assertIn('14:35', dates[1])
+
+    def test_oracle_channel_is_reused(self):
+        from . import oracle_client
+        oracle_client._client = None
+        with patch('grpc.insecure_channel') as ch:
+            first, second = oracle_client.get_stub(), oracle_client.get_stub()
+        self.assertIs(first, second)
+        ch.assert_called_once()
+        oracle_client._client = None

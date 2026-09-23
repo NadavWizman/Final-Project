@@ -63,9 +63,11 @@ class OrderSerializer(serializers.ModelSerializer):
             'position_id',
             'status', 'created_at', 'execution_price',
             'nonce', 'signature', 'public_key', 'signed_message', 'block_hash',
+            'reject_reason',
         ]
         read_only_fields = ['id', 'user', 'status', 'created_at', 'execution_price',
-                            'signature', 'public_key', 'signed_message', 'block_hash']
+                            'signature', 'public_key', 'signed_message', 'block_hash',
+                            'reject_reason']
 
     def get_public_key(self, obj):
         """Returns the public key of the order owner (from UserProfile)."""

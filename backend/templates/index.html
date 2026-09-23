@@ -1831,7 +1831,7 @@ function drawAxes(ctx, prices, xFn, s, W, H, pad) {
     const idx  = Math.round(i / (nX - 1) * (n - 1));
     const xPos = xFn(idx);
     ctx.textAlign = i === 0 ? 'left' : i === nX - 1 ? 'right' : 'center';
-    ctx.fillText(prices[idx].date, xPos, H - pb + 14);
+    ctx.fillText(chartLabel(prices[idx].date), xPos, H - pb + 14);
     ctx.strokeStyle = 'rgba(142,142,147,.3)'; ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(xPos, H - pb); ctx.lineTo(xPos, H - pb + 4); ctx.stroke();
   }
@@ -1885,7 +1885,7 @@ function addHover(canvas, s, tooltipId, crosshairId) {
 
     // Tooltip content
     const o = p.open ? `\nO ${fmt$(p.open)}  H ${fmt$(p.high)}  L ${fmt$(p.low)}` : '';
-    tip.innerHTML = `<div>${p.date}</div><div style="font-size:13px">${fmt$(p.close)}${o ? `<br><span style="font-size:10px;opacity:.8">${o.trim()}</span>` : ''}</div>`;
+    tip.innerHTML = `<div>${esc(chartLabel(p.date))}</div><div style="font-size:13px">${fmt$(p.close)}${o ? `<br><span style="font-size:10px;opacity:.8">${o.trim()}</span>` : ''}</div>`;
 
     // Float tooltip left/right of cursor to stay in bounds
     tip.style.display = 'block';
@@ -2398,8 +2398,8 @@ function renderActivity() {
             ${label} ${parseFloat(o.quantity)} ${o.stock}${cfdTag}${optTag}
           </div>
           <div class="order-sub">
-            <span class="status-badge badge-${o.status.toLowerCase()}">${o.status}</span>
-            &nbsp;· #${o.id} · ${timeAgo(o.created_at)}
+            <span class="status-badge badge-${o.status.toLowerCase()}"${o.reject_reason ? ` title="${esc(o.reject_reason)}"` : ''}>${o.status}</span>
+            &nbsp;· #${o.id} · ${timeAgo(o.created_at)}${o.status === 'REJECTED' && o.reject_reason ? ` · ${esc(o.reject_reason)}` : ''}
           </div>
         </div>
         <div class="order-right">
@@ -3261,6 +3261,11 @@ function safeUrl(url) {
 }
 // Tickers typed by the user are reduced to ticker characters, so they are
 // safe wherever they are later interpolated (text, attributes, URLs).
+// Daily bars carry a date, intraday bars a full timestamp ("MM-DD HH:MM").
+function chartLabel(date) {
+  const s = String(date || '');
+  return s.length > 10 ? s.slice(5, 16).replace('T', ' ') : s;
+}
 function cleanTicker(value) {
   return String(value || '').toUpperCase().replace(/[^A-Z0-9.\-]/g, '').slice(0, 10);
 }

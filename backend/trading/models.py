@@ -89,6 +89,7 @@ class Order(models.Model):
     signature = models.TextField(null=True, blank=True)  # ECDSA signature of the order creator
     # hash of the consensus block this order settled under (quorum-certified)
     block_hash = models.CharField(max_length=64, null=True, blank=True)
+    reject_reason = models.CharField(max_length=200, blank=True, default='')
 
     class Meta:
         indexes = [
