@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -118,7 +119,7 @@ func (l *Leader) cycle() {
 		return
 	}
 
-	orders, err := l.node.django.Orders()
+	orders, err := l.node.django.SubmittedOrders()
 	if err != nil {
 		log.Printf("[Leader] Error fetching orders: %v", err)
 		return
@@ -216,29 +217,37 @@ func (l *Leader) process(order Order) (stop bool) {
 		fmt.Printf("[Leader] Self-check: approve\n")
 	}
 
-	// step 4: collect votes from Validators via gRPC
-	for _, addr := range cfg.ValidatorAddresses {
-		vote := askValidator(addr, req)
-
-		if !vote.Approve {
-			// A node that was offline rejects because its chain is behind, not because
-			// the block is bad. Replay what it missed, then let it vote again.
-			if head, behind := parseHead(vote.Reason, desyncPrefix); behind {
+	// step 4: collect votes from all Validators in parallel
+	results := make([]VoteResponse, len(cfg.ValidatorAddresses))
+	var wg sync.WaitGroup
+	for i, addr := range cfg.ValidatorAddresses {
+		wg.Add(1)
+		go func(i int, addr string) {
+			defer wg.Done()
+			vote := askValidator(addr, req)
+			// A node that was offline rejects because its chain is behind, not
+			// because the block is bad. Replay what it missed, then ask again.
+			if head, behind := parseHead(vote.Reason, desyncPrefix); !vote.Approve && behind {
 				fmt.Printf("[Leader] %s is behind at #%d (we are at #%d) — replaying %d block(s)\n",
 					vote.NodeID, head, chain.HeadIndex(), chain.HeadIndex()-head)
 				if resyncValidator(addr, chain, head) {
 					vote = askValidator(addr, req)
 				}
-			} else if head, ahead := parseHead(vote.Reason, aheadPrefix); ahead {
-				// The Leader is the one behind: recover the committed blocks and
-				// start over — this block was built on a stale head.
-				fmt.Printf("[Leader] %s is ahead at #%d (we are at #%d) — catching up\n",
-					vote.NodeID, head, chain.HeadIndex())
-				l.catchUp(addr)
-				return true
 			}
-		}
+			results[i] = vote
+		}(i, addr)
+	}
+	wg.Wait()
 
+	for i, vote := range results {
+		if head, ahead := parseHead(vote.Reason, aheadPrefix); !vote.Approve && ahead {
+			// The Leader is the one behind: recover the committed blocks and
+			// start over — this block was built on a stale head.
+			fmt.Printf("[Leader] %s is ahead at #%d (we are at #%d) — catching up\n",
+				vote.NodeID, head, chain.HeadIndex())
+			l.catchUp(cfg.ValidatorAddresses[i])
+			return true
+		}
 		if vote.Approve && vote.Signature != "" {
 			votes = append(votes, Vote{Node: vote.NodeID, Signature: vote.Signature})
 			fmt.Printf("[Leader] Approved by %s\n", vote.NodeID)

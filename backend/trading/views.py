@@ -36,6 +36,9 @@ SP500_TICKERS = {
 # in the seconds since the order was priced, tight enough to catch manipulation.
 ORACLE_PRICE_TOLERANCE = Decimal('0.02')  # 2%
 
+# Largest page GET /orders/?limit= returns.
+MAX_ORDER_PAGE = 500
+
 
 _is_consensus_node = is_consensus_node
 
@@ -52,12 +55,37 @@ class OrderViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):
-        # Node (staff) sees all orders — regular user sees only their own.
+        # Nodes see all orders — a regular user sees only their own.
         # select_related avoids N+1 queries when serializing user and stock fields.
-        qs = Order.objects.select_related('user', 'stock', 'user__profile')
-        if _is_consensus_node(self.request.user):
-            return qs
-        return qs.filter(user=self.request.user)
+        qs = Order.objects.select_related('user', 'stock', 'user__profile').order_by('id')
+        if not _is_consensus_node(self.request.user):
+            qs = qs.filter(user=self.request.user)
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        """GET /orders/?status=SUBMITTED&limit=N
+
+        `status` filters by lifecycle state (the Leader polls only SUBMITTED
+        orders instead of downloading the whole history every 5 seconds).
+        `limit` returns only the N most recent orders (max 500).
+        """
+        qs = self.get_queryset()
+        wanted = request.query_params.get('status')
+        if wanted:
+            if wanted not in dict(Order.STATUS_CHOICES):
+                return Response({"error": f"Unknown status {wanted!r}."}, status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.filter(status=wanted)
+        limit = request.query_params.get('limit')
+        if limit:
+            try:
+                limit = int(limit)
+                if not 1 <= limit <= MAX_ORDER_PAGE:
+                    raise ValueError
+            except ValueError:
+                return Response({"error": f"limit must be between 1 and {MAX_ORDER_PAGE}."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.order_by('-id')[:limit]
+        return Response(self.get_serializer(qs, many=True).data)
 
     def perform_create(self, serializer):
         stock = serializer.validated_data['stock']

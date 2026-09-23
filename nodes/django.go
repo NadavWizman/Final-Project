@@ -75,10 +75,10 @@ func (d *DjangoClient) Order(id int) (*Order, error) {
 	return &o, nil
 }
 
-// Orders fetches every order visible to this node.
-func (d *DjangoClient) Orders() ([]Order, error) {
+// SubmittedOrders fetches the orders awaiting consensus, oldest first.
+func (d *DjangoClient) SubmittedOrders() ([]Order, error) {
 	var orders []Order
-	err := d.getJSON("/orders/", &orders)
+	err := d.getJSON("/orders/?status=SUBMITTED", &orders)
 	return orders, err
 }
 

@@ -921,7 +921,7 @@ function updateHeader() {
 
 async function loadData() {
   const [pRes, oRes, cfdRes, optRes] = await Promise.all([
-    api('GET','/portfolio/'), api('GET','/orders/'), api('GET','/cfd/'), api('GET','/options/'),
+    api('GET','/portfolio/'), api('GET','/orders/?limit=200'), api('GET','/cfd/'), api('GET','/options/'),
   ]);
   if (pRes.ok)   { S.portfolio = pRes.data; updateHeader(); }
   if (oRes.ok)   { S.orders = oRes.data; }

@@ -321,6 +321,21 @@ class OrderCreationTests(TestCase):
         self.assertEqual(order.quantity, Decimal('1'))
         self.assertEqual(order.trade_type, 'STOCK')
 
+    def test_orders_can_be_filtered_and_limited(self):
+        for i in range(3):
+            self.client.post('/api/orders/', {'stock': 'AAPL', 'order_type': 'BUY',
+                                              'quantity': '1', 'nonce': f'page{i}'}, format='json')
+        first = Order.objects.filter(user=self.user).order_by('id').first()
+        self.client.post(f'/api/orders/{first.id}/submit/')
+
+        r = self.client.get('/api/orders/?status=SUBMITTED')
+        self.assertEqual([o['id'] for o in r.data], [first.id])
+        r = self.client.get('/api/orders/?limit=2')
+        self.assertEqual(len(r.data), 2)
+        self.assertGreater(r.data[0]['id'], r.data[1]['id'])          # newest first
+        for bad in ('?limit=0', '?limit=9999', '?limit=x', '?status=NOPE'):
+            self.assertEqual(self.client.get('/api/orders/' + bad).status_code, 400, bad)
+
     def test_user_can_only_see_own_orders(self):
         other = make_user('bob')
         other_client = APIClient()
