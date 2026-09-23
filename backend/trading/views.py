@@ -32,6 +32,11 @@ SP500_TICKERS = {
 ORACLE_PRICE_TOLERANCE = Decimal('0.02')  # 2%
 
 
+def _is_consensus_node(user):
+    """True for the accounts the blockchain nodes authenticate as."""
+    return bool(user and user.is_authenticated and user.is_staff)
+
+
 # ============================================================
 # 1. Order management
 # ============================================================
@@ -43,7 +48,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         # Node (staff) sees all orders — regular user sees only their own.
         # select_related avoids N+1 queries when serializing user and stock fields.
         qs = Order.objects.select_related('user', 'stock', 'user__profile')
-        if self.request.user.is_staff:
+        if _is_consensus_node(self.request.user):
             return qs
         return qs.filter(user=self.request.user)
 
@@ -116,7 +121,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def reject_order(self, request, pk=None):
         # Only the consensus nodes may reject an order, never a regular user
-        if not request.user.is_staff:
+        if not _is_consensus_node(request.user):
             return Response(
                 {"error": "Only consensus nodes may reject orders."},
                 status=status.HTTP_403_FORBIDDEN
@@ -141,6 +146,14 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def execute_order(self, request, pk=None):
+        # Only the consensus nodes may settle an order. Without this check a user
+        # could execute their own SUBMITTED order directly and skip consensus.
+        if not _is_consensus_node(request.user):
+            return Response(
+                {"error": "Only consensus nodes may execute orders."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         execution_price_raw = request.data.get('execution_price')
         oracle_timestamp    = request.data.get('timestamp')
 

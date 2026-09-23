@@ -385,6 +385,17 @@ class OrderExecutionTests(TestCase):
         r = self.node_client.post(f'/api/orders/{self.order_id}/execute_order/', {}, format='json')
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_regular_user_cannot_execute_orders(self):
+        # the order owner must not be able to settle their own order and skip consensus
+        r = self.user_client.post(f'/api/orders/{self.order_id}/execute_order/', {
+            'execution_price': '100.00',
+            'timestamp': _fresh_ts(),
+        }, format='json')
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(Order.objects.get(pk=self.order_id).status, 'SUBMITTED')
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal('10000.00'))
+
     def test_execute_non_submitted_order_rejected(self):
         # Create a fresh DRAFT and try to execute without submitting
         r = self.user_client.post('/api/orders/', {
