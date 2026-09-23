@@ -1373,6 +1373,18 @@ class SmallFixesTests(TestCase):
         self.assertEqual(len(set(dates)), 2)
         self.assertIn('14:35', dates[1])
 
+    def test_history_skips_incomplete_bars(self):
+        import pandas as pd
+        idx = pd.to_datetime(['2026-09-21', '2026-09-22']).tz_localize('UTC')
+        nan = float('nan')
+        df = pd.DataFrame({'Open': [1.0, nan], 'High': [1.0, nan], 'Low': [1.0, nan],
+                           'Close': [1.0, nan]}, index=idx)
+        with patch('yfinance.Ticker') as T:
+            T.return_value.history.return_value = df
+            r = self.client.get('/api/history/AAPL/')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([p['date'] for p in r.data['prices']], ['2026-09-21'])
+
     def test_oracle_channel_is_reused(self):
         from . import oracle_client
         oracle_client._client = None

@@ -855,6 +855,9 @@ def history_view(_request, ticker):
             period = '1mo'
 
         data = yf.Ticker(ticker.replace('.', '-')).history(period=period, interval=interval)
+        # Yahoo can return incomplete bars with NaN prices (e.g. before the
+        # open); NaN is not valid JSON, so drop them instead of failing.
+        data = data.dropna(subset=['Open', 'High', 'Low', 'Close'])
         if data.empty:
             return Response({"error": f"No data for {ticker}"}, status=status.HTTP_404_NOT_FOUND)
         intraday = interval not in {'1d', '5d', '1wk', '1mo', '3mo'}
