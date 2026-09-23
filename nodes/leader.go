@@ -14,13 +14,21 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
+	"nodes/clusterauth"
 	pb "nodes/consensus"
 )
 
-// clusterSecret is the shared credential the Leader presents on every node-to-node
-// call. Set once in runLeader from config; the validators verify it.
+// clusterSecret is the shared credential the Leader proves on every node-to-node
+// call (see package clusterauth). Set once in runLeader from config.
 var clusterSecret string
+
+// dialValidator opens a client connection that authenticates every call.
+func dialValidator(address string) (*grpc.ClientConn, error) {
+	return grpc.NewClient(address,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(clusterauth.ClientInterceptor(clusterSecret)),
+	)
+}
 
 // ProposeRequest — what the Leader sends to Validators (kept for reference, proto handles the wire)
 type ProposeRequest struct {
@@ -200,7 +208,7 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 func askValidator(address string, block Block, oraclePrice, oracleTimestamp,
 	signature, publicKey, signedMsg string) VoteResponse {
 
-	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := dialValidator(address)
 	if err != nil {
 		return VoteResponse{NodeID: address, Approve: false,
 			Reason: fmt.Sprintf("connection error: %v", err)}
@@ -210,7 +218,6 @@ func askValidator(address string, block Block, oraclePrice, oracleTimestamp,
 	client := pb.NewConsensusServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = metadata.AppendToOutgoingContext(ctx, authTokenKey, clusterSecret)
 
 	resp, err := client.Propose(ctx, &pb.ProposeRequest{
 		Block:           blockToProto(block),
@@ -272,7 +279,7 @@ func broadcastCommit(address string, block Block) {
 
 // sendCommit delivers one block to a Validator and reports whether it now holds it
 func sendCommit(address string, block Block) bool {
-	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := dialValidator(address)
 	if err != nil {
 		log.Printf("[Leader] Commit connection to %s failed: %v", address, err)
 		return false
@@ -282,7 +289,6 @@ func sendCommit(address string, block Block) bool {
 	client := pb.NewConsensusServiceClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ctx = metadata.AppendToOutgoingContext(ctx, authTokenKey, clusterSecret)
 
 	resp, err := client.Commit(ctx, &pb.CommitRequest{Block: blockToProto(block)})
 	if err != nil {

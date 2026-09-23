@@ -1,12 +1,28 @@
+import secrets
+import sys
+import warnings
 from pathlib import Path
+
 from decouple import config, Csv
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Read from .env (or environment variables). See .env.example for the full list.
-SECRET_KEY    = config('SECRET_KEY', default='django-insecure-dev-only-change-in-production')
-DEBUG         = config('DEBUG', default=True, cast=bool)
+# Read from .env (or environment variables). See .env.example for the full list;
+# setup.sh generates backend/.env with a random SECRET_KEY.
+DEBUG         = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='127.0.0.1,localhost', cast=Csv())
+
+_PLACEHOLDER_KEYS = {'', 'replace-with-a-long-random-string'}
+SECRET_KEY = config('SECRET_KEY', default='')
+_RUNNING_TESTS = sys.argv[1:2] == ['test']
+if SECRET_KEY in _PLACEHOLDER_KEYS:
+    if not (DEBUG or _RUNNING_TESTS):
+        raise ImproperlyConfigured(
+            'SECRET_KEY is not set. Run setup.sh or put a long random SECRET_KEY in backend/.env.')
+    # Development/tests only: a per-process random key, never a value published in the repo.
+    SECRET_KEY = secrets.token_urlsafe(50)
+    warnings.warn('SECRET_KEY not set — using a temporary random key (sessions reset on restart).')
 
 # Oracle gRPC address used by the price_view proxy
 ORACLE_URL = config('ORACLE_URL', default='127.0.0.1:8001')

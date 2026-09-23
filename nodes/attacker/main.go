@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
+	"nodes/clusterauth"
 	pbc "nodes/consensus"
 	pbo "nodes/oracle"
 )
@@ -170,7 +171,8 @@ func main() {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if secret := os.Getenv("CLUSTER_SECRET"); secret != "" {
-			ctx = metadata.AppendToOutgoingContext(ctx, "auth-token", secret)
+			ctx = metadata.AppendToOutgoingContext(ctx, clusterauth.MetadataKey,
+				clusterauth.Token(secret, pbc.ConsensusService_Propose_FullMethodName, time.Now()))
 		}
 		resp, err := pbc.NewConsensusServiceClient(conn).Propose(ctx, &pbc.ProposeRequest{
 			Block:           forged,

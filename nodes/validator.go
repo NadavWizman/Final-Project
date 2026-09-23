@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -18,8 +17,8 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"nodes/clusterauth"
 	pb "nodes/consensus"
 )
 
@@ -49,16 +48,13 @@ func runValidator(cfg Config, chain *Chain) {
 	// stranger on the network could ask for votes or inject blocks directly.
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
 		recoveryInterceptor,
-		clusterAuthInterceptor(cfg.ClusterSecret),
+		clusterauth.ServerInterceptor(cfg.ClusterSecret),
 	))
 	pb.RegisterConsensusServiceServer(srv, &ValidatorServer{cfg: cfg, chain: chain})
 
 	fmt.Printf("[%s] gRPC server ready (authenticated)\n", cfg.NodeName)
 	log.Fatal(srv.Serve(lis))
 }
-
-// authTokenKey is the gRPC metadata key carrying the shared cluster credential.
-const authTokenKey = "auth-token"
 
 // recoveryInterceptor turns a panic inside a handler into an Internal error.
 // grpc-go does not recover handler panics, so without this one malformed
@@ -72,22 +68,6 @@ func recoveryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInf
 		}
 	}()
 	return handler(ctx, req)
-}
-
-// clusterAuthInterceptor rejects any RPC that does not present the shared secret.
-func clusterAuthInterceptor(secret string) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
-		handler grpc.UnaryHandler) (any, error) {
-		md, ok := metadata.FromIncomingContext(ctx)
-		if !ok {
-			return nil, status.Error(codes.Unauthenticated, "missing cluster credential")
-		}
-		tokens := md.Get(authTokenKey)
-		if len(tokens) == 0 || subtle.ConstantTimeCompare([]byte(tokens[0]), []byte(secret)) != 1 {
-			return nil, status.Error(codes.Unauthenticated, "invalid cluster credential")
-		}
-		return handler(ctx, req)
-	}
 }
 
 // Propose receives a block proposal from the Leader, validates it, and returns a vote

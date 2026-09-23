@@ -18,16 +18,30 @@ echo ""
 echo "[1/5] Installing Python dependencies..."
 pip3 install -r "$ROOT/requirements.txt" --quiet
 
-# ── 2. Django .env ────────────────────────────────────────────────
-echo "[2/5] Configuring Django environment..."
+# ── 2. Secrets (.env files) ───────────────────────────────────────
+echo "[2/5] Configuring environment and generating secrets..."
+rand() { python3 -c "import secrets; print(secrets.token_urlsafe($1))"; }
+
 if [ ! -f "$BACKEND/.env" ]; then
-    cp "$BACKEND/.env.example" "$BACKEND/.env"
-    echo "      Created backend/.env from .env.example"
-    echo "      ⚠  Edit backend/.env and set a real SECRET_KEY before deploying."
+    sed "s|^SECRET_KEY=.*|SECRET_KEY=$(rand 50)|" "$BACKEND/.env.example" > "$BACKEND/.env"
+    chmod 600 "$BACKEND/.env"
+    echo "      Created backend/.env with a random SECRET_KEY"
     echo "      ℹ  Add your free Gemini API key to GEMINI_API_KEY to enable AI news & chat."
     echo "         Get one at: https://aistudio.google.com/app/apikey"
 else
     echo "      backend/.env already exists — skipped."
+fi
+
+if [ ! -f "$NODES/.env" ]; then
+    sed -e "s|^CLUSTER_SECRET=.*|CLUSTER_SECRET=$(rand 32)|" \
+        -e "s|^NODE1_PASS=.*|NODE1_PASS=$(rand 24)|" \
+        -e "s|^NODE2_PASS=.*|NODE2_PASS=$(rand 24)|" \
+        -e "s|^NODE3_PASS=.*|NODE3_PASS=$(rand 24)|" \
+        "$NODES/.env.example" > "$NODES/.env"
+    chmod 600 "$NODES/.env"
+    echo "      Created nodes/.env with a random cluster secret and node passwords"
+else
+    echo "      nodes/.env already exists — skipped."
 fi
 
 # ── 3. Database ───────────────────────────────────────────────────
@@ -37,7 +51,7 @@ python3 "$BACKEND/manage.py" migrate --run-syncdb
 echo "      Seeding S&P 500 stock catalog..."
 python3 "$BACKEND/manage.py" seed_stocks
 
-echo "      Creating blockchain node users..."
+echo "      Creating blockchain node users (passwords from nodes/.env)..."
 python3 "$BACKEND/manage.py" create_node_users
 
 # ── 4. Go binary ─────────────────────────────────────────────────
@@ -62,13 +76,13 @@ echo "  Terminal 1 — Oracle:"
 echo "    cd oracle_service && python3 oracle_server.py"
 echo ""
 echo "  Terminal 2 — Node 1 (Leader):"
-echo "    cd nodes && NODE_NAME=node1 NODE_PASS=node1pass IS_LEADER=true ./nodes_bin"
+echo "    cd nodes && NODE_NAME=node1 IS_LEADER=true ./nodes_bin"
 echo ""
 echo "  Terminal 3 — Node 2 (Validator):"
-echo "    cd nodes && NODE_NAME=node2 NODE_PASS=node2pass IS_LEADER=false LISTEN_PORT=9002 ./nodes_bin"
+echo "    cd nodes && NODE_NAME=node2 ./nodes_bin"
 echo ""
 echo "  Terminal 4 — Node 3 (Validator):"
-echo "    cd nodes && NODE_NAME=node3 NODE_PASS=node3pass IS_LEADER=false LISTEN_PORT=9003 ./nodes_bin"
+echo "    cd nodes && NODE_NAME=node3 ./nodes_bin"
 echo ""
 echo "  Terminal 5 — Django:"
 echo "    cd backend && python3 manage.py runserver"
