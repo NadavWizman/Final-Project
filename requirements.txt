@@ -1,9 +1,10 @@
 Django>=5.1,<6.1
 djangorestframework>=3.15
 cryptography>=42.0
-grpcio>=1.62
-grpcio-tools>=1.62
-protobuf>=4.25
+# the generated gRPC code (oracle_service/*_pb2*.py) checks these minimums at import
+grpcio>=1.81
+grpcio-tools>=1.81
+protobuf>=6.33.5
 yfinance>=0.2.36
 python-decouple>=3.8
 duckduckgo-search>=6.0
