@@ -897,9 +897,16 @@ async function doRegister() {
 
 function logout() {
   S.creds = null; S.portfolio = null; S.orders = []; S.holdingPrices = {};
+  // clear everything tied to this account so the next user never sees it
+  S.cfdPositions = []; S.optPositions = []; S.pendingDraft = null; S.pendingCloses = {};
+  S.aiChat = {}; S.aiNews = {};
   clearInterval(S.refreshTimer); clearInterval(S.priceTimer);
   document.getElementById('app-screen').classList.remove('visible');
   document.getElementById('login-screen').style.display = 'flex';
+  // always come back to the Sign In form, with the password fields emptied
+  ['login-pass', 'reg-pass'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const signIn = document.querySelector('.login-tabs button');
+  if (signIn) switchAuthTab('login', signIn);
 }
 
 // ── APP ──────────────────────────────────────────────────────────
