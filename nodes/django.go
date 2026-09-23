@@ -27,6 +27,9 @@ type Order struct {
 	// BlockHash is the consensus block the order settled under. Django stores
 	// it only after verifying a quorum of signed votes for it.
 	BlockHash string `json:"block_hash"`
+	// LimitPrice is empty for market orders.
+	LimitPrice string    `json:"limit_price"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // DjangoClient talks to the Django API with this node's credentials. Every

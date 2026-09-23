@@ -473,8 +473,8 @@ class OrderExecutionTests(TestCase):
         self.assertEqual(order.status, 'REJECTED')
 
 
-    def test_execute_limit_price_exceeded_rejects_buy(self):
-        # Create a BUY order with limit_price = $50
+    def test_limit_not_reached_keeps_order_open(self):
+        # BUY limit $50 while the market is at $75: the order rests, it is not killed
         r = self.user_client.post('/api/orders/', {
             'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '1',
             'nonce': 'lim001', 'limit_price': '50.00'
@@ -482,11 +482,25 @@ class OrderExecutionTests(TestCase):
         oid = r.data['id']
         self.user_client.post(f'/api/orders/{oid}/submit/')
         r2 = self.node_client.post(f'/api/orders/{oid}/execute_order/', {
-            'execution_price': '75.00',  # above limit
-            'timestamp': _fresh_ts(),
+            'execution_price': '75.00', 'timestamp': _fresh_ts(),
         }, format='json')
-        self.assertEqual(r2.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(Order.objects.get(pk=oid).status, 'REJECTED')
+        self.assertEqual(r2.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(Order.objects.get(pk=oid).status, 'SUBMITTED')
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal('10000.00'))
+
+    def test_limit_reached_fills_at_market(self):
+        r = self.user_client.post('/api/orders/', {
+            'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '1',
+            'nonce': 'lim002', 'limit_price': '80.00'
+        }, format='json')
+        oid = r.data['id']
+        self.user_client.post(f'/api/orders/{oid}/submit/')
+        r2 = self.node_client.post(f'/api/orders/{oid}/execute_order/', {
+            'execution_price': '75.00', 'timestamp': _fresh_ts(),
+        }, format='json')
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(Order.objects.get(pk=oid).execution_price, Decimal('75.0000'))
 
     def test_execute_sell_adds_balance_and_removes_position(self):
         # Give user a position first

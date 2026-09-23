@@ -2258,7 +2258,9 @@ async function doConfirmedOrder() {
     return;
   }
 
-  showToast('⚡ Submitted — consensus in progress…');
+  showToast(body.limit_price
+    ? '⏳ Limit order placed — it fills when the market reaches ' + fmt$(body.limit_price)
+    : '⚡ Submitted — consensus in progress…');
   S.pendingDraft = orderId;
 
   // Store SL/TP intent for auto-creation after order confirms

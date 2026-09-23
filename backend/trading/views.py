@@ -302,12 +302,15 @@ class OrderViewSet(viewsets.ModelViewSet):
                     f"(limit {ORACLE_PRICE_TOLERANCE * 100:.0f}%)."
                 )
 
-            # limit-price check
-            if order.limit_price:
-                if order.order_type == 'BUY' and execution_price > order.limit_price:
-                    return _reject(order, f"Market price ${execution_price} exceeds limit price ${order.limit_price}.")
-                if order.order_type == 'SELL' and execution_price < order.limit_price:
-                    return _reject(order, f"Market price ${execution_price} is below limit price ${order.limit_price}.")
+            # Limit orders rest until the market reaches the limit. The Leader only
+            # proposes one once its price qualifies; if the price moved past the
+            # limit in the meantime, keep the order open (409) rather than kill it.
+            if order.limit_price and not _limit_satisfied(order, execution_price):
+                return Response(
+                    {"error": f"Limit not reached: market ${execution_price}, "
+                              f"limit ${order.limit_price} ({order.order_type}). Order stays open."},
+                    status=status.HTTP_409_CONFLICT,
+                )
 
             wallet = Wallet.objects.select_for_update().get(user_id=order.user_id)
             order.block_hash = block_hash
@@ -319,6 +322,13 @@ class OrderViewSet(viewsets.ModelViewSet):
 # 1b. Settlement — one function per trade type. Each runs inside the
 #     execute_order transaction with the order and wallet rows locked.
 # ============================================================
+def _limit_satisfied(order, price):
+    """A BUY fills at or below its limit, a SELL at or above it."""
+    if order.order_type == 'BUY':
+        return price <= order.limit_price
+    return price >= order.limit_price
+
+
 def _reject(order, error, http_status=status.HTTP_400_BAD_REQUEST):
     order.status = 'REJECTED'
     order.block_hash = None

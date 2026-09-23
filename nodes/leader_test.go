@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLeaderSettlesOrderAndAllChainsAgree(t *testing.T) {
@@ -99,5 +100,38 @@ func TestLeaderCatchesUpAfterLosingItsChain(t *testing.T) {
 	c.leader.cycle() // and consensus continues on top of it
 	if st, _ := c.status(3); st != "CONFIRMED" {
 		t.Fatalf("order 3 status = %s after catch-up, want CONFIRMED", st)
+	}
+}
+
+func TestLimitOrderWaitsForItsPrice(t *testing.T) {
+	c := newTestCluster(t, 2)
+	o, _ := signedOrder(t, 1, "AAPL", "BUY", "1.0000")
+	o.LimitPrice, o.CreatedAt = "190.0000", time.Now()
+	c.dj.put(o)
+
+	c.leader.cycle() // market at 200 > limit 190
+	if st, _ := c.status(1); st != "SUBMITTED" || c.leader.node.chain.Length() != 1 {
+		t.Fatalf("limit order filled above its limit (status %s)", st)
+	}
+
+	for _, n := range append(c.validators, c.leader.node) {
+		n.priceFn = fixedPrice("189.50")
+	}
+	c.leader.cycle()
+	if st, _ := c.status(1); st != "CONFIRMED" {
+		t.Fatalf("limit order not filled once the price qualified (status %s)", st)
+	}
+}
+
+func TestExpiredLimitOrderIsRejected(t *testing.T) {
+	c := newTestCluster(t, 2)
+	c.leader.node.cfg.LimitOrderTTL = time.Hour
+	o, _ := signedOrder(t, 1, "AAPL", "BUY", "1.0000")
+	o.LimitPrice, o.CreatedAt = "100.0000", time.Now().Add(-2*time.Hour)
+	c.dj.put(o)
+
+	c.leader.cycle()
+	if st, _ := c.status(1); st != "REJECTED" {
+		t.Fatalf("expired limit order status = %s, want REJECTED", st)
 	}
 }

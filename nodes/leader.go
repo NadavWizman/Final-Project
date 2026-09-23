@@ -190,6 +190,23 @@ func (l *Leader) process(order Order) (stop bool) {
 		delete(l.outages, order.ID)
 	}
 
+	// A limit order rests until the market reaches its limit — or until it
+	// expires. No block is proposed for a price the user would not accept.
+	if order.LimitPrice != "" {
+		if cfg.LimitOrderTTL > 0 && !order.CreatedAt.IsZero() && time.Since(order.CreatedAt) > cfg.LimitOrderTTL {
+			fmt.Printf("[Leader] Limit order #%d expired after %s — rejecting\n", order.ID, cfg.LimitOrderTTL)
+			django.RejectOrder(order.ID, "limit order expired")
+			return false
+		}
+		if ok, err := limitSatisfied(order, oracle.ExecutionPrice); err != nil {
+			fmt.Printf("[Leader] Order #%d has an unusable limit price: %v — rejecting\n", order.ID, err)
+			django.RejectOrder(order.ID, "invalid limit price")
+			return false
+		} else if !ok {
+			return false // keep waiting; re-checked next cycle
+		}
+	}
+
 	fmt.Printf("\n[Leader] Order #%d | %s %s %s\n", order.ID, order.OrderType, order.Quantity, order.Stock)
 	fmt.Printf("[Leader] Oracle: $%s\n", oracle.ExecutionPrice)
 
@@ -276,6 +293,23 @@ func (l *Leader) process(order Order) (stop bool) {
 		return true
 	}
 	return !l.settle(p)
+}
+
+// limitSatisfied reports whether price fills the order: a BUY at or below its
+// limit, a SELL at or above it. Mirrors views._limit_satisfied in Django.
+func limitSatisfied(order Order, price string) (bool, error) {
+	limit, err := strconv.ParseFloat(order.LimitPrice, 64)
+	if err != nil || limit <= 0 {
+		return false, fmt.Errorf("limit %q", order.LimitPrice)
+	}
+	p, err := strconv.ParseFloat(price, 64)
+	if err != nil {
+		return false, fmt.Errorf("price %q", price)
+	}
+	if order.OrderType == "BUY" {
+		return p <= limit, nil
+	}
+	return p >= limit, nil
 }
 
 // settle asks Django to execute a pending settlement and acts on the answer.

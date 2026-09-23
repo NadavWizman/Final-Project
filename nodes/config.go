@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 )
 
 // Config holds all node configuration
@@ -14,9 +15,10 @@ type Config struct {
 	DjangoURL          string
 	OracleURL          string
 	IsLeader           bool
-	ValidatorAddresses []string // addresses of the other nodes (used by Leader)
-	ListenPort         string   // HTTP server port (used by Validators)
-	ClusterSecret      string   // shared credential for node-to-node gRPC auth
+	ValidatorAddresses []string      // addresses of the other nodes (used by Leader)
+	ListenPort         string        // HTTP server port (used by Validators)
+	ClusterSecret      string        // shared credential for node-to-node gRPC auth
+	LimitOrderTTL      time.Duration // how long a limit order may wait for its price
 }
 
 // minSecretLen is the shortest CLUSTER_SECRET accepted.
@@ -89,6 +91,15 @@ func LoadConfig() Config {
 			"(run setup.sh to generate nodes/.env)", minSecretLen)
 	}
 
+	limitTTL := 24 * time.Hour
+	if v := os.Getenv("LIMIT_ORDER_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			log.Fatalf("LIMIT_ORDER_TTL must be a positive duration such as 24h or 90m, got %q", v)
+		}
+		limitTTL = d
+	}
+
 	return Config{
 		NodeName:           name,
 		NodePass:           pass,
@@ -98,6 +109,7 @@ func LoadConfig() Config {
 		ValidatorAddresses: validators,
 		ListenPort:         listenPort,
 		ClusterSecret:      clusterSecret,
+		LimitOrderTTL:      limitTTL,
 	}
 }
 
