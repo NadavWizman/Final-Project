@@ -214,49 +214,64 @@ func (s *ValidatorServer) price(ticker string) (*OracleData, error) {
 
 // Commit receives an approved block and appends it to the local chain.
 // It is also the channel the Leader uses to replay blocks a lagging node missed,
-// so it must be idempotent and must never append a block blindly.
+// so it must be idempotent and must never append a block blindly: the block
+// has to extend this node's chain AND be certified by Django — its order must
+// be CONFIRMED under exactly this block hash, which Django records only after
+// verifying a quorum of signed votes. Holding the cluster secret is therefore
+// not enough to inject a block.
 func (s *ValidatorServer) Commit(ctx context.Context, req *pb.CommitRequest) (*pb.CommitResponse, error) {
 	if req.GetBlock() == nil {
 		return nil, status.Error(codes.InvalidArgument, "missing block")
 	}
 	block := protoToBlock(req.Block)
+	respond := func(state string) *pb.CommitResponse {
+		return &pb.CommitResponse{Status: state, Index: int32(block.Index), ChainLength: int32(s.chain.Length())}
+	}
 
-	// already held — a replayed commit, acknowledge without duplicating
-	if block.Index <= s.chain.HeadIndex() {
-		fmt.Printf("[%s] Block #%d already present | chain length: %d\n",
-			s.cfg.NodeName, block.Index, s.chain.Length())
-		return &pb.CommitResponse{
-			Status:      "already_present",
-			Index:       int32(block.Index),
-			ChainLength: int32(s.chain.Length()),
-		}, nil
+	// already held — a replayed commit. Acknowledge it only if it is the very
+	// same block; a different block at that index is a fork, not a duplicate.
+	if existing, ok := s.chain.BlockAt(block.Index); ok {
+		if existing.Hash == block.Hash {
+			fmt.Printf("[%s] Block #%d already present | chain length: %d\n",
+				s.cfg.NodeName, block.Index, s.chain.Length())
+			return respond("already_present"), nil
+		}
+		fmt.Printf("[%s] Commit REJECTED: block #%d conflicts with the block we hold\n",
+			s.cfg.NodeName, block.Index)
+		return respond(fmt.Sprintf("rejected: conflicts with local block #%d", block.Index)), nil
 	}
 
 	// the block must connect to our own chain — verify before trusting the Leader
 	if err := s.chain.ValidateBlock(block); err != nil {
 		fmt.Printf("[%s] Commit REJECTED for block #%d: %v\n", s.cfg.NodeName, block.Index, err)
-		return &pb.CommitResponse{
-			Status:      fmt.Sprintf("rejected: %v", err),
-			Index:       int32(block.Index),
-			ChainLength: int32(s.chain.Length()),
-		}, nil
+		return respond(fmt.Sprintf("rejected: %v", err)), nil
+	}
+
+	if err := s.certified(block); err != nil {
+		fmt.Printf("[%s] Commit REJECTED for block #%d: %v\n", s.cfg.NodeName, block.Index, err)
+		return respond(fmt.Sprintf("rejected: %v", err)), nil
 	}
 
 	if err := s.chain.Append(block); err != nil {
 		fmt.Printf("[%s] Commit FAILED for block #%d: %v\n", s.cfg.NodeName, block.Index, err)
-		return &pb.CommitResponse{
-			Status:      fmt.Sprintf("rejected: %v", err),
-			Index:       int32(block.Index),
-			ChainLength: int32(s.chain.Length()),
-		}, nil
+		return respond(fmt.Sprintf("rejected: %v", err)), nil
 	}
 	fmt.Printf("[%s] Block #%d committed | chain length: %d\n",
 		s.cfg.NodeName, block.Index, s.chain.Length())
-	return &pb.CommitResponse{
-		Status:      "committed",
-		Index:       int32(block.Index),
-		ChainLength: int32(s.chain.Length()),
-	}, nil
+	return respond("committed"), nil
+}
+
+// certified reports whether Django settled the block's order under this block.
+func (s *ValidatorServer) certified(b Block) error {
+	order, err := s.django.Order(b.OrderID)
+	if err != nil {
+		return fmt.Errorf("cannot confirm block with Django: %v", err)
+	}
+	if order.Status != "CONFIRMED" || order.BlockHash != b.Hash {
+		return fmt.Errorf("block is not certified: order #%d is %s under block %s",
+			order.ID, order.Status, short(order.BlockHash))
+	}
+	return nil
 }
 
 // protoToBlock converts a proto Block message to the local Block struct

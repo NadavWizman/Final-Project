@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	pb "nodes/consensus"
@@ -89,8 +90,10 @@ func TestCommitRejectsGap(t *testing.T) {
 	leader := newTestChain(t, "leader")
 	grow(leader, 5)
 
-	v := newTestValidator(t, "node2") // still at Genesis (#0)
-	future := leader.BlocksFrom(5)[0] // block #5
+	dj := newFakeDjango(t)
+	dj.certify(leader)
+	v := newTestValidatorWith(t, "node2", dj) // still at Genesis (#0)
+	future := leader.BlocksFrom(5)[0]         // block #5
 
 	resp, err := v.Commit(context.Background(), &pb.CommitRequest{Block: blockToProto(future)})
 	if err != nil {
@@ -110,7 +113,9 @@ func TestCommitIsIdempotent(t *testing.T) {
 	grow(leader, 1)
 	block := leader.BlocksFrom(1)[0]
 
-	v := newTestValidator(t, "node2")
+	dj := newFakeDjango(t)
+	dj.certify(leader)
+	v := newTestValidatorWith(t, "node2", dj)
 	proto := blockToProto(block)
 
 	first, _ := v.Commit(context.Background(), &pb.CommitRequest{Block: proto})
@@ -131,16 +136,19 @@ func TestCommitIsIdempotent(t *testing.T) {
 // how far behind it is, and replaying those blocks brings it back in sync.
 func TestValidatorRecoversFromDesync(t *testing.T) {
 	leader := newTestChain(t, "leader")
-	v := newTestValidator(t, "node3")
+	dj := newFakeDjango(t)
+	v := newTestValidatorWith(t, "node3", dj)
 
 	// both start in sync at block #1
 	grow(leader, 1)
+	dj.certify(leader)
 	if _, err := v.Commit(context.Background(), &pb.CommitRequest{Block: blockToProto(leader.BlocksFrom(1)[0])}); err != nil {
 		t.Fatalf("initial commit failed: %v", err)
 	}
 
 	// node3 goes offline; the other nodes commit blocks #2..#4 without it
 	grow(leader, 3)
+	dj.certify(leader)
 	if v.HeadIndexForTest() != 1 {
 		t.Fatalf("validator head = %d before resync, want 1", v.HeadIndexForTest())
 	}
@@ -194,4 +202,45 @@ func desyncReasonFor(v *ValidatorServer, leader *Chain) string {
 		reason = fmt.Sprintf("%s%d | %s", desyncPrefix, head, reason)
 	}
 	return reason
+}
+
+// Holding the cluster secret must not be enough to inject a block: Commit
+// accepts only blocks Django settled under exactly that hash.
+func TestCommitRejectsUncertifiedBlock(t *testing.T) {
+	dj := newFakeDjango(t)
+	v := newTestValidatorWith(t, "node2", dj)
+	forged := v.chain.CreateNextBlock(1, "AAPL", "BUY", "1000", "1.00", "node1", "", "")
+
+	for name, setup := range map[string]func(){
+		"order unknown":         func() {},
+		"order still SUBMITTED": func() { dj.put(Order{ID: 1, Status: "SUBMITTED"}) },
+		"settled under another block": func() {
+			dj.put(Order{ID: 1, Status: "CONFIRMED", BlockHash: strings.Repeat("0", 64)})
+		},
+	} {
+		setup()
+		resp, err := v.Commit(context.Background(), &pb.CommitRequest{Block: blockToProto(forged)})
+		if err != nil || resp.Status == "committed" || v.chain.Length() != 1 {
+			t.Fatalf("%s: forged block committed (status %q, err %v)", name, resp.GetStatus(), err)
+		}
+	}
+}
+
+// A different block at an index we already hold is a fork, not a duplicate.
+func TestCommitReportsConflictAtSameIndex(t *testing.T) {
+	leader := newTestChain(t, "leader")
+	grow(leader, 1)
+	dj := newFakeDjango(t)
+	dj.certify(leader)
+	v := newTestValidatorWith(t, "node2", dj)
+	if r, _ := v.Commit(context.Background(), &pb.CommitRequest{Block: blockToProto(leader.BlocksFrom(1)[0])}); r.Status != "committed" {
+		t.Fatalf("setup commit: %q", r.Status)
+	}
+
+	other := newTestChain(t, "other")
+	b := other.CreateNextBlock(55, "MSFT", "SELL", "2", "300.00", "node1", "", "")
+	resp, _ := v.Commit(context.Background(), &pb.CommitRequest{Block: blockToProto(b)})
+	if !strings.Contains(resp.Status, "conflicts") {
+		t.Fatalf("status = %q, want a conflict", resp.Status)
+	}
 }

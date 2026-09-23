@@ -107,3 +107,12 @@ func proposalFor(chain *Chain, o Order, price string) (Block, *pb.ProposeRequest
 		Signature:       o.Signature, PublicKey: o.PublicKey, SignedMessage: o.SignedMessage,
 	}
 }
+
+// certify records every non-genesis block of chain as a settled order in
+// Django, the way execute_order does after verifying the quorum.
+func (f *fakeDjango) certify(chain *Chain) {
+	for _, b := range chain.BlocksFrom(1) {
+		f.put(Order{ID: b.OrderID, Stock: b.Stock, OrderType: b.OrderType, Quantity: b.Quantity,
+			Status: "CONFIRMED", BlockHash: b.Hash})
+	}
+}

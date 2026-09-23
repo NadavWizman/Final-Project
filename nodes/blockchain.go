@@ -147,6 +147,16 @@ func (c *Chain) HeadIndex() int {
 	return c.blocks[len(c.blocks)-1].Index
 }
 
+// BlockAt returns the block with the given index, if the chain has one.
+func (c *Chain) BlockAt(index int) (Block, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if index < 0 || index >= len(c.blocks) {
+		return Block{}, false
+	}
+	return c.blocks[index], true
+}
+
 // BlocksFrom returns every block with Index >= from, in order.
 // The Leader uses it to replay the blocks a lagging Validator missed.
 func (c *Chain) BlocksFrom(from int) []Block {

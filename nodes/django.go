@@ -24,6 +24,9 @@ type Order struct {
 	// SignedMessage is the exact canonical message the signature covers, as
 	// produced by Django. Nodes verify these bytes; they never rebuild them.
 	SignedMessage string `json:"signed_message"`
+	// BlockHash is the consensus block the order settled under. Django stores
+	// it only after verifying a quorum of signed votes for it.
+	BlockHash string `json:"block_hash"`
 }
 
 // DjangoClient talks to the Django API with this node's credentials. Every
