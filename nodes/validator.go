@@ -220,7 +220,14 @@ func (s *ValidatorServer) Commit(ctx context.Context, req *pb.CommitRequest) (*p
 		}, nil
 	}
 
-	s.chain.Append(block)
+	if err := s.chain.Append(block); err != nil {
+		fmt.Printf("[%s] Commit FAILED for block #%d: %v\n", s.cfg.NodeName, block.Index, err)
+		return &pb.CommitResponse{
+			Status:      fmt.Sprintf("rejected: %v", err),
+			Index:       int32(block.Index),
+			ChainLength: int32(s.chain.Length()),
+		}, nil
+	}
 	fmt.Printf("[%s] Block #%d committed | chain length: %d\n",
 		s.cfg.NodeName, block.Index, s.chain.Length())
 	return &pb.CommitResponse{

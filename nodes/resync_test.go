@@ -12,18 +12,10 @@ import (
 // newTestChain builds an isolated chain backed by a temp file, seeded with Genesis.
 func newTestChain(t *testing.T, name string) *Chain {
 	t.Helper()
-	c := &Chain{filePath: filepath.Join(t.TempDir(), "chain_"+name+".jsonl")}
-	genesis := Block{
-		Index:     0,
-		PrevHash:  "0000000000000000000000000000000000000000000000000000000000000000",
-		Stock:     "GENESIS",
-		OrderType: "GENESIS",
-		Quantity:  "0",
-		Price:     "0",
-		NodeName:  "genesis",
+	c, err := LoadChain(filepath.Join(t.TempDir(), "chain_"+name+".jsonl"))
+	if err != nil {
+		t.Fatalf("LoadChain: %v", err)
 	}
-	genesis.Hash = computeHash(genesis)
-	c.blocks = append(c.blocks, genesis)
 	return c
 }
 
@@ -31,7 +23,9 @@ func newTestChain(t *testing.T, name string) *Chain {
 func grow(c *Chain, n int) {
 	for i := 0; i < n; i++ {
 		b := c.CreateNextBlock(c.HeadIndex()+1, "AAPL", "BUY", "1", "200.00", "node1", "", "")
-		c.Append(b)
+		if err := c.Append(b); err != nil {
+			panic(err)
+		}
 	}
 }
 

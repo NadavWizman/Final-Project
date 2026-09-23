@@ -159,7 +159,11 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 			fmt.Printf("[Leader] Consensus reached! Executing order...\n")
 
 			if sendExecuteOrder(cfg, order.ID, oracle) {
-				chain.Append(block)
+				if err := chain.Append(block); err != nil {
+					log.Printf("[Leader] CRITICAL: order #%d executed but block #%d could not be stored: %v",
+						order.ID, block.Index, err)
+					continue
+				}
 				fmt.Printf("[Leader] Block #%d committed | chain length: %d\n",
 					block.Index, chain.Length())
 

