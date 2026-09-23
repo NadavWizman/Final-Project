@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run.sh — start, stop and inspect every TradeDesk service with one command.
 #
-#   ./run.sh start     start Oracle, 2 Validators, Leader and Django (in that order)
+#   ./run.sh start     start the Oracle, Django, both Validators and the Leader, in order
 #   ./run.sh stop      stop everything started by this script
 #   ./run.sh status    show which services are running
 #   ./run.sh logs [s]  follow the logs (s = oracle | node1 | node2 | node3 | django)
@@ -68,7 +68,10 @@ preflight() {
 
 launch() {   # launch <service> <dir> <command...>
     local name="$1" dir="$2"; shift 2
-    (cd "$dir" && nohup "$@" >>"$LOGS/$name.log" 2>&1 & echo $! >"$RUN/$name.pid")
+    # exec: the recorded PID is the service itself, and it holds no handle on
+    # this script's stdin/stdout (so `./run.sh start | tail` returns).
+    (cd "$dir" && exec nohup "$@" >>"$LOGS/$name.log" 2>&1 </dev/null) &
+    echo $! >"$RUN/$name.pid"
 }
 
 start() {
