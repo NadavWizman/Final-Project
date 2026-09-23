@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -14,11 +16,27 @@ func TestProposeApprovesHonestBlock(t *testing.T) {
 	v := newTestValidatorWith(t, "node2", dj)
 	o, _ := signedOrder(t, 7, "AAPL", "BUY", "1.0000")
 	dj.put(o)
-	_, req := proposalFor(v.chain, o, "200.50")
+	block, req := proposalFor(v.chain, o, "200.50")
 
 	vote, err := v.Propose(context.Background(), req)
 	if err != nil || !vote.Approve {
 		t.Fatalf("honest block rejected: %v %q", err, vote.GetReason())
+	}
+	// the approval is a signature Django can verify with the node's public key
+	sig, _ := base64.StdEncoding.DecodeString(vote.VoteSignature)
+	pub := v.key.Public().(ed25519.PublicKey)
+	if !ed25519.Verify(pub, voteMessage(block.OrderID, block.Hash, block.Price), sig) {
+		t.Fatal("vote signature does not verify")
+	}
+}
+
+func TestRejectionCarriesNoVoteSignature(t *testing.T) {
+	v := newTestValidator(t, "node2")
+	o, _ := signedOrder(t, 8, "AAPL", "BUY", "1.0000") // not in Django
+	_, req := proposalFor(v.chain, o, "200.00")
+	vote, _ := v.Propose(context.Background(), req)
+	if vote.Approve || vote.VoteSignature != "" {
+		t.Fatalf("rejection carried a vote signature: %+v", vote)
 	}
 }
 

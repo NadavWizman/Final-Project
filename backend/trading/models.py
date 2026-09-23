@@ -84,7 +84,8 @@ class Order(models.Model):
     take_profit = models.DecimalField(max_digits=15, decimal_places=4, null=True, blank=True)
     sltp_triggered = models.BooleanField(default=False)  # prevents double-fire of SL/TP auto-sell
     signature = models.TextField(null=True, blank=True)  # ECDSA signature of the order creator
-
+    # hash of the consensus block this order settled under (quorum-certified)
+    block_hash = models.CharField(max_length=64, null=True, blank=True)
 
     class Meta:
         indexes = [
@@ -94,6 +95,21 @@ class Order(models.Model):
 
     def __str__(self):
         return f"{self.order_type} {self.quantity} {self.stock_id} ({self.status})"
+
+# 4b. Consensus node signing keys
+class NodeKey(models.Model):
+    """Ed25519 public key a consensus node signs its votes with.
+
+    Registered by the node itself on first start (trust on first use) and
+    fixed afterwards; an admin rotates a key by deleting the row.
+    """
+    user       = models.OneToOneField(User, on_delete=models.CASCADE, related_name='node_key')
+    public_key = models.CharField(max_length=64)   # 32-byte raw key, hex
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"NodeKey({self.user.username}: {self.public_key[:12]}…)"
+
 
 # 5. CFD open positions
 class CFDPosition(models.Model):

@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -30,22 +26,17 @@ func dialValidator(address string) (*grpc.ClientConn, error) {
 	)
 }
 
-// ProposeRequest — what the Leader sends to Validators (kept for reference, proto handles the wire)
-type ProposeRequest struct {
-	Block           Block  `json:"block"`
-	OraclePrice     string `json:"oracle_price"`
-	OracleTimestamp string `json:"oracle_timestamp"`
-	Signature       string `json:"signature"`
-	PublicKey       string `json:"public_key"`
-	SignedMessage   string `json:"signed_message"`
+// VoteResponse — a Validator's answer to a proposal
+type VoteResponse struct {
+	NodeID    string `json:"node_id"`
+	Approve   bool   `json:"approve"`
+	Reason    string `json:"reason"`
+	Signature string `json:"vote_signature"`
 }
 
-// VoteResponse — what the Validator returns (kept for reference)
-type VoteResponse struct {
-	NodeID  string `json:"node_id"`
-	Approve bool   `json:"approve"`
-	Reason  string `json:"reason"`
-}
+// quorum is the number of signed approvals (Leader included) needed to settle.
+// Django enforces the same threshold (trading/consensus.py:QUORUM).
+const quorum = 2
 
 // oracleRetryWindow is how long the Leader keeps retrying an order while the
 // Oracle is unreachable. A brief outage should not kill a valid order, but an
@@ -58,17 +49,29 @@ func runLeader(cfg Config, chain *Chain) {
 	fmt.Printf("Validators: %v\n", cfg.ValidatorAddresses)
 	clusterSecret = cfg.ClusterSecret
 
+	node, err := newNode(cfg, chain)
+	if err != nil {
+		log.Fatalf("[%s] %v", cfg.NodeName, err)
+	}
+
 	// when the Oracle first started failing, per order
 	outages := map[int]time.Time{}
 
 	for {
-		processLeaderCycle(cfg, chain, outages)
+		processLeaderCycle(node, outages)
 		time.Sleep(5 * time.Second)
 	}
 }
 
-func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
-	orders, err := NewDjangoClient(cfg).Orders()
+// Vote is one node's signed approval, forwarded to Django as consensus proof.
+type Vote struct {
+	Node      string `json:"node"`
+	Signature string `json:"signature"`
+}
+
+func processLeaderCycle(node *ValidatorServer, outages map[int]time.Time) {
+	cfg, chain := node.cfg, node.chain
+	orders, err := node.django.Orders()
 	if err != nil {
 		log.Printf("[Leader] Error fetching orders: %v", err)
 		return
@@ -85,7 +88,7 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 
 		if order.Signature == "" || order.SignedMessage == "" {
 			fmt.Printf("[Leader] Order #%d has no signature — rejecting\n", order.ID)
-			sendRejectOrder(cfg, order.ID, "order is not signed")
+			node.django.RejectOrder(order.ID, "order is not signed")
 			continue
 		}
 
@@ -104,7 +107,7 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 			if waited := time.Since(since); waited >= oracleRetryWindow {
 				fmt.Printf("\n[Leader] Oracle still unreachable after %s — rejecting order #%d\n",
 					waited.Round(time.Second), order.ID)
-				if sendRejectOrder(cfg, order.ID, "price feed unavailable") {
+				if node.django.RejectOrder(order.ID, "price feed unavailable") {
 					fmt.Printf("[Leader] Order #%d marked REJECTED\n", order.ID)
 				}
 				delete(outages, order.ID)
@@ -131,10 +134,22 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 		// the exact bytes the user's signature covers, straight from Django
 		signedMsg := order.SignedMessage
 
-		// step 3: collect votes from Validators via gRPC
-		approvals := 1 // Leader counts itself as approved
-		fmt.Printf("[Leader] Self-vote: approve\n")
+		// step 3: the Leader votes only after running the same checks as a
+		// Validator — its approval is a signed statement, not a formality.
+		req := &pb.ProposeRequest{
+			Block: blockToProto(block), OraclePrice: oracle.ExecutionPrice,
+			OracleTimestamp: oracle.Timestamp, Signature: order.Signature,
+			PublicKey: order.PublicKey, SignedMessage: signedMsg,
+		}
+		var votes []Vote
+		if reason := node.evaluate(block, req); reason != "" {
+			fmt.Printf("[Leader] Self-check: reject — %s\n", reason)
+		} else {
+			votes = append(votes, Vote{Node: cfg.NodeName, Signature: signVote(node.key, block)})
+			fmt.Printf("[Leader] Self-check: approve\n")
+		}
 
+		// step 4: collect votes from Validators via gRPC
 		for _, addr := range cfg.ValidatorAddresses {
 			vote := askValidator(addr, block, oracle.ExecutionPrice, oracle.Timestamp,
 				order.Signature, order.PublicKey, signedMsg)
@@ -152,21 +167,22 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 				}
 			}
 
-			if vote.Approve {
-				approvals++
+			if vote.Approve && vote.Signature != "" {
+				votes = append(votes, Vote{Node: vote.NodeID, Signature: vote.Signature})
 				fmt.Printf("[Leader] Approved by %s\n", vote.NodeID)
 			} else {
 				fmt.Printf("[Leader] Rejected by %s: %s\n", vote.NodeID, vote.Reason)
 			}
 		}
 
-		fmt.Printf("[Leader] Tally: %d/3 approvals\n", approvals)
+		approvals := len(votes)
+		fmt.Printf("[Leader] Tally: %d/%d approvals\n", approvals, len(cfg.ValidatorAddresses)+1)
 
-		// step 4: consensus — minimum 2/3
-		if approvals >= 2 {
+		// step 5: consensus — a quorum of signed approvals
+		if approvals >= quorum {
 			fmt.Printf("[Leader] Consensus reached! Executing order...\n")
 
-			if sendExecuteOrder(cfg, order.ID, oracle) {
+			if node.django.ExecuteOrder(order.ID, oracle, block.Hash, votes) {
 				if err := chain.Append(block); err != nil {
 					log.Printf("[Leader] CRITICAL: order #%d executed but block #%d could not be stored: %v",
 						order.ID, block.Index, err)
@@ -182,9 +198,9 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 		} else {
 			// Mark the order REJECTED so it leaves the SUBMITTED queue — otherwise
 			// the Leader would re-propose the same failing order every cycle forever.
-			fmt.Printf("[Leader] Consensus failed for order #%d (%d/3) — rejecting\n",
+			fmt.Printf("[Leader] Consensus failed for order #%d (%d approvals) — rejecting\n",
 				order.ID, approvals)
-			if sendRejectOrder(cfg, order.ID, fmt.Sprintf("consensus not reached (%d/3 approvals)", approvals)) {
+			if node.django.RejectOrder(order.ID, fmt.Sprintf("consensus not reached (%d approvals)", approvals)) {
 				fmt.Printf("[Leader] Order #%d marked REJECTED\n", order.ID)
 			}
 		}
@@ -232,7 +248,8 @@ func askValidator(address string, block Block, oraclePrice, oracleTimestamp,
 			Reason: fmt.Sprintf("rpc error: %v", err)}
 	}
 
-	return VoteResponse{NodeID: resp.NodeId, Approve: resp.Approve, Reason: resp.Reason}
+	return VoteResponse{NodeID: resp.NodeId, Approve: resp.Approve, Reason: resp.Reason,
+		Signature: resp.VoteSignature}
 }
 
 // parseDesync reports whether a rejection was caused only by the Validator
@@ -318,54 +335,4 @@ func blockToProto(b Block) *pb.Block {
 		PublicKey: b.PublicKey,
 		Hash:      b.Hash,
 	}
-}
-
-// sendRejectOrder tells Django that consensus failed, so the order stops being
-// re-proposed on every cycle and shows as REJECTED to the user.
-func sendRejectOrder(cfg Config, orderID int, reason string) bool {
-	body, _ := json.Marshal(map[string]string{"reason": reason})
-
-	url := fmt.Sprintf("%s/orders/%d/reject_order/", cfg.DjangoURL, orderID)
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	req.SetBasicAuth(cfg.NodeName, cfg.NodePass)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("[Leader] Reject request failed: %v", err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("[Leader] Reject rejected by Django (%d): %s", resp.StatusCode, string(respBody))
-		return false
-	}
-	return true
-}
-
-// sendExecuteOrder sends the POST request to Django — stays as HTTP
-func sendExecuteOrder(cfg Config, orderID int, oracle *OracleData) bool {
-	payload := map[string]string{
-		"execution_price": oracle.ExecutionPrice,
-		"timestamp":       oracle.Timestamp,
-	}
-	body, _ := json.Marshal(payload)
-
-	url := fmt.Sprintf("%s/orders/%d/execute_order/", cfg.DjangoURL, orderID)
-	req, _ := http.NewRequest("POST", url, bytes.NewBuffer(body))
-	req.SetBasicAuth(cfg.NodeName, cfg.NodePass)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("[Leader] Django error: %v", err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	fmt.Printf("[Leader] Django response: %s\n", string(respBody))
-	return resp.StatusCode == 200
 }

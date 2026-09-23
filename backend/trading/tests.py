@@ -87,6 +87,51 @@ def make_node(username='node1'):
     return node
 
 
+# Ed25519 keys for two voting test nodes. ConsensusClient signs every
+# execute_order call with them, the way the Leader forwards real node votes.
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization as _ser
+import base64 as _b64
+import hashlib as _hashlib
+
+_VOTER_KEYS = {'voter-a': Ed25519PrivateKey.generate(), 'voter-b': Ed25519PrivateKey.generate()}
+
+
+def _raw_public_hex(private_key):
+    return private_key.public_key().public_bytes(_ser.Encoding.Raw, _ser.PublicFormat.Raw).hex()
+
+
+def ensure_voters():
+    from .models import NodeKey
+    for name, key in _VOTER_KEYS.items():
+        if not User.objects.filter(username=name).exists():
+            NodeKey.objects.create(user=make_node(name), public_key=_raw_public_hex(key))
+
+
+def block_hash_for(order_id):
+    return _hashlib.sha256(f'block-{order_id}'.encode()).hexdigest()
+
+
+def votes_for(order_id, block_hash, price, voters=('voter-a', 'voter-b')):
+    from .consensus import vote_message
+    msg = vote_message(order_id, block_hash, price)
+    return [{'node': n, 'signature': _b64.b64encode(_VOTER_KEYS[n].sign(msg)).decode()} for n in voters]
+
+
+class ConsensusClient(APIClient):
+    """APIClient for a node account that attaches a valid quorum proof to
+    execute_order calls that don't carry one."""
+
+    def post(self, path, data=None, *args, **kwargs):
+        if path.endswith('/execute_order/') and isinstance(data, dict) and 'votes' not in data:
+            ensure_voters()
+            order_id = int(path.rstrip('/').split('/')[-2])
+            block_hash = data.get('block_hash') or block_hash_for(order_id)
+            data = {**data, 'block_hash': block_hash,
+                    'votes': votes_for(order_id, block_hash, str(data.get('execution_price')))}
+        return super().post(path, data, *args, **kwargs)
+
+
 def make_stock(ticker='AAPL', name='Apple Inc.'):
     return Stock.objects.get_or_create(ticker=ticker, defaults={'name': name})[0]
 
@@ -367,7 +412,7 @@ class OrderExecutionTests(TestCase):
         self.user = make_user()
         self.stock = make_stock('AAPL')
         self.node = make_node()
-        self.node_client = APIClient()
+        self.node_client = ConsensusClient()
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
         self.user_client.force_authenticate(user=self.user)
@@ -519,7 +564,7 @@ class OrderConsensusRejectionTests(TestCase):
         self.user = make_user()
         make_stock('AAPL')
         self.node = make_node()
-        self.node_client = APIClient()
+        self.node_client = ConsensusClient()
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
         self.user_client.force_authenticate(user=self.user)
@@ -569,7 +614,7 @@ class CFDPartialCloseTests(TestCase):
         self.user = make_user()
         self.stock = make_stock('AAPL')
         self.node = make_node()
-        self.node_client = APIClient()
+        self.node_client = ConsensusClient()
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
         self.user_client.force_authenticate(user=self.user)
@@ -712,7 +757,7 @@ class OrderPriceVerificationTests(TestCase):
         self.user = make_user()
         make_stock('AAPL')
         self.node = make_node()
-        self.node_client = APIClient()
+        self.node_client = ConsensusClient()
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
         self.user_client.force_authenticate(user=self.user)
@@ -845,7 +890,7 @@ class OptionSettlementTests(TestCase):
         self.user = make_user()
         self.stock = make_stock('AAPL')
         self.node = make_node()
-        self.node_client = APIClient(); self.node_client.force_authenticate(user=self.node)
+        self.node_client = ConsensusClient(); self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient(); self.user_client.force_authenticate(user=self.user)
         _patch_oracle(self)
         self.expiry = timezone.now().date() + timedelta(days=30)
@@ -905,3 +950,107 @@ class OptionSettlementTests(TestCase):
             sell = views._option_market_premium('AAPL', self.expiry, 'CALL', Decimal('90'), 'sell')
         self.assertEqual(buy, Decimal('4.0'))    # not half the ask
         self.assertEqual(sell, Decimal('3.0'))   # no bid → last trade
+
+
+class ConsensusProofTests(TestCase):
+    """execute_order settles only with a quorum of valid node vote signatures."""
+
+    def setUp(self):
+        self.user = make_user()
+        make_stock('AAPL')
+        self.node = make_node()
+        self.raw = APIClient(); self.raw.force_authenticate(user=self.node)
+        uc = APIClient(); uc.force_authenticate(user=self.user)
+        r = uc.post('/api/orders/', {'stock': 'AAPL', 'order_type': 'BUY', 'quantity': '1',
+                                     'nonce': 'proof1'}, format='json')
+        self.oid = r.data['id']
+        uc.post(f'/api/orders/{self.oid}/submit/')
+        ensure_voters()
+        _patch_oracle(self)
+        self.hash = block_hash_for(self.oid)
+
+    def _execute(self, votes, price='100.00', block_hash=None):
+        return self.raw.post(f'/api/orders/{self.oid}/execute_order/', {
+            'execution_price': price, 'timestamp': _fresh_ts(),
+            'block_hash': block_hash or self.hash, 'votes': votes}, format='json')
+
+    def _status(self):
+        return Order.objects.get(pk=self.oid).status
+
+    def test_quorum_settles_and_records_block_hash(self):
+        r = self._execute(votes_for(self.oid, self.hash, '100.00'))
+        self.assertEqual(r.status_code, 200)
+        order = Order.objects.get(pk=self.oid)
+        self.assertEqual((order.status, order.block_hash), ('CONFIRMED', self.hash))
+
+    def test_single_node_cannot_settle(self):
+        r = self._execute(votes_for(self.oid, self.hash, '100.00', voters=('voter-a',)))
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._status(), 'SUBMITTED')
+
+    def test_duplicate_votes_from_one_node_count_once(self):
+        v = votes_for(self.oid, self.hash, '100.00', voters=('voter-a',))
+        self.assertEqual(self._execute(v + v).status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_votes_for_a_different_price_are_rejected(self):
+        r = self._execute(votes_for(self.oid, self.hash, '100.00'), price='99.00')
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._status(), 'SUBMITTED')
+
+    def test_votes_for_a_different_block_are_rejected(self):
+        other = block_hash_for(999)
+        r = self._execute(votes_for(self.oid, other, '100.00'))
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_votes_from_non_node_accounts_are_ignored(self):
+        from .models import NodeKey
+        User.objects.get(username='voter-b').groups.clear()
+        r = self._execute(votes_for(self.oid, self.hash, '100.00'))
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(NodeKey.objects.filter(user__username='voter-b').exists())
+
+    def test_garbage_votes_rejected(self):
+        for votes in (None, 'x', [1, 2], [{'node': 'voter-a', 'signature': '!!'}]):
+            self.assertEqual(self._execute(votes).status_code, status.HTTP_403_FORBIDDEN)
+
+
+class GoVoteCompatibilityTests(TestCase):
+    """A vote signed by the Go node code (nodekey.go:signVote, fixed seed 0..31)
+    must verify here — this pins the cross-language vote format."""
+
+    GO_PUB  = '03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8'
+    GO_HASH = 'ab' + '0' * 62
+    GO_SIG  = '7Sugab3pVdIAGvRsEO3GcYP+fEvuiWs4ycLiVWRPcCg8h7+KlnqCBgcLogMhn8Nm9n7KI0avRH04eThXX467DA=='
+
+    def test_go_signed_vote_verifies(self):
+        from .consensus import count_valid_votes
+        from .models import NodeKey
+        NodeKey.objects.create(user=make_node('go-node'), public_key=self.GO_PUB)
+        votes = [{'node': 'go-node', 'signature': self.GO_SIG}]
+        self.assertEqual(count_valid_votes(42, self.GO_HASH, '187.25', votes), 1)
+        self.assertEqual(count_valid_votes(42, self.GO_HASH, '187.26', votes), 0)
+
+
+class NodeKeyRegistrationTests(TestCase):
+
+    def setUp(self):
+        self.node = make_node()
+        self.client = APIClient(); self.client.force_authenticate(user=self.node)
+        self.key = _raw_public_hex(Ed25519PrivateKey.generate())
+
+    def test_first_registration_then_idempotent(self):
+        self.assertEqual(self.client.post('/api/node-key/', {'public_key': self.key}, format='json').status_code, 201)
+        self.assertEqual(self.client.post('/api/node-key/', {'public_key': self.key}, format='json').status_code, 200)
+
+    def test_different_key_refused_after_first_use(self):
+        self.client.post('/api/node-key/', {'public_key': self.key}, format='json')
+        other = _raw_public_hex(Ed25519PrivateKey.generate())
+        self.assertEqual(self.client.post('/api/node-key/', {'public_key': other}, format='json').status_code, 409)
+
+    def test_regular_user_cannot_register(self):
+        c = APIClient(); c.force_authenticate(user=make_user())
+        self.assertEqual(c.post('/api/node-key/', {'public_key': self.key}, format='json').status_code, 403)
+
+    def test_malformed_key_rejected(self):
+        for bad in ('', 'zz', 'ab' * 31, 'ab' * 33):
+            self.assertEqual(self.client.post('/api/node-key/', {'public_key': bad}, format='json').status_code, 400)

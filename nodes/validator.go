@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -33,6 +34,7 @@ type ValidatorServer struct {
 	cfg     Config
 	chain   *Chain
 	django  *DjangoClient
+	key     ed25519.PrivateKey                       // signs this node's approvals
 	priceFn func(ticker string) (*OracleData, error) // test hook; nil = live Oracle
 }
 
@@ -52,7 +54,11 @@ func runValidator(cfg Config, chain *Chain) {
 		recoveryInterceptor,
 		clusterauth.ServerInterceptor(cfg.ClusterSecret),
 	))
-	pb.RegisterConsensusServiceServer(srv, &ValidatorServer{cfg: cfg, chain: chain, django: NewDjangoClient(cfg)})
+	node, err := newNode(cfg, chain)
+	if err != nil {
+		log.Fatalf("[%s] %v", cfg.NodeName, err)
+	}
+	pb.RegisterConsensusServiceServer(srv, node)
 
 	fmt.Printf("[%s] gRPC server ready (authenticated)\n", cfg.NodeName)
 	log.Fatal(srv.Serve(lis))
@@ -88,7 +94,21 @@ func (s *ValidatorServer) Propose(ctx context.Context, req *pb.ProposeRequest) (
 	}
 
 	fmt.Printf("[%s] APPROVE block #%d (price $%s)\n", s.cfg.NodeName, block.Index, block.Price)
-	return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: true}, nil
+	return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: true,
+		VoteSignature: signVote(s.key, block)}, nil
+}
+
+// newNode builds the consensus logic shared by Leader and Validators: chain,
+// Django access and the node's signing key (registered with Django in the
+// background, so the node can start before the backend).
+func newNode(cfg Config, chain *Chain) (*ValidatorServer, error) {
+	key, err := loadOrCreateNodeKey(cfg.NodeName)
+	if err != nil {
+		return nil, err
+	}
+	dj := NewDjangoClient(cfg)
+	go registerKeyUntilDone(dj, cfg.NodeName, key.Public().(ed25519.PublicKey))
+	return &ValidatorServer{cfg: cfg, chain: chain, django: dj, key: key}, nil
 }
 
 // evaluate runs every check on a proposed block and returns the reason for

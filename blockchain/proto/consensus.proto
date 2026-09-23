@@ -32,9 +32,13 @@ message ProposeRequest {
 
 // VoteResponse is what the Validator sends back
 message VoteResponse {
-  string node_id = 1;
-  bool   approve = 2;
-  string reason  = 3;
+  string node_id        = 1;
+  bool   approve        = 2;
+  string reason         = 3;
+  // Ed25519 signature (base64) over "tradedesk-vote|<order_id>|<block hash>|<price>"
+  // with the node's registered key; present only when approve is true.
+  // Django settles an order only with a quorum of these.
+  string vote_signature = 4;
 }
 
 // CommitRequest is sent by the Leader after consensus is reached

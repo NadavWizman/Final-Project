@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -36,8 +37,9 @@ func newTestValidator(t *testing.T, name string) *ValidatorServer {
 
 func newTestValidatorWith(t *testing.T, name string, dj *fakeDjango) *ValidatorServer {
 	t.Helper()
+	_, key, _ := ed25519.GenerateKey(nil)
 	return &ValidatorServer{cfg: Config{NodeName: name}, chain: newTestChain(t, name),
-		django: dj.client(), priceFn: fixedPrice("200.00")}
+		django: dj.client(), key: key, priceFn: fixedPrice("200.00")}
 }
 
 func TestParseDesync(t *testing.T) {

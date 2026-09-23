@@ -5,7 +5,7 @@ from .views import (
     price_view, history_view, cfd_positions_view,
     sltp_view, sltp_delete_view,
     option_chain_view, option_positions_view,
-    ai_news_view, ai_chat_view,
+    ai_news_view, ai_chat_view, node_key_view,
 )
 
 router = DefaultRouter()
@@ -13,6 +13,7 @@ router.register(r'orders', OrderViewSet, basename='order')
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('node-key/',                 node_key_view,          name='node-key'),
     path('portfolio/',                portfolio_view,         name='portfolio'),
     path('register/',                 register_view,          name='register'),
     path('deposit/',                  deposit_view,           name='deposit'),

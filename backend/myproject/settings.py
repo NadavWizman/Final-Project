@@ -93,6 +93,11 @@ DATABASES = {
 }
 
 
+# Tests create many users; a fast hasher keeps the suite quick. Never used
+# outside `manage.py test`.
+if _RUNNING_TESTS:
+    PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 

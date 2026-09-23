@@ -13,8 +13,9 @@ db.sqlite3
 *.sqlite3
 .env
 
-# Blockchain data (node-local state, not committed)
+# Blockchain data and node signing keys (node-local, never committed)
 nodes/chain_*.jsonl
+nodes/nodekey_*.hex
 
 # macOS
 **/.DS_Store

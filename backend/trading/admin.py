@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Stock, Wallet, Position, Order, UserProfile
+from .models import Stock, Wallet, Position, Order, UserProfile, NodeKey
 
 
 @admin.register(Stock)
@@ -39,3 +39,9 @@ class UserProfileAdmin(admin.ModelAdmin):
     list_display  = ('user',)
     search_fields = ('user__username',)
     readonly_fields = ('ecdsa_private_key', 'ecdsa_public_key')
+
+
+@admin.register(NodeKey)
+class NodeKeyAdmin(admin.ModelAdmin):
+    list_display    = ('user', 'public_key', 'created_at')
+    readonly_fields = ('user', 'public_key', 'created_at')

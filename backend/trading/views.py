@@ -11,8 +11,9 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition
+from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition, NodeKey
 from .roles import is_consensus_node
+from .consensus import QUORUM, count_valid_votes, valid_public_key
 from .serializers import OrderSerializer, SLTPLevelSerializer, DepositSerializer
 from .crypto_utils import generate_key_pair, sign_order, verify_signature, order_signing_payload
 from django.contrib.auth.models import User
@@ -171,6 +172,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         execution_price_raw = request.data.get('execution_price')
         oracle_timestamp    = request.data.get('timestamp')
+        block_hash          = request.data.get('block_hash')
 
         if not execution_price_raw or not oracle_timestamp:
             return Response(
@@ -195,6 +197,15 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response(
                 {"error": f"Stale data: price is {int(age.total_seconds())} seconds old (limit: 60s)."},
                 status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Proof of consensus: a quorum of node signatures over exactly this
+        # order, block and price. Without it the caller is just one node.
+        if count_valid_votes(pk, block_hash, str(execution_price_raw),
+                             request.data.get('votes')) < QUORUM:
+            return Response(
+                {"error": f"Consensus proof missing: at least {QUORUM} valid node votes are required."},
+                status=status.HTTP_403_FORBIDDEN,
             )
 
         # ── network I/O first, outside the transaction ─────────────
@@ -262,6 +273,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     return _reject(order, f"Market price ${execution_price} is below limit price ${order.limit_price}.")
 
             wallet = Wallet.objects.select_for_update().get(user_id=order.user_id)
+            order.block_hash = block_hash
             settle = _SETTLERS.get(order.trade_type, _settle_stock)
             return settle(order, wallet, execution_price, option_quote)
 
@@ -272,6 +284,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 # ============================================================
 def _reject(order, error, http_status=status.HTTP_400_BAD_REQUEST):
     order.status = 'REJECTED'
+    order.block_hash = None
     order.save()
     return Response({"error": error}, status=http_status)
 
@@ -569,6 +582,33 @@ def _quote_for_order(order):
     if pos is None:
         return None
     return _option_market_premium(pos.stock_id, pos.expiry, pos.contract_type, pos.strike, 'sell')
+
+
+# ============================================================
+# 1c. Node key registration
+# ============================================================
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def node_key_view(request):
+    """A consensus node registers the Ed25519 key it signs votes with.
+
+    Trust on first use: the first key registered for a node is kept. A
+    different key later is refused (409) until an admin deletes the old one.
+    """
+    if not is_consensus_node(request.user):
+        return Response({"error": "Only consensus nodes may register keys."},
+                        status=status.HTTP_403_FORBIDDEN)
+    public_key = str(request.data.get('public_key', '')).lower()
+    if not valid_public_key(public_key):
+        return Response({"error": "public_key must be a 32-byte Ed25519 key in hex."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    key, created = NodeKey.objects.get_or_create(user=request.user, defaults={'public_key': public_key})
+    if key.public_key != public_key:
+        return Response({"error": "A different key is already registered for this node. "
+                                  "An admin must remove it before a new key can be registered."},
+                        status=status.HTTP_409_CONFLICT)
+    return Response({"status": "registered" if created else "unchanged"},
+                    status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
 # ============================================================

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 )
@@ -75,4 +77,55 @@ func (d *DjangoClient) Orders() ([]Order, error) {
 	var orders []Order
 	err := d.getJSON("/orders/", &orders)
 	return orders, err
+}
+
+// postJSON performs an authenticated POST and returns the status and body.
+func (d *DjangoClient) postJSON(path string, payload any) (int, []byte, error) {
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", d.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.SetBasicAuth(d.user, d.password)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := d.http.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode, respBody, nil
+}
+
+// RejectOrder tells Django that consensus failed, so the order stops being
+// re-proposed on every cycle and shows as REJECTED to the user.
+func (d *DjangoClient) RejectOrder(orderID int, reason string) bool {
+	code, body, err := d.postJSON(fmt.Sprintf("/orders/%d/reject_order/", orderID),
+		map[string]string{"reason": reason})
+	if err != nil {
+		log.Printf("[Leader] Reject request failed: %v", err)
+		return false
+	}
+	if code != http.StatusOK {
+		log.Printf("[Leader] Reject refused by Django (%d): %s", code, body)
+		return false
+	}
+	return true
+}
+
+// ExecuteOrder asks Django to settle the order, presenting the quorum of
+// signed votes as proof of consensus.
+func (d *DjangoClient) ExecuteOrder(orderID int, oracle *OracleData, blockHash string, votes []Vote) bool {
+	code, body, err := d.postJSON(fmt.Sprintf("/orders/%d/execute_order/", orderID), map[string]any{
+		"execution_price": oracle.ExecutionPrice,
+		"timestamp":       oracle.Timestamp,
+		"block_hash":      blockHash,
+		"votes":           votes,
+	})
+	if err != nil {
+		log.Printf("[Leader] Django error: %v", err)
+		return false
+	}
+	fmt.Printf("[Leader] Django response: %s\n", body)
+	return code == http.StatusOK
 }
