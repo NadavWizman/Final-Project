@@ -814,3 +814,73 @@ class OptionOrderValidationTests(TestCase):
             'quantity': '1', 'nonce': 'exer-x', 'position_id': pos.id,
         }, format='json')
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class OptionSettlementTests(TestCase):
+    """Option premiums come from yfinance (mocked here); the stock price is the
+    consensus-verified execution price."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.stock = make_stock('AAPL')
+        self.node = User.objects.create_user(username='node1', password='node1pass', is_staff=True)
+        self.node_client = APIClient(); self.node_client.force_authenticate(user=self.node)
+        self.user_client = APIClient(); self.user_client.force_authenticate(user=self.user)
+        _patch_oracle(self)
+        self.expiry = timezone.now().date() + timedelta(days=30)
+
+    def _submit(self, body):
+        r = self.user_client.post('/api/orders/', body, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+        self.user_client.post(f"/api/orders/{r.data['id']}/submit/")
+        return r.data['id']
+
+    def _execute(self, oid, price='100.00'):
+        return self.node_client.post(f'/api/orders/{oid}/execute_order/', {
+            'execution_price': price, 'timestamp': _fresh_ts()}, format='json')
+
+    def _buy_call(self, nonce='ob1'):
+        return self._submit({
+            'stock': 'AAPL', 'order_type': 'BUY', 'trade_type': 'OPTION', 'quantity': '2',
+            'nonce': nonce, 'option_contract_type': 'CALL', 'option_strike': '90',
+            'option_expiry': self.expiry.isoformat()})
+
+    def test_buy_charges_market_premium(self):
+        oid = self._buy_call()
+        with patch('trading.views._option_market_premium', return_value=Decimal('12.50')):
+            r = self._execute(oid)
+        self.assertEqual(r.status_code, 200)
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal('10000') - Decimal('12.50') * 200)
+
+    def test_buy_premium_floored_at_intrinsic(self):
+        # stale quote of $1 for a call $10 in the money
+        oid = self._buy_call('ob2')
+        with patch('trading.views._option_market_premium', return_value=Decimal('1.00')):
+            self._execute(oid)
+        self.assertEqual(OptionPosition.objects.get(user=self.user).premium_paid, Decimal('10.0000'))
+
+    def test_close_without_quote_fails_closed_and_stays_submitted(self):
+        pos = OptionPosition.objects.create(
+            user=self.user, stock=self.stock, contract_type='CALL', strike=Decimal('90'),
+            expiry=self.expiry, contracts=1, premium_paid=Decimal('5'))
+        oid = self._submit({'stock': 'AAPL', 'order_type': 'SELL', 'trade_type': 'OPT_CLOSE',
+                            'quantity': '1', 'nonce': 'oc1', 'position_id': pos.id})
+        with patch('trading.views._option_market_premium', return_value=None):
+            r = self._execute(oid)
+        self.assertEqual(r.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(Order.objects.get(pk=oid).status, 'SUBMITTED')
+        pos.refresh_from_db()
+        self.assertEqual(pos.status, 'OPEN')
+
+    def test_one_sided_book_uses_the_crossed_side(self):
+        import pandas as pd
+        from . import views
+        df = pd.DataFrame([{'strike': 90.0, 'bid': 0.0, 'ask': 4.0, 'lastPrice': 3.0}])
+        chain = MagicMock(calls=df, puts=df)
+        with patch('yfinance.Ticker') as T:
+            T.return_value.option_chain.return_value = chain
+            buy = views._option_market_premium('AAPL', self.expiry, 'CALL', Decimal('90'), 'buy')
+            sell = views._option_market_premium('AAPL', self.expiry, 'CALL', Decimal('90'), 'sell')
+        self.assertEqual(buy, Decimal('4.0'))    # not half the ask
+        self.assertEqual(sell, Decimal('3.0'))   # no bid → last trade

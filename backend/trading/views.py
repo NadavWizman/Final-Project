@@ -364,13 +364,17 @@ def _settle_option_close(order, wallet, execution_price, quote):
     except OptionPosition.DoesNotExist:
         return _reject(order, 'Option position not found or already closed')
 
-    if quote is not None:
-        close_premium = quote
-    elif pos.contract_type == 'CALL':
-        # fallback: intrinsic value from the verified stock price
-        close_premium = max(Decimal('0'), execution_price - pos.strike)
-    else:
-        close_premium = max(Decimal('0'), pos.strike - execution_price)
+    if quote is None:
+        # Fail closed: without a market quote we cannot know the time value, and
+        # silently settling at intrinsic value would short-change the user. The
+        # order stays SUBMITTED so the Leader retries once quotes are back.
+        return Response({'error': 'No market quote for this option right now — try again shortly.'},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    # yfinance quotes are not verified by consensus, but the stock price is.
+    # An option is never worth less than its intrinsic value, so floor the
+    # premium there — a stale or bad quote cannot underpay the user.
+    close_premium = max(quote, _intrinsic(pos.contract_type, pos.strike, execution_price))
 
     total_cost    = pos.premium_paid * pos.contracts * 100
     cash_received = close_premium * pos.contracts * 100
@@ -404,8 +408,7 @@ def _settle_option_exercise(order, wallet, execution_price, _quote):
     if pos.expiry < timezone.now().date():
         return _reject(order, 'Option has expired and can no longer be exercised.')
 
-    intrinsic = (execution_price - pos.strike) if pos.contract_type == 'CALL' \
-                else (pos.strike - execution_price)
+    intrinsic = _intrinsic(pos.contract_type, pos.strike, execution_price)
     if intrinsic <= 0:
         return _reject(order, 'Option is out of the money (intrinsic value ≤ 0)')
 
@@ -431,7 +434,7 @@ def _settle_option_exercise(order, wallet, execution_price, _quote):
     })
 
 
-def _settle_option_open(order, wallet, _execution_price, premium):
+def _settle_option_open(order, wallet, execution_price, premium):
     """Buy an option — the premium is fetched server-side, never from the leader."""
     if premium is None:
         return _reject(
@@ -440,6 +443,9 @@ def _settle_option_open(order, wallet, _execution_price, premium):
             f'@{order.option_strike} exp {order.option_expiry}',
             http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
+    # Floor at intrinsic value from the consensus-verified stock price, so a
+    # stale quote below intrinsic cannot sell the user free money.
+    premium    = max(premium, _intrinsic(order.option_contract_type, order.option_strike, execution_price))
     contracts  = int(order.quantity)
     total_cost = premium * contracts * 100
 
@@ -520,8 +526,13 @@ def _oracle_live_price(ticker):
     return price
 
 
-def _option_market_premium(ticker, expiry, contract_type, strike):
-    """Per-share market premium for one option contract from yfinance, or None."""
+def _option_market_premium(ticker, expiry, contract_type, strike, side):
+    """Per-share market premium for one option contract from yfinance, or None.
+
+    Uses the bid/ask mid when both sides are quoted. With a one-sided book it
+    falls back to the side the trade actually crosses (ask for a buy, bid for
+    a sell) and only then to the last trade — never to half of one side.
+    """
     try:
         import yfinance as yf
         chain = yf.Ticker(ticker).option_chain(expiry.isoformat())
@@ -533,23 +544,32 @@ def _option_market_premium(ticker, expiry, contract_type, strike):
         bid  = float(row.get('bid',       0) or 0)
         ask  = float(row.get('ask',       0) or 0)
         last = float(row.get('lastPrice', 0) or 0)
-        mid  = (bid + ask) / 2 if ask > 0 else last
-        if mid <= 0:
+        if bid > 0 and ask > 0:
+            price = (bid + ask) / 2
+        else:
+            price = (ask if side == 'buy' else bid) or last
+        if not price or price <= 0:
             return None
-        return Decimal(str(round(mid, 4)))
+        return Decimal(str(round(price, 4)))
     except Exception:
         return None
+
+
+def _intrinsic(contract_type, strike, stock_price):
+    """Per-share intrinsic value of an option at a given stock price."""
+    value = stock_price - strike if contract_type == 'CALL' else strike - stock_price
+    return max(Decimal('0'), value)
 
 
 def _quote_for_order(order):
     """Market premium an OPTION / OPT_CLOSE order would settle at, or None."""
     if order.trade_type == 'OPTION':
         return _option_market_premium(order.stock_id, order.option_expiry,
-                                      order.option_contract_type, order.option_strike)
+                                      order.option_contract_type, order.option_strike, 'buy')
     pos = OptionPosition.objects.filter(pk=order.position_id, user=order.user).first()
     if pos is None:
         return None
-    return _option_market_premium(pos.stock_id, pos.expiry, pos.contract_type, pos.strike)
+    return _option_market_premium(pos.stock_id, pos.expiry, pos.contract_type, pos.strike, 'sell')
 
 
 # ============================================================
