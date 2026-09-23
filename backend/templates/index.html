@@ -1838,7 +1838,7 @@ function drawAxes(ctx, prices, xFn, s, W, H, pad) {
     const idx  = Math.round(i / (nX - 1) * (n - 1));
     const xPos = xFn(idx);
     ctx.textAlign = i === 0 ? 'left' : i === nX - 1 ? 'right' : 'center';
-    ctx.fillText(chartLabel(prices[idx].date), xPos, H - pb + 14);
+    ctx.fillText(chartLabel(prices[idx].date, true), xPos, H - pb + 14);
     ctx.strokeStyle = 'rgba(142,142,147,.3)'; ctx.lineWidth = 0.5;
     ctx.beginPath(); ctx.moveTo(xPos, H - pb); ctx.lineTo(xPos, H - pb + 4); ctx.stroke();
   }
@@ -3268,10 +3268,13 @@ function safeUrl(url) {
 }
 // Tickers typed by the user are reduced to ticker characters, so they are
 // safe wherever they are later interpolated (text, attributes, URLs).
-// Daily bars carry a date, intraday bars a full timestamp ("MM-DD HH:MM").
-function chartLabel(date) {
+// Daily bars carry a date, intraday bars a full timestamp. The axis uses the
+// compact form ("MM-DD" / "MM-DD HH:MM") so labels never run into each other;
+// the tooltip shows the full date.
+function chartLabel(date, compact = false) {
   const s = String(date || '');
-  return s.length > 10 ? s.slice(5, 16).replace('T', ' ') : s;
+  if (s.length > 10) return s.slice(5, 16).replace('T', ' ');
+  return compact ? s.slice(5) : s;
 }
 function cleanTicker(value) {
   return String(value || '').toUpperCase().replace(/[^A-Z0-9.\-]/g, '').slice(0, 10);
