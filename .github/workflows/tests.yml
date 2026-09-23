@@ -1,0 +1,76 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  django:
+    name: Django backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run Django tests
+        working-directory: backend
+        run: python manage.py test trading --verbosity=1
+      - name: Check for missing migrations
+        working-directory: backend
+        env:
+          DEBUG: "True"
+        run: python manage.py makemigrations --check --dry-run
+
+  nodes:
+    name: Go consensus nodes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: nodes/go.mod
+          cache-dependency-path: nodes/go.sum
+      - name: Vet
+        working-directory: nodes
+        run: go vet ./...
+      - name: Check formatting
+        working-directory: nodes
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: Test
+        working-directory: nodes
+        run: go test -race ./...
+
+  oracle:
+    name: Oracle service
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run Oracle tests
+        working-directory: oracle_service
+        run: python -m unittest -v
+
+  frontend:
+    name: Web UI syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check the SPA's JavaScript parses
+        run: |
+          python3 - <<'PY'
+          import re
+          html = open('backend/templates/index.html').read()
+          scripts = re.findall(r'<script(?![^>]*src)[^>]*>(.*?)</script>', html, re.S)
+          open('/tmp/app.js', 'w').write('\n'.join(scripts))
+          PY
+          node --check /tmp/app.js
