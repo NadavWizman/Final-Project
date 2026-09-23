@@ -66,7 +66,11 @@ fi
 # ── 5. Done ───────────────────────────────────────────────────────
 echo "[5/5] Setup complete!"
 echo ""
-echo "To start the project, open five terminals and run:"
+echo "Start everything with one command:"
+echo ""
+echo "    ./run.sh start        (./run.sh stop to stop, ./run.sh status, ./run.sh logs)"
+echo ""
+echo "Or, to watch each service, open five terminals and run:"
 echo ""
 echo "  Terminal 1 — Oracle:"
 echo "    cd oracle_service && python3 oracle_server.py"

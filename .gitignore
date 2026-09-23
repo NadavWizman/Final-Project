@@ -30,3 +30,7 @@ nodes/nodes_bin
 .idea/
 *.swp
 *.swo
+
+# run.sh runtime files
+.run/
+logs/
