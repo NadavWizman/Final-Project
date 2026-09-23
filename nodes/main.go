@@ -51,7 +51,7 @@ func main() {
 	fmt.Printf("  Execution Node: %s\n", cfg.NodeName)
 	fmt.Printf("  Role:           %s\n", role(cfg))
 	fmt.Printf("  Chain:          %d blocks\n", chain.Length())
-	fmt.Printf("  Head:           #%d %s...\n", chain.Head().Index, chain.Head().Hash[:16])
+	fmt.Printf("  Head:           #%d %s...\n", chain.Head().Index, short(chain.Head().Hash))
 	fmt.Printf("========================================\n\n")
 
 	if cfg.IsLeader {

@@ -118,7 +118,7 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 			order.Quantity, oracle.ExecutionPrice, cfg.NodeName,
 			order.Signature, order.PublicKey,
 		)
-		fmt.Printf("[Leader] Block #%d | hash: %s...\n", block.Index, block.Hash[:16])
+		fmt.Printf("[Leader] Block #%d | hash: %s...\n", block.Index, short(block.Hash))
 
 		// the exact bytes the user's signature covers, straight from Django
 		signedMsg := order.SignedMessage

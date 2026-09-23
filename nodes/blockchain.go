@@ -151,11 +151,11 @@ func (c *Chain) ValidateBlock(b Block) error {
 		return fmt.Errorf("wrong index: expected %d, got %d", head.Index+1, b.Index)
 	}
 	if b.PrevHash != head.Hash {
-		return fmt.Errorf("prev_hash mismatch: expected %s, got %s", head.Hash[:12], b.PrevHash[:12])
+		return fmt.Errorf("prev_hash mismatch: expected %s, got %s", short(head.Hash), short(b.PrevHash))
 	}
 	expected := computeHash(b)
 	if b.Hash != expected {
-		return fmt.Errorf("hash mismatch: expected %s, got %s", expected[:12], b.Hash[:12])
+		return fmt.Errorf("hash mismatch: expected %s, got %s", short(expected), short(b.Hash))
 	}
 	return nil
 }
@@ -182,4 +182,13 @@ func splitLines(s string) []string {
 		}
 	}
 	return lines
+}
+
+// short abbreviates a hash for log output. Hashes arriving over the network
+// can be any length, so this never slices past the end of the string.
+func short(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
 }

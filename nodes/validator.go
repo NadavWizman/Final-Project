@@ -47,7 +47,10 @@ func runValidator(cfg Config, chain *Chain) {
 	// Every RPC must present the shared cluster credential. Without this the
 	// Propose/Commit endpoints are open to anyone who can reach the port — a
 	// stranger on the network could ask for votes or inject blocks directly.
-	srv := grpc.NewServer(grpc.UnaryInterceptor(clusterAuthInterceptor(cfg.ClusterSecret)))
+	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(
+		recoveryInterceptor,
+		clusterAuthInterceptor(cfg.ClusterSecret),
+	))
 	pb.RegisterConsensusServiceServer(srv, &ValidatorServer{cfg: cfg, chain: chain})
 
 	fmt.Printf("[%s] gRPC server ready (authenticated)\n", cfg.NodeName)
@@ -56,6 +59,20 @@ func runValidator(cfg Config, chain *Chain) {
 
 // authTokenKey is the gRPC metadata key carrying the shared cluster credential.
 const authTokenKey = "auth-token"
+
+// recoveryInterceptor turns a panic inside a handler into an Internal error.
+// grpc-go does not recover handler panics, so without this one malformed
+// request would take the whole Validator process down.
+func recoveryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler) (resp any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[recovered] panic in %s: %v", info.FullMethod, r)
+			err = status.Error(codes.Internal, "internal error")
+		}
+	}()
+	return handler(ctx, req)
+}
 
 // clusterAuthInterceptor rejects any RPC that does not present the shared secret.
 func clusterAuthInterceptor(secret string) grpc.UnaryServerInterceptor {
@@ -75,6 +92,9 @@ func clusterAuthInterceptor(secret string) grpc.UnaryServerInterceptor {
 
 // Propose receives a block proposal from the Leader, validates it, and returns a vote
 func (s *ValidatorServer) Propose(ctx context.Context, req *pb.ProposeRequest) (*pb.VoteResponse, error) {
+	if req.GetBlock() == nil {
+		return nil, status.Error(codes.InvalidArgument, "missing block")
+	}
 	block := protoToBlock(req.Block)
 
 	fmt.Printf("\n[%s] Received proposal: block #%d | order #%d | %s $%s\n",
@@ -174,6 +194,9 @@ func (s *ValidatorServer) Propose(ctx context.Context, req *pb.ProposeRequest) (
 // It is also the channel the Leader uses to replay blocks a lagging node missed,
 // so it must be idempotent and must never append a block blindly.
 func (s *ValidatorServer) Commit(ctx context.Context, req *pb.CommitRequest) (*pb.CommitResponse, error) {
+	if req.GetBlock() == nil {
+		return nil, status.Error(codes.InvalidArgument, "missing block")
+	}
 	block := protoToBlock(req.Block)
 
 	// already held — a replayed commit, acknowledge without duplicating
