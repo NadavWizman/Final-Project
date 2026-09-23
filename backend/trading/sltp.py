@@ -1,6 +1,7 @@
 """
 sltp.py — background thread that monitors multi-level stop-loss and take-profit triggers.
-Runs every 15 seconds. Started by TradingConfig.ready() on server startup.
+Runs every 15 seconds — inside `manage.py runserver` (TradingConfig.ready), or
+as its own process via `manage.py run_sltp_monitor` for any other server.
 
 Stock and CFD triggers both create a signed order at status SUBMITTED, so the
 close goes through node consensus exactly like a manual trade. Option expiry is
@@ -31,16 +32,25 @@ def start_monitor():
 
 def _loop():
     time.sleep(5)
+    run_forever()
+
+
+def run_forever(interval=15):
+    """Check every SL/TP level, CFD margin and option expiry every `interval` s."""
+    from django.db import close_old_connections
     while True:
         try:
-            from django.db import close_old_connections
             close_old_connections()
-            _check_stocks()
-            _check_cfds()
-            _check_options()
+            run_once()
         except Exception:
             logger.exception('[SLTP] Unhandled error in monitor loop')
-        time.sleep(15)
+        time.sleep(interval)
+
+
+def run_once():
+    _check_stocks()
+    _check_cfds()
+    _check_options()
 
 
 # ── price helper ─────────────────────────────────────────────────
