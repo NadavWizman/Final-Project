@@ -13,6 +13,7 @@ from django.db.models import F
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
 from datetime import timedelta
+import math
 import re
 from decimal import Decimal, InvalidOperation
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition, NodeKey
@@ -664,9 +665,7 @@ def _option_market_premium(ticker, expiry, contract_type, strike, side):
         if row.empty:
             return None
         row  = row.iloc[0]
-        bid  = float(row.get('bid',       0) or 0)
-        ask  = float(row.get('ask',       0) or 0)
-        last = float(row.get('lastPrice', 0) or 0)
+        bid, ask, last = (_quote_value(row.get(k)) for k in ('bid', 'ask', 'lastPrice'))
         if bid > 0 and ask > 0:
             price = (bid + ask) / 2
         else:
@@ -676,6 +675,19 @@ def _option_market_premium(ticker, expiry, contract_type, strike, side):
         return Decimal(str(round(price, 4)))
     except Exception:
         return None
+
+
+def _quote_value(value):
+    """A quote field as a float, with missing/NaN/inf/negative treated as 0.
+
+    Yahoo reports an empty book as NaN, which is truthy and fails every
+    comparison — it must never reach the premium arithmetic.
+    """
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) and value > 0 else 0.0
 
 
 def _intrinsic(contract_type, strike, stock_price):

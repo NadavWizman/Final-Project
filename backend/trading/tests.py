@@ -974,6 +974,21 @@ class OptionSettlementTests(TestCase):
         pos.refresh_from_db()
         self.assertEqual(pos.status, 'OPEN')
 
+    def test_empty_book_reported_as_nan_uses_last_trade(self):
+        # seen live with the market closed: bid/ask are NaN, only lastPrice is set
+        import pandas as pd
+        from . import views
+        nan = float('nan')
+        df = pd.DataFrame([{'strike': 90.0, 'bid': nan, 'ask': nan, 'lastPrice': 12.5}])
+        with patch('yfinance.Ticker') as T:
+            T.return_value.option_chain.return_value = MagicMock(calls=df, puts=df)
+            buy = views._option_market_premium('AAPL', self.expiry, 'CALL', Decimal('90'), 'buy')
+        self.assertEqual(buy, Decimal('12.5'))
+        df = pd.DataFrame([{'strike': 90.0, 'bid': nan, 'ask': nan, 'lastPrice': nan}])
+        with patch('yfinance.Ticker') as T:
+            T.return_value.option_chain.return_value = MagicMock(calls=df, puts=df)
+            self.assertIsNone(views._option_market_premium('AAPL', self.expiry, 'CALL', Decimal('90'), 'buy'))
+
     def test_one_sided_book_uses_the_crossed_side(self):
         import pandas as pd
         from . import views
