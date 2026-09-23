@@ -30,8 +30,10 @@ const desyncPrefix = "DESYNC head="
 // ValidatorServer implements the gRPC ConsensusServiceServer interface
 type ValidatorServer struct {
 	pb.UnimplementedConsensusServiceServer
-	cfg   Config
-	chain *Chain
+	cfg     Config
+	chain   *Chain
+	django  *DjangoClient
+	priceFn func(ticker string) (*OracleData, error) // test hook; nil = live Oracle
 }
 
 // runValidator starts the gRPC server that receives proposals from the Leader
@@ -50,7 +52,7 @@ func runValidator(cfg Config, chain *Chain) {
 		recoveryInterceptor,
 		clusterauth.ServerInterceptor(cfg.ClusterSecret),
 	))
-	pb.RegisterConsensusServiceServer(srv, &ValidatorServer{cfg: cfg, chain: chain})
+	pb.RegisterConsensusServiceServer(srv, &ValidatorServer{cfg: cfg, chain: chain, django: NewDjangoClient(cfg)})
 
 	fmt.Printf("[%s] gRPC server ready (authenticated)\n", cfg.NodeName)
 	log.Fatal(srv.Serve(lis))
@@ -78,8 +80,23 @@ func (s *ValidatorServer) Propose(ctx context.Context, req *pb.ProposeRequest) (
 	block := protoToBlock(req.Block)
 
 	fmt.Printf("\n[%s] Received proposal: block #%d | order #%d | %s $%s\n",
-		s.cfg.NodeName, block.Index, block.OrderID, block.Stock, req.OraclePrice)
+		s.cfg.NodeName, block.Index, block.OrderID, block.Stock, block.Price)
 
+	if reason := s.evaluate(block, req); reason != "" {
+		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
+		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
+	}
+
+	fmt.Printf("[%s] APPROVE block #%d (price $%s)\n", s.cfg.NodeName, block.Index, block.Price)
+	return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: true}, nil
+}
+
+// evaluate runs every check on a proposed block and returns the reason for
+// rejecting it, or "" to approve. Nothing the Leader sends is trusted on its
+// own: the order, its signature and the user's public key are re-read from
+// Django with this node's own credentials, and the price is re-read from the
+// Oracle.
+func (s *ValidatorServer) evaluate(block Block, req *pb.ProposeRequest) string {
 	// check 1: chain connectivity
 	if err := s.chain.ValidateBlock(block); err != nil {
 		reason := fmt.Sprintf("chain validation failed: %v", err)
@@ -88,86 +105,91 @@ func (s *ValidatorServer) Propose(ctx context.Context, req *pb.ProposeRequest) (
 		if head := s.chain.HeadIndex(); block.Index > head+1 {
 			reason = fmt.Sprintf("%s%d | %s", desyncPrefix, head, reason)
 		}
-		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
+		return reason
 	}
 
-	// check 2: query independent Oracle
-	myOracle, err := FetchPrice(s.cfg.OracleURL, block.Stock)
+	// check 2: the order exists in Django, is awaiting consensus, and the block,
+	// the envelope and Django all agree on it. The public key comes from Django,
+	// never from the Leader — otherwise any key pair would "verify".
+	order, err := s.django.Order(block.OrderID)
 	if err != nil {
-		reason := fmt.Sprintf("oracle unreachable: %v", err)
-		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
+		return fmt.Sprintf("cannot load order #%d from Django: %v", block.OrderID, err)
+	}
+	if order.Status != "SUBMITTED" {
+		return fmt.Sprintf("order #%d is %s, not SUBMITTED", order.ID, order.Status)
+	}
+	if order.Stock != block.Stock || order.OrderType != block.OrderType || order.Quantity != block.Quantity {
+		return fmt.Sprintf("block does not match order #%d: order %s %s %s, block %s %s %s",
+			order.ID, order.OrderType, order.Quantity, order.Stock,
+			block.OrderType, block.Quantity, block.Stock)
+	}
+	if order.Signature == "" || order.PublicKey == "" || order.SignedMessage == "" {
+		return "order has no signature material"
+	}
+	if block.Signature != order.Signature || block.PublicKey != order.PublicKey ||
+		req.Signature != order.Signature || req.PublicKey != order.PublicKey ||
+		req.SignedMessage != order.SignedMessage {
+		return "signature, public key or signed message differs from the order in Django"
 	}
 
-	// check 3: price freshness (< 60 seconds)
-	oracleTime, err := time.Parse(time.RFC3339Nano, req.OracleTimestamp)
-	if err != nil {
-		oracleTime, err = time.Parse(time.RFC3339, req.OracleTimestamp)
-	}
-	if err != nil || time.Since(oracleTime) > 60*time.Second {
-		age := time.Since(oracleTime)
-		reason := fmt.Sprintf("stale price: age=%v", age.Round(time.Second))
-		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
-	}
-
-	// check 4: the COMMITTED price must be within 1% of my own oracle.
-	// We validate block.Price — the value that will be written to the chain —
-	// not req.OraclePrice. A dishonest leader can put an honest price in the
-	// envelope while committing a forged price in the block; checking only the
-	// envelope would wave that through.
-	committedPrice, err1 := strconv.ParseFloat(block.Price, 64)
-	myPrice, err2 := strconv.ParseFloat(myOracle.ExecutionPrice, 64)
-	if err1 != nil || err2 != nil || myPrice <= 0 {
-		reason := fmt.Sprintf("unusable price (block=%q, mine=%q)", block.Price, myOracle.ExecutionPrice)
-		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
-	}
-	if divergence := math.Abs(committedPrice-myPrice) / myPrice * 100; divergence > 1.0 {
-		reason := fmt.Sprintf("price divergence %.2f%% > 1%% (block=%.2f, mine=%.2f)",
-			divergence, committedPrice, myPrice)
-		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
-	}
-
-	// check 5: ECDSA signature — present, valid, AND covering THIS block.
-	// The signature material must exist (a missing signature is a rejection, not
-	// a skip), and the signed order's trade fields must match the block we are
-	// asked to commit. This binds the signature to the payload instead of to a
-	// detached envelope the leader controls.
-	if req.Signature == "" || req.PublicKey == "" || req.SignedMessage == "" {
-		reason := "missing signature material"
-		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
+	// check 3: ECDSA signature valid, and the signed trade fields match the block
+	if err := verifyECDSA(order.PublicKey, order.SignedMessage, order.Signature); err != nil {
+		return fmt.Sprintf("ECDSA verification failed: %v", err)
 	}
 	var signed struct {
 		OrderType string `json:"order_type"`
 		Quantity  string `json:"quantity"`
 		Stock     string `json:"stock"`
 	}
-	if err := json.Unmarshal([]byte(req.SignedMessage), &signed); err != nil {
-		reason := fmt.Sprintf("unparseable signed message: %v", err)
-		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
+	if err := json.Unmarshal([]byte(order.SignedMessage), &signed); err != nil {
+		return fmt.Sprintf("unparseable signed message: %v", err)
 	}
 	if signed.OrderType != block.OrderType || signed.Quantity != block.Quantity || signed.Stock != block.Stock {
-		reason := fmt.Sprintf("signed order does not match block: signed %s %s %s, block %s %s %s",
+		return fmt.Sprintf("signed order does not match block: signed %s %s %s, block %s %s %s",
 			signed.OrderType, signed.Quantity, signed.Stock,
 			block.OrderType, block.Quantity, block.Stock)
-		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
 	}
-	if err := verifyECDSA(req.PublicKey, req.SignedMessage, req.Signature); err != nil {
-		reason := fmt.Sprintf("ECDSA verification failed: %v", err)
-		fmt.Printf("[%s] REJECT: %s\n", s.cfg.NodeName, reason)
-		return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: false, Reason: reason}, nil
-	}
-	fmt.Printf("[%s] ECDSA signature valid and matches block\n", s.cfg.NodeName)
 
-	fmt.Printf("[%s] APPROVE block #%d (oracle=$%s, mine=$%s)\n",
-		s.cfg.NodeName, block.Index, req.OraclePrice, myOracle.ExecutionPrice)
-	return &pb.VoteResponse{NodeId: s.cfg.NodeName, Approve: true}, nil
+	// check 4: query the Oracle independently
+	myOracle, err := s.price(block.Stock)
+	if err != nil {
+		return fmt.Sprintf("oracle unreachable: %v", err)
+	}
+
+	// check 5: the Leader's price quote is fresh (< 60 seconds)
+	oracleTime, err := time.Parse(time.RFC3339Nano, req.OracleTimestamp)
+	if err != nil {
+		oracleTime, err = time.Parse(time.RFC3339, req.OracleTimestamp)
+	}
+	if err != nil {
+		return fmt.Sprintf("unparseable price timestamp %q", req.OracleTimestamp)
+	}
+	if age := time.Since(oracleTime); age > 60*time.Second || age < -60*time.Second {
+		return fmt.Sprintf("stale price: age=%v", age.Round(time.Second))
+	}
+
+	// check 6: the COMMITTED price must be within 1% of my own oracle.
+	// We validate block.Price — the value that will be written to the chain —
+	// not req.OraclePrice, which a dishonest Leader could set independently.
+	committedPrice, err1 := strconv.ParseFloat(block.Price, 64)
+	myPrice, err2 := strconv.ParseFloat(myOracle.ExecutionPrice, 64)
+	if err1 != nil || err2 != nil || myPrice <= 0 || committedPrice <= 0 ||
+		math.IsNaN(committedPrice) || math.IsInf(committedPrice, 0) {
+		return fmt.Sprintf("unusable price (block=%q, mine=%q)", block.Price, myOracle.ExecutionPrice)
+	}
+	if divergence := math.Abs(committedPrice-myPrice) / myPrice * 100; divergence > 1.0 {
+		return fmt.Sprintf("price divergence %.2f%% > 1%% (block=%.2f, mine=%.2f)",
+			divergence, committedPrice, myPrice)
+	}
+	return ""
+}
+
+// price looks up the live price through the configured Oracle.
+func (s *ValidatorServer) price(ticker string) (*OracleData, error) {
+	if s.priceFn != nil {
+		return s.priceFn(ticker)
+	}
+	return FetchPrice(s.cfg.OracleURL, ticker)
 }
 
 // Commit receives an approved block and appends it to the local chain.

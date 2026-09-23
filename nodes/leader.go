@@ -68,7 +68,7 @@ func runLeader(cfg Config, chain *Chain) {
 }
 
 func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
-	orders, err := fetchOrders(cfg)
+	orders, err := NewDjangoClient(cfg).Orders()
 	if err != nil {
 		log.Printf("[Leader] Error fetching orders: %v", err)
 		return

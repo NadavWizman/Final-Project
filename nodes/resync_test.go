@@ -31,7 +31,13 @@ func grow(c *Chain, n int) {
 
 func newTestValidator(t *testing.T, name string) *ValidatorServer {
 	t.Helper()
-	return &ValidatorServer{cfg: Config{NodeName: name}, chain: newTestChain(t, name)}
+	return newTestValidatorWith(t, name, newFakeDjango(t))
+}
+
+func newTestValidatorWith(t *testing.T, name string, dj *fakeDjango) *ValidatorServer {
+	t.Helper()
+	return &ValidatorServer{cfg: Config{NodeName: name}, chain: newTestChain(t, name),
+		django: dj.client(), priceFn: fixedPrice("200.00")}
 }
 
 func TestParseDesync(t *testing.T) {
