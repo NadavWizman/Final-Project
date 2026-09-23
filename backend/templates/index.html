@@ -1033,19 +1033,20 @@ function renderPortfolio() {
       const price = pd ? parseFloat(pd.execution_price) : null;
       const qty   = parseFloat(h.quantity);
       const total = price ? price * qty : null;
-      const safeName = (h.name||h.ticker).replace(/'/g,"\\'");
+      // JSON-encode for the JS string, then HTML-escape for the attribute
+      const safeName = esc(JSON.stringify(String(h.name || h.ticker)));
       return `
-        <div class="holding-card" onclick="openModal('${h.ticker}','${safeName}',${qty})">
+        <div class="holding-card" onclick="openModal('${h.ticker}',${safeName},${qty})">
           <div class="holding-dot"></div>
           <div class="holding-ticker">${h.ticker}</div>
-          <div class="holding-name">${h.name||''}</div>
+          <div class="holding-name">${esc(h.name)}</div>
           <div class="holding-qty">${qty.toLocaleString()} shares</div>
           <div class="holding-divider"></div>
           <div class="holding-price">${price ? fmt$(price)+' / share' : '<span class="price-loading">Loading…</span>'}</div>
           ${total ? `<div class="holding-value">${fmt$(total)}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:8px">
             <button class="btn-small gray" style="flex:1;font-size:11px;padding:5px 8px"
-              onclick="event.stopPropagation();openModal('${h.ticker}','${safeName}',${qty})">Trade</button>
+              onclick="event.stopPropagation();openModal('${h.ticker}',${safeName},${qty})">Trade</button>
             <button class="btn-small blue" style="flex:1;font-size:11px;padding:5px 8px"
               onclick="event.stopPropagation();openSLTPModal('position',${h.id},'${h.ticker} · ${qty} shares',${qty},${S.holdingPrices[h.ticker]?parseFloat(S.holdingPrices[h.ticker].execution_price):'null'},'LONG')">SL/TP</button>
           </div>
@@ -1096,7 +1097,7 @@ function renderTrade() {
         </div>
         <div class="field-label">Ticker Symbol</div>
         <input id="trade-ticker-input" class="input-field" placeholder="e.g. AAPL, NVDA, MSFT" value="${S.tradeStock}"
-               oninput="S.tradeStock=this.value.toUpperCase();this.value=S.tradeStock;onTradeTickerChange()">
+               oninput="S.tradeStock=cleanTicker(this.value);this.value=S.tradeStock;onTradeTickerChange()">
         <div style="font-size:11px;color:var(--label2);margin:4px 0 8px">
           Popular: ${['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','NFLX','AMD','INTC'].map(t=>`<span onclick="S.tradeStock='${t}';const el=document.getElementById('trade-ticker-input');if(el)el.value='${t}';onTradeTickerChange()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join('')}
         </div>
@@ -1334,14 +1335,15 @@ function updateNewsPanel(id, ticker) {
       ? `opacity:0;animation:newsItemIn .35s cubic-bezier(.25,.46,.45,.94) ${i * 60}ms forwards`
       : `opacity:1`;
     const indirectTag = p.indirect
-      ? `<span title="${p.reason||''}" style="display:inline-block;font-size:10px;font-weight:600;background:rgba(255,149,0,.15);color:#FF9500;border-radius:4px;padding:1px 6px;margin-left:6px;cursor:default;vertical-align:middle">INDIRECT</span>`
+      ? `<span title="${esc(p.reason)}" style="display:inline-block;font-size:10px;font-weight:600;background:rgba(255,149,0,.15);color:#FF9500;border-radius:4px;padding:1px 6px;margin-left:6px;cursor:default;vertical-align:middle">INDIRECT</span>`
       : '';
     const reasonNote = p.indirect && p.reason
-      ? `<div style="font-size:11px;color:var(--label3);margin-top:2px;padding-left:2px">${p.reason}</div>`
+      ? `<div style="font-size:11px;color:var(--label3);margin-top:2px;padding-left:2px">${esc(p.reason)}</div>`
       : '';
-    const link = p.url
-      ? `<a href="${p.url}" target="_blank" rel="noopener" style="color:var(--label);text-decoration:none">${p.text}</a>`
-      : p.text;
+    const url  = safeUrl(p.url);
+    const link = url
+      ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer" style="color:var(--label);text-decoration:none">${esc(p.text)}</a>`
+      : esc(p.text);
     return `<li style="margin-bottom:10px;line-height:1.45;${liStyle}">${link}${indirectTag}${reasonNote}</li>`;
   }).join('');
 
@@ -1405,7 +1407,7 @@ function renderChatPanel(id, ticker) {
 
   const msgsHtml = chat.messages.map(m => {
     const isUser = m.role === 'user';
-    const text   = m.text.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+    const text   = esc(m.text).replace(/\n/g,'<br>');
     return `<div style="display:flex;justify-content:${isUser?'flex-end':'flex-start'};margin-bottom:8px">
       <div style="max-width:85%;padding:9px 13px;line-height:1.5;font-size:13px;
                   border-radius:${isUser?'14px 14px 3px 14px':'14px 14px 14px 3px'};
@@ -2579,7 +2581,7 @@ function renderCFD() {
         <div class="field-label">Ticker Symbol</div>
         <input class="input-field" id="cfd-ticker" placeholder="e.g. AAPL, NVDA, MSFT"
                value="${S.cfdStock}"
-               oninput="S.cfdStock=this.value.toUpperCase();this.value=S.cfdStock;onCFDTickerChange()">
+               oninput="S.cfdStock=cleanTicker(this.value);this.value=S.cfdStock;onCFDTickerChange()">
         <div style="font-size:11px;color:var(--label2);margin:4px 0 8px">
           Popular: ${['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','NFLX','AMD','INTC'].map(t=>`<span onclick="S.cfdStock='${t}';const el=document.getElementById('cfd-ticker');if(el)el.value='${t}';onCFDTickerChange()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join('')}
         </div>
@@ -2951,7 +2953,7 @@ function renderOptions() {
           <div class="field-label">Ticker (S&P 500 only)</div>
           <input class="modal-input" type="text" placeholder="e.g. AAPL, TSLA, NVDA" value="${S.optTicker}"
             style="text-transform:uppercase;margin-bottom:0"
-            oninput="S.optTicker=this.value.trim().toUpperCase()"
+            oninput="S.optTicker=cleanTicker(this.value);this.value=S.optTicker"
             onkeydown="if(event.key==='Enter')loadOptExpiries()">
         </div>
         <button class="btn-modal blue" style="height:38px;padding:0 20px;flex-shrink:0;width:auto" onclick="loadOptExpiries()">Load</button>
@@ -3242,6 +3244,25 @@ function timeAgo(iso) {
   if (diff < 3600000)  return Math.floor(diff/60000) + 'm ago';
   if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
   return d.toLocaleDateString();
+}
+// ── HTML safety ──────────────────────────────────────────────────
+// Anything not authored by this page (AI output, news titles and links, server
+// messages, names) is escaped before it goes into innerHTML.
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"'`]/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
+}
+// Only http(s) links are rendered; javascript:, data: etc. are dropped.
+function safeUrl(url) {
+  try {
+    const u = new URL(String(url), location.origin);
+    return (u.protocol === 'https:' || u.protocol === 'http:') ? u.href : '';
+  } catch { return ''; }
+}
+// Tickers typed by the user are reduced to ticker characters, so they are
+// safe wherever they are later interpolated (text, attributes, URLs).
+function cleanTicker(value) {
+  return String(value || '').toUpperCase().replace(/[^A-Z0-9.\-]/g, '').slice(0, 10);
 }
 function showErr(el, msg) { el.textContent = msg; el.style.display = 'block'; }
 let _toastTimer;
