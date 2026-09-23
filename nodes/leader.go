@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +37,12 @@ type VoteResponse struct {
 	Signature string `json:"vote_signature"`
 }
 
+// Vote is one node's signed approval, forwarded to Django as consensus proof.
+type Vote struct {
+	Node      string `json:"node"`
+	Signature string `json:"signature"`
+}
+
 // quorum is the number of signed approvals (Leader included) needed to settle.
 // Django enforces the same threshold (trading/consensus.py:QUORUM).
 const quorum = 2
@@ -42,6 +51,35 @@ const quorum = 2
 // Oracle is unreachable. A brief outage should not kill a valid order, but an
 // Oracle that never returns must not leave the order queued forever.
 const oracleRetryWindow = 60 * time.Second
+
+// settleGiveUp is how long an order may keep failing settlement for a
+// temporary reason (Django or its price sources unavailable) before the
+// Leader rejects it instead of retrying forever.
+const settleGiveUp = 5 * time.Minute
+
+// Leader drives consensus: it proposes one block per SUBMITTED order, collects
+// signed votes and asks Django to settle.
+type Leader struct {
+	node *ValidatorServer
+	// when the Oracle first started failing, per order
+	outages map[int]time.Time
+	// when settlement first failed temporarily, per order
+	settleFailures map[int]time.Time
+	// write-ahead record of the settlement in flight (see pendingSettlement)
+	pendingPath string
+}
+
+// pendingSettlement is written to disk before the Leader asks Django to
+// settle, and removed once the outcome is known. If the Leader crashes or the
+// request times out, the next cycle reads it back and finishes the job: Django
+// may already have moved the money, and the block must then still be added to
+// the chain rather than lost.
+type pendingSettlement struct {
+	Block   Block       `json:"block"`
+	Oracle  *OracleData `json:"oracle"`
+	Votes   []Vote      `json:"votes"`
+	Created time.Time   `json:"created"`
+}
 
 // runLeader — main loop of the Leader
 func runLeader(cfg Config, chain *Chain) {
@@ -53,25 +91,34 @@ func runLeader(cfg Config, chain *Chain) {
 	if err != nil {
 		log.Fatalf("[%s] %v", cfg.NodeName, err)
 	}
+	l := &Leader{
+		node:           node,
+		outages:        map[int]time.Time{},
+		settleFailures: map[int]time.Time{},
+		pendingPath:    fmt.Sprintf("pending_%s.json", cfg.NodeName),
+	}
 
-	// when the Oracle first started failing, per order
-	outages := map[int]time.Time{}
+	// A Leader restarted with a missing or older chain file must first recover
+	// the blocks the cluster already committed, or every proposal would be
+	// built on a stale head.
+	for _, addr := range cfg.ValidatorAddresses {
+		l.catchUp(addr)
+	}
 
 	for {
-		processLeaderCycle(node, outages)
+		l.cycle()
 		time.Sleep(5 * time.Second)
 	}
 }
 
-// Vote is one node's signed approval, forwarded to Django as consensus proof.
-type Vote struct {
-	Node      string `json:"node"`
-	Signature string `json:"signature"`
-}
+// cycle processes every SUBMITTED order once.
+func (l *Leader) cycle() {
+	// Never build on a head whose next block may already be settled in Django.
+	if !l.resolvePending() {
+		return
+	}
 
-func processLeaderCycle(node *ValidatorServer, outages map[int]time.Time) {
-	cfg, chain := node.cfg, node.chain
-	orders, err := node.django.Orders()
+	orders, err := l.node.django.Orders()
 	if err != nil {
 		log.Printf("[Leader] Error fetching orders: %v", err)
 		return
@@ -85,133 +132,18 @@ func processLeaderCycle(node *ValidatorServer, outages map[int]time.Time) {
 		}
 		found = true
 		submitted[order.ID] = true
-
-		if order.Signature == "" || order.SignedMessage == "" {
-			fmt.Printf("[Leader] Order #%d has no signature — rejecting\n", order.ID)
-			node.django.RejectOrder(order.ID, "order is not signed")
-			continue
+		if stop := l.process(order); stop {
+			break
 		}
-
-		// step 1: query Oracle
-		oracle, err := FetchPrice(cfg.OracleURL, order.Stock)
-		if err != nil {
-			since, seen := outages[order.ID]
-			if !seen {
-				// report the outage once — repeating it every cycle adds nothing
-				log.Printf("[Leader] Oracle unreachable for order #%d: %v", order.ID, err)
-				fmt.Printf("[Leader] Retrying order #%d quietly for up to %s\n",
-					order.ID, oracleRetryWindow)
-				outages[order.ID] = time.Now()
-				continue
-			}
-			if waited := time.Since(since); waited >= oracleRetryWindow {
-				fmt.Printf("\n[Leader] Oracle still unreachable after %s — rejecting order #%d\n",
-					waited.Round(time.Second), order.ID)
-				if node.django.RejectOrder(order.ID, "price feed unavailable") {
-					fmt.Printf("[Leader] Order #%d marked REJECTED\n", order.ID)
-				}
-				delete(outages, order.ID)
-			}
-			continue
-		}
-		if _, recovered := outages[order.ID]; recovered {
-			fmt.Printf("[Leader] Oracle recovered for order #%d\n", order.ID)
-			delete(outages, order.ID)
-		}
-
-		fmt.Printf("\n[Leader] Order #%d | %s %s %s\n",
-			order.ID, order.OrderType, order.Quantity, order.Stock)
-		fmt.Printf("[Leader] Oracle: $%s\n", oracle.ExecutionPrice)
-
-		// step 2: build proposed block
-		block := chain.CreateNextBlock(
-			order.ID, order.Stock, order.OrderType,
-			order.Quantity, oracle.ExecutionPrice, cfg.NodeName,
-			order.Signature, order.PublicKey,
-		)
-		fmt.Printf("[Leader] Block #%d | hash: %s...\n", block.Index, short(block.Hash))
-
-		// the exact bytes the user's signature covers, straight from Django
-		signedMsg := order.SignedMessage
-
-		// step 3: the Leader votes only after running the same checks as a
-		// Validator — its approval is a signed statement, not a formality.
-		req := &pb.ProposeRequest{
-			Block: blockToProto(block), OraclePrice: oracle.ExecutionPrice,
-			OracleTimestamp: oracle.Timestamp, Signature: order.Signature,
-			PublicKey: order.PublicKey, SignedMessage: signedMsg,
-		}
-		var votes []Vote
-		if reason := node.evaluate(block, req); reason != "" {
-			fmt.Printf("[Leader] Self-check: reject — %s\n", reason)
-		} else {
-			votes = append(votes, Vote{Node: cfg.NodeName, Signature: signVote(node.key, block)})
-			fmt.Printf("[Leader] Self-check: approve\n")
-		}
-
-		// step 4: collect votes from Validators via gRPC
-		for _, addr := range cfg.ValidatorAddresses {
-			vote := askValidator(addr, block, oracle.ExecutionPrice, oracle.Timestamp,
-				order.Signature, order.PublicKey, signedMsg)
-
-			// A node that was offline rejects because its chain is behind, not because
-			// the block is bad. Replay what it missed, then let it vote again.
-			if !vote.Approve {
-				if head, behind := parseDesync(vote.Reason); behind {
-					fmt.Printf("[Leader] %s is behind at #%d (we are at #%d) — replaying %d block(s)\n",
-						vote.NodeID, head, chain.HeadIndex(), chain.HeadIndex()-head)
-					if resyncValidator(addr, chain, head) {
-						vote = askValidator(addr, block, oracle.ExecutionPrice, oracle.Timestamp,
-							order.Signature, order.PublicKey, signedMsg)
-					}
-				}
-			}
-
-			if vote.Approve && vote.Signature != "" {
-				votes = append(votes, Vote{Node: vote.NodeID, Signature: vote.Signature})
-				fmt.Printf("[Leader] Approved by %s\n", vote.NodeID)
-			} else {
-				fmt.Printf("[Leader] Rejected by %s: %s\n", vote.NodeID, vote.Reason)
-			}
-		}
-
-		approvals := len(votes)
-		fmt.Printf("[Leader] Tally: %d/%d approvals\n", approvals, len(cfg.ValidatorAddresses)+1)
-
-		// step 5: consensus — a quorum of signed approvals
-		if approvals >= quorum {
-			fmt.Printf("[Leader] Consensus reached! Executing order...\n")
-
-			if node.django.ExecuteOrder(order.ID, oracle, block.Hash, votes) {
-				if err := chain.Append(block); err != nil {
-					log.Printf("[Leader] CRITICAL: order #%d executed but block #%d could not be stored: %v",
-						order.ID, block.Index, err)
-					continue
-				}
-				fmt.Printf("[Leader] Block #%d committed | chain length: %d\n",
-					block.Index, chain.Length())
-
-				for _, addr := range cfg.ValidatorAddresses {
-					broadcastCommit(addr, block)
-				}
-			}
-		} else {
-			// Mark the order REJECTED so it leaves the SUBMITTED queue — otherwise
-			// the Leader would re-propose the same failing order every cycle forever.
-			fmt.Printf("[Leader] Consensus failed for order #%d (%d approvals) — rejecting\n",
-				order.ID, approvals)
-			if node.django.RejectOrder(order.ID, fmt.Sprintf("consensus not reached (%d approvals)", approvals)) {
-				fmt.Printf("[Leader] Order #%d marked REJECTED\n", order.ID)
-			}
-		}
-
 		time.Sleep(300 * time.Millisecond)
 	}
 
-	// drop outage records for orders that are no longer awaiting consensus
-	for id := range outages {
-		if !submitted[id] {
-			delete(outages, id)
+	// drop bookkeeping for orders that are no longer awaiting consensus
+	for _, m := range []map[int]time.Time{l.outages, l.settleFailures} {
+		for id := range m {
+			if !submitted[id] {
+				delete(m, id)
+			}
 		}
 	}
 
@@ -220,10 +152,308 @@ func processLeaderCycle(node *ValidatorServer, outages map[int]time.Time) {
 	}
 }
 
-// askValidator sends a Propose RPC to a Validator and returns its vote
-func askValidator(address string, block Block, oraclePrice, oracleTimestamp,
-	signature, publicKey, signedMsg string) VoteResponse {
+// process runs consensus for one order. It returns true when the rest of the
+// cycle must be skipped (chain head uncertain or just changed by a catch-up).
+func (l *Leader) process(order Order) (stop bool) {
+	cfg, chain, django := l.node.cfg, l.node.chain, l.node.django
 
+	if order.Signature == "" || order.SignedMessage == "" {
+		fmt.Printf("[Leader] Order #%d has no signature — rejecting\n", order.ID)
+		django.RejectOrder(order.ID, "order is not signed")
+		return false
+	}
+
+	// step 1: query Oracle
+	oracle, err := l.node.price(order.Stock)
+	if err != nil {
+		since, seen := l.outages[order.ID]
+		if !seen {
+			// report the outage once — repeating it every cycle adds nothing
+			log.Printf("[Leader] Oracle unreachable for order #%d: %v", order.ID, err)
+			fmt.Printf("[Leader] Retrying order #%d quietly for up to %s\n", order.ID, oracleRetryWindow)
+			l.outages[order.ID] = time.Now()
+			return false
+		}
+		if waited := time.Since(since); waited >= oracleRetryWindow {
+			fmt.Printf("\n[Leader] Oracle still unreachable after %s — rejecting order #%d\n",
+				waited.Round(time.Second), order.ID)
+			if django.RejectOrder(order.ID, "price feed unavailable") {
+				fmt.Printf("[Leader] Order #%d marked REJECTED\n", order.ID)
+			}
+			delete(l.outages, order.ID)
+		}
+		return false
+	}
+	if _, recovered := l.outages[order.ID]; recovered {
+		fmt.Printf("[Leader] Oracle recovered for order #%d\n", order.ID)
+		delete(l.outages, order.ID)
+	}
+
+	fmt.Printf("\n[Leader] Order #%d | %s %s %s\n", order.ID, order.OrderType, order.Quantity, order.Stock)
+	fmt.Printf("[Leader] Oracle: $%s\n", oracle.ExecutionPrice)
+
+	// step 2: build proposed block
+	block := chain.CreateNextBlock(
+		order.ID, order.Stock, order.OrderType,
+		order.Quantity, oracle.ExecutionPrice, cfg.NodeName,
+		order.Signature, order.PublicKey,
+	)
+	fmt.Printf("[Leader] Block #%d | hash: %s...\n", block.Index, short(block.Hash))
+
+	req := &pb.ProposeRequest{
+		Block: blockToProto(block), OraclePrice: oracle.ExecutionPrice,
+		OracleTimestamp: oracle.Timestamp, Signature: order.Signature,
+		PublicKey: order.PublicKey, SignedMessage: order.SignedMessage,
+	}
+
+	// step 3: the Leader votes only after running the same checks as a
+	// Validator — its approval is a signed statement, not a formality.
+	var votes []Vote
+	if reason := l.node.evaluate(block, req); reason != "" {
+		fmt.Printf("[Leader] Self-check: reject — %s\n", reason)
+	} else {
+		votes = append(votes, Vote{Node: cfg.NodeName, Signature: signVote(l.node.key, block)})
+		fmt.Printf("[Leader] Self-check: approve\n")
+	}
+
+	// step 4: collect votes from Validators via gRPC
+	for _, addr := range cfg.ValidatorAddresses {
+		vote := askValidator(addr, req)
+
+		if !vote.Approve {
+			// A node that was offline rejects because its chain is behind, not because
+			// the block is bad. Replay what it missed, then let it vote again.
+			if head, behind := parseHead(vote.Reason, desyncPrefix); behind {
+				fmt.Printf("[Leader] %s is behind at #%d (we are at #%d) — replaying %d block(s)\n",
+					vote.NodeID, head, chain.HeadIndex(), chain.HeadIndex()-head)
+				if resyncValidator(addr, chain, head) {
+					vote = askValidator(addr, req)
+				}
+			} else if head, ahead := parseHead(vote.Reason, aheadPrefix); ahead {
+				// The Leader is the one behind: recover the committed blocks and
+				// start over — this block was built on a stale head.
+				fmt.Printf("[Leader] %s is ahead at #%d (we are at #%d) — catching up\n",
+					vote.NodeID, head, chain.HeadIndex())
+				l.catchUp(addr)
+				return true
+			}
+		}
+
+		if vote.Approve && vote.Signature != "" {
+			votes = append(votes, Vote{Node: vote.NodeID, Signature: vote.Signature})
+			fmt.Printf("[Leader] Approved by %s\n", vote.NodeID)
+		} else {
+			fmt.Printf("[Leader] Rejected by %s: %s\n", vote.NodeID, vote.Reason)
+		}
+	}
+
+	fmt.Printf("[Leader] Tally: %d/%d approvals\n", len(votes), len(cfg.ValidatorAddresses)+1)
+
+	// step 5: consensus — a quorum of signed approvals
+	if len(votes) < quorum {
+		// Mark the order REJECTED so it leaves the SUBMITTED queue — otherwise
+		// the Leader would re-propose the same failing order every cycle forever.
+		fmt.Printf("[Leader] Consensus failed for order #%d (%d approvals) — rejecting\n", order.ID, len(votes))
+		if django.RejectOrder(order.ID, fmt.Sprintf("consensus not reached (%d approvals)", len(votes))) {
+			fmt.Printf("[Leader] Order #%d marked REJECTED\n", order.ID)
+		}
+		return false
+	}
+
+	fmt.Printf("[Leader] Consensus reached! Executing order...\n")
+	p := &pendingSettlement{Block: block, Oracle: oracle, Votes: votes, Created: time.Now()}
+	if err := l.savePending(p); err != nil {
+		log.Printf("[Leader] Cannot record settlement for order #%d, skipping: %v", order.ID, err)
+		return true
+	}
+	return !l.settle(p)
+}
+
+// settle asks Django to execute a pending settlement and acts on the answer.
+// It returns true when the outcome is final (the pending record is cleared).
+func (l *Leader) settle(p *pendingSettlement) bool {
+	id := p.Block.OrderID
+	code, err := l.node.django.ExecuteOrder(id, p.Oracle, p.Block.Hash, p.Votes)
+	switch {
+	case err == nil && code == http.StatusOK:
+		delete(l.settleFailures, id)
+		return l.finalize(p)
+
+	case err != nil || code >= 500:
+		// Unknown or temporary outcome — keep the record and retry next cycle.
+		// Give up on the order if it keeps failing for too long.
+		first, seen := l.settleFailures[id]
+		if !seen {
+			l.settleFailures[id] = time.Now()
+		} else if time.Since(first) > settleGiveUp {
+			fmt.Printf("[Leader] Settlement of order #%d failing for %s — rejecting\n",
+				id, time.Since(first).Round(time.Second))
+			if l.node.django.RejectOrder(id, "settlement unavailable") {
+				delete(l.settleFailures, id)
+				l.clearPending()
+				return true
+			}
+		}
+		log.Printf("[Leader] Settlement of order #%d pending (status %d, err %v) — will retry", id, code, err)
+		return false
+
+	default:
+		// Django refused definitively (rejected the order, or the quote went
+		// stale). Nothing was settled; forget the block.
+		fmt.Printf("[Leader] Django did not settle order #%d (status %d)\n", id, code)
+		l.clearPending()
+		return true
+	}
+}
+
+// resolvePending finishes a settlement left over from a timeout or crash.
+// It returns false while the outcome is still unknown.
+func (l *Leader) resolvePending() bool {
+	p, err := l.loadPending()
+	if err != nil {
+		log.Printf("[Leader] Unreadable pending settlement %s: %v — discarding", l.pendingPath, err)
+		l.clearPending()
+		return true
+	}
+	if p == nil {
+		return true
+	}
+	order, err := l.node.django.Order(p.Block.OrderID)
+	if err != nil {
+		log.Printf("[Leader] Cannot check pending settlement of order #%d: %v", p.Block.OrderID, err)
+		return false
+	}
+	switch {
+	case order.Status == "CONFIRMED" && order.BlockHash == p.Block.Hash:
+		fmt.Printf("[Leader] Order #%d was settled under block #%d — completing the commit\n",
+			order.ID, p.Block.Index)
+		return l.finalize(p)
+	case order.Status == "SUBMITTED":
+		return l.settle(p)
+	default:
+		fmt.Printf("[Leader] Pending block for order #%d is obsolete (order %s) — discarding\n",
+			order.ID, order.Status)
+		l.clearPending()
+		return true
+	}
+}
+
+// finalize appends a settled block and broadcasts it to the Validators.
+func (l *Leader) finalize(p *pendingSettlement) bool {
+	chain := l.node.chain
+	if existing, ok := chain.BlockAt(p.Block.Index); !ok || existing.Hash != p.Block.Hash {
+		if err := chain.Append(p.Block); err != nil {
+			log.Printf("[Leader] CRITICAL: order #%d settled but block #%d cannot be stored: %v",
+				p.Block.OrderID, p.Block.Index, err)
+			return false
+		}
+	}
+	fmt.Printf("[Leader] Block #%d committed | chain length: %d\n", p.Block.Index, chain.Length())
+	for _, addr := range l.node.cfg.ValidatorAddresses {
+		broadcastCommit(addr, p.Block)
+	}
+	l.clearPending()
+	return true
+}
+
+func (l *Leader) savePending(p *pendingSettlement) error {
+	data, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	tmp := l.pendingPath + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, l.pendingPath)
+}
+
+func (l *Leader) loadPending() (*pendingSettlement, error) {
+	data, err := os.ReadFile(l.pendingPath)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var p pendingSettlement
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (l *Leader) clearPending() {
+	if err := os.Remove(l.pendingPath); err != nil && !os.IsNotExist(err) {
+		log.Printf("[Leader] Cannot remove %s: %v", l.pendingPath, err)
+	}
+}
+
+// catchUp copies committed blocks the Leader is missing from a Validator.
+// Every block must extend the Leader's chain and be certified by Django, so a
+// Validator cannot feed the Leader a forged history.
+func (l *Leader) catchUp(address string) {
+	chain := l.node.chain
+	for {
+		blocks, err := fetchBlocks(address, chain.HeadIndex()+1)
+		if err != nil {
+			log.Printf("[Leader] Catch-up from %s failed: %v", address, err)
+			return
+		}
+		if len(blocks) == 0 {
+			return
+		}
+		for _, b := range blocks {
+			if err := l.node.certified(b); err != nil {
+				log.Printf("[Leader] Catch-up from %s stopped at block #%d: %v", address, b.Index, err)
+				return
+			}
+			if err := chain.Append(b); err != nil {
+				log.Printf("[Leader] Catch-up from %s stopped at block #%d: %v", address, b.Index, err)
+				return
+			}
+		}
+		fmt.Printf("[Leader] Caught up from %s to block #%d\n", address, chain.HeadIndex())
+		if len(blocks) < maxBlocksPerFetch {
+			return
+		}
+	}
+}
+
+// fetchBlocks asks a Validator for its committed blocks from an index on.
+func fetchBlocks(address string, from int) ([]Block, error) {
+	conn, err := dialValidator(address)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := pb.NewConsensusServiceClient(conn).GetBlocks(ctx, &pb.GetBlocksRequest{FromIndex: int32(from)})
+	if err != nil {
+		return nil, err
+	}
+	var blocks []Block
+	for _, b := range resp.GetBlocks() {
+		blocks = append(blocks, protoToBlock(b))
+	}
+	return blocks, nil
+}
+
+// askValidator sends a Propose RPC to a Validator and returns its vote
+func askValidator(address string, req *pb.ProposeRequest) VoteResponse {
 	conn, err := dialValidator(address)
 	if err != nil {
 		return VoteResponse{NodeID: address, Approve: false,
@@ -232,17 +462,10 @@ func askValidator(address string, block Block, oraclePrice, oracleTimestamp,
 	defer conn.Close()
 
 	client := pb.NewConsensusServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, err := client.Propose(ctx, &pb.ProposeRequest{
-		Block:           blockToProto(block),
-		OraclePrice:     oraclePrice,
-		OracleTimestamp: oracleTimestamp,
-		Signature:       signature,
-		PublicKey:       publicKey,
-		SignedMessage:   signedMsg,
-	})
+	resp, err := client.Propose(ctx, req)
 	if err != nil {
 		return VoteResponse{NodeID: address, Approve: false,
 			Reason: fmt.Sprintf("rpc error: %v", err)}
@@ -252,14 +475,14 @@ func askValidator(address string, block Block, oraclePrice, oracleTimestamp,
 		Signature: resp.VoteSignature}
 }
 
-// parseDesync reports whether a rejection was caused only by the Validator
-// lagging behind, and if so returns the index its chain currently ends at.
-func parseDesync(reason string) (int, bool) {
-	i := strings.Index(reason, desyncPrefix)
+// parseHead extracts the chain head a Validator reported after prefix
+// (DESYNC head=<n> when it is behind, AHEAD head=<n> when it is ahead).
+func parseHead(reason, prefix string) (int, bool) {
+	i := strings.Index(reason, prefix)
 	if i < 0 {
 		return 0, false
 	}
-	rest := reason[i+len(desyncPrefix):]
+	rest := reason[i+len(prefix):]
 	if end := strings.IndexAny(rest, " |"); end >= 0 {
 		rest = rest[:end]
 	}
@@ -269,6 +492,10 @@ func parseDesync(reason string) (int, bool) {
 	}
 	return head, true
 }
+
+// parseDesync reports whether a rejection was caused only by the Validator
+// lagging behind, and if so returns the index its chain currently ends at.
+func parseDesync(reason string) (int, bool) { return parseHead(reason, desyncPrefix) }
 
 // resyncValidator replays every committed block the Validator missed, in order,
 // so it can rejoin consensus instead of rejecting every future proposal.
@@ -304,7 +531,7 @@ func sendCommit(address string, block Block) bool {
 	defer conn.Close()
 
 	client := pb.NewConsensusServiceClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	resp, err := client.Commit(ctx, &pb.CommitRequest{Block: blockToProto(block)})

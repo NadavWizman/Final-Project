@@ -813,11 +813,15 @@ class OrderPriceVerificationTests(TestCase):
             self.assertEqual(r.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, bad)
         self.assertEqual(Order.objects.get(pk=self.order_id).status, 'SUBMITTED')
 
-    def test_second_execution_of_same_order_is_refused(self):
+    def test_second_execution_of_same_order_never_settles_twice(self):
         with self._oracle('336.00'):
             self.assertEqual(self._execute('336.00').status_code, 200)
-            r = self._execute('336.00')
-        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+            retry = self._execute('336.00')                       # same certified block
+            other = self.node_client.post(f'/api/orders/{self.order_id}/execute_order/', {
+                'execution_price': '336.00', 'timestamp': _fresh_ts(),
+                'block_hash': block_hash_for(777)}, format='json')  # a different block
+        self.assertEqual(retry.data['status'], 'already_executed')
+        self.assertEqual(other.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Position.objects.get(user=self.user).quantity, Decimal('1'))
 
     def test_oracle_unavailable_fails_closed(self):
@@ -982,6 +986,21 @@ class ConsensusProofTests(TestCase):
         self.assertEqual(r.status_code, 200)
         order = Order.objects.get(pk=self.oid)
         self.assertEqual((order.status, order.block_hash), ('CONFIRMED', self.hash))
+
+    def test_retry_of_settled_block_is_idempotent(self):
+        votes = votes_for(self.oid, self.hash, '100.00')
+        self.assertEqual(self._execute(votes).status_code, 200)
+        balance = Wallet.objects.get(user=self.user).balance
+        r = self._execute(votes)             # the Leader's retry after a timeout
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data['status'], 'already_executed')
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, balance)   # not charged twice
+
+    def test_retry_with_a_different_block_is_refused(self):
+        self._execute(votes_for(self.oid, self.hash, '100.00'))
+        other = block_hash_for(12345)
+        r = self._execute(votes_for(self.oid, other, '100.00'), block_hash=other)
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_single_node_cannot_settle(self):
         r = self._execute(votes_for(self.oid, self.hash, '100.00', voters=('voter-a',)))

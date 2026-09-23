@@ -28,6 +28,13 @@ import (
 // which committed blocks to replay. Both sides must agree on this format.
 const desyncPrefix = "DESYNC head="
 
+// aheadPrefix marks a rejection because the Validator's chain is AHEAD of the
+// proposed block — the Leader is the one that fell behind and must catch up.
+const aheadPrefix = "AHEAD head="
+
+// maxBlocksPerFetch caps one GetBlocks response.
+const maxBlocksPerFetch = 500
+
 // ValidatorServer implements the gRPC ConsensusServiceServer interface
 type ValidatorServer struct {
 	pb.UnimplementedConsensusServiceServer
@@ -124,6 +131,8 @@ func (s *ValidatorServer) evaluate(block Block, req *pb.ProposeRequest) string {
 		// where our chain ends so it can replay what we missed and re-ask.
 		if head := s.chain.HeadIndex(); block.Index > head+1 {
 			reason = fmt.Sprintf("%s%d | %s", desyncPrefix, head, reason)
+		} else if block.Index <= head {
+			reason = fmt.Sprintf("%s%d | %s", aheadPrefix, head, reason)
 		}
 		return reason
 	}
@@ -259,6 +268,21 @@ func (s *ValidatorServer) Commit(ctx context.Context, req *pb.CommitRequest) (*p
 	fmt.Printf("[%s] Block #%d committed | chain length: %d\n",
 		s.cfg.NodeName, block.Index, s.chain.Length())
 	return respond("committed"), nil
+}
+
+// GetBlocks returns committed blocks from an index on, so a Leader that lost
+// part of its chain can recover it. The Leader re-certifies each block with
+// Django, so a lying Validator cannot feed it a forged history.
+func (s *ValidatorServer) GetBlocks(ctx context.Context, req *pb.GetBlocksRequest) (*pb.GetBlocksResponse, error) {
+	blocks := s.chain.BlocksFrom(int(req.GetFromIndex()))
+	if len(blocks) > maxBlocksPerFetch {
+		blocks = blocks[:maxBlocksPerFetch]
+	}
+	out := &pb.GetBlocksResponse{}
+	for _, b := range blocks {
+		out.Blocks = append(out.Blocks, blockToProto(b))
+	}
+	return out, nil
 }
 
 // certified reports whether Django settled the block's order under this block.

@@ -117,8 +117,9 @@ func (d *DjangoClient) RejectOrder(orderID int, reason string) bool {
 }
 
 // ExecuteOrder asks Django to settle the order, presenting the quorum of
-// signed votes as proof of consensus.
-func (d *DjangoClient) ExecuteOrder(orderID int, oracle *OracleData, blockHash string, votes []Vote) bool {
+// signed votes as proof of consensus. It returns Django's HTTP status; err is
+// set when the outcome is unknown (network failure, timeout).
+func (d *DjangoClient) ExecuteOrder(orderID int, oracle *OracleData, blockHash string, votes []Vote) (int, error) {
 	code, body, err := d.postJSON(fmt.Sprintf("/orders/%d/execute_order/", orderID), map[string]any{
 		"execution_price": oracle.ExecutionPrice,
 		"timestamp":       oracle.Timestamp,
@@ -126,9 +127,8 @@ func (d *DjangoClient) ExecuteOrder(orderID int, oracle *OracleData, blockHash s
 		"votes":           votes,
 	})
 	if err != nil {
-		log.Printf("[Leader] Django error: %v", err)
-		return false
+		return 0, err
 	}
-	fmt.Printf("[Leader] Django response: %s\n", body)
-	return code == http.StatusOK
+	fmt.Printf("[Leader] Django response (%d): %s\n", code, body)
+	return code, nil
 }

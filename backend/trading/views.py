@@ -187,6 +187,25 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not execution_price.is_finite() or execution_price <= 0:
             return Response({"error": "Invalid execution price."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Proof of consensus: a quorum of node signatures over exactly this
+        # order, block and price. Without it the caller is just one node.
+        if count_valid_votes(pk, block_hash, str(execution_price_raw),
+                             request.data.get('votes')) < QUORUM:
+            return Response(
+                {"error": f"Consensus proof missing: at least {QUORUM} valid node votes are required."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        snapshot = self.get_object()
+
+        # Idempotent retry: the Leader re-sends the same certified block when it
+        # could not tell whether an earlier attempt went through (timeout,
+        # crash). Report success instead of refusing, so it can finish the
+        # commit. Checked before the staleness check — a retry may be late.
+        if snapshot.status == 'CONFIRMED' and snapshot.block_hash == block_hash:
+            return Response({"status": "already_executed", "order_id": snapshot.id,
+                             "execution_price": str(snapshot.execution_price)})
+
         # stale-price check
         oracle_time = parse_datetime(str(oracle_timestamp))
         if not oracle_time:
@@ -199,19 +218,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Proof of consensus: a quorum of node signatures over exactly this
-        # order, block and price. Without it the caller is just one node.
-        if count_valid_votes(pk, block_hash, str(execution_price_raw),
-                             request.data.get('votes')) < QUORUM:
-            return Response(
-                {"error": f"Consensus proof missing: at least {QUORUM} valid node votes are required."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         # ── network I/O first, outside the transaction ─────────────
         # Oracle and option-chain lookups can take seconds; doing them while
         # holding row locks would stall every other writer.
-        snapshot = self.get_object()
         if snapshot.status != 'SUBMITTED':
             return Response(
                 {"error": f"Only SUBMITTED orders can be executed. Current status: {snapshot.status}"},

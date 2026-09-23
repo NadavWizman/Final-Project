@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	ConsensusService_Propose_FullMethodName = "/consensus.ConsensusService/Propose"
-	ConsensusService_Commit_FullMethodName  = "/consensus.ConsensusService/Commit"
+	ConsensusService_Propose_FullMethodName   = "/consensus.ConsensusService/Propose"
+	ConsensusService_Commit_FullMethodName    = "/consensus.ConsensusService/Commit"
+	ConsensusService_GetBlocks_FullMethodName = "/consensus.ConsensusService/GetBlocks"
 )
 
 // ConsensusServiceClient is the client API for ConsensusService service.
@@ -33,6 +34,9 @@ type ConsensusServiceClient interface {
 	Propose(ctx context.Context, in *ProposeRequest, opts ...grpc.CallOption) (*VoteResponse, error)
 	// Commit tells the Validator to finalize and append the agreed block
 	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error)
+	// GetBlocks lets a Leader that fell behind (e.g. lost its chain file) catch up.
+	// Every block returned is re-certified against Django before it is used.
+	GetBlocks(ctx context.Context, in *GetBlocksRequest, opts ...grpc.CallOption) (*GetBlocksResponse, error)
 }
 
 type consensusServiceClient struct {
@@ -63,6 +67,16 @@ func (c *consensusServiceClient) Commit(ctx context.Context, in *CommitRequest, 
 	return out, nil
 }
 
+func (c *consensusServiceClient) GetBlocks(ctx context.Context, in *GetBlocksRequest, opts ...grpc.CallOption) (*GetBlocksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetBlocksResponse)
+	err := c.cc.Invoke(ctx, ConsensusService_GetBlocks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ConsensusServiceServer is the server API for ConsensusService service.
 // All implementations must embed UnimplementedConsensusServiceServer
 // for forward compatibility.
@@ -73,6 +87,9 @@ type ConsensusServiceServer interface {
 	Propose(context.Context, *ProposeRequest) (*VoteResponse, error)
 	// Commit tells the Validator to finalize and append the agreed block
 	Commit(context.Context, *CommitRequest) (*CommitResponse, error)
+	// GetBlocks lets a Leader that fell behind (e.g. lost its chain file) catch up.
+	// Every block returned is re-certified against Django before it is used.
+	GetBlocks(context.Context, *GetBlocksRequest) (*GetBlocksResponse, error)
 	mustEmbedUnimplementedConsensusServiceServer()
 }
 
@@ -88,6 +105,9 @@ func (UnimplementedConsensusServiceServer) Propose(context.Context, *ProposeRequ
 }
 func (UnimplementedConsensusServiceServer) Commit(context.Context, *CommitRequest) (*CommitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Commit not implemented")
+}
+func (UnimplementedConsensusServiceServer) GetBlocks(context.Context, *GetBlocksRequest) (*GetBlocksResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetBlocks not implemented")
 }
 func (UnimplementedConsensusServiceServer) mustEmbedUnimplementedConsensusServiceServer() {}
 func (UnimplementedConsensusServiceServer) testEmbeddedByValue()                          {}
@@ -146,6 +166,24 @@ func _ConsensusService_Commit_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ConsensusService_GetBlocks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetBlocksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ConsensusServiceServer).GetBlocks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ConsensusService_GetBlocks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ConsensusServiceServer).GetBlocks(ctx, req.(*GetBlocksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // ConsensusService_ServiceDesc is the grpc.ServiceDesc for ConsensusService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -160,6 +198,10 @@ var ConsensusService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Commit",
 			Handler:    _ConsensusService_Commit_Handler,
+		},
+		{
+			MethodName: "GetBlocks",
+			Handler:    _ConsensusService_GetBlocks_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

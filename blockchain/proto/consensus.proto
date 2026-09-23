@@ -53,6 +53,15 @@ message CommitResponse {
   int32  chain_length = 3;
 }
 
+// GetBlocksRequest asks a Validator for its committed blocks from an index on
+message GetBlocksRequest {
+  int32 from_index = 1;
+}
+
+message GetBlocksResponse {
+  repeated Block blocks = 1;
+}
+
 // ConsensusService is the gRPC interface exposed by each Validator
 service ConsensusService {
   // Propose asks the Validator to vote on a candidate block
@@ -60,4 +69,8 @@ service ConsensusService {
 
   // Commit tells the Validator to finalize and append the agreed block
   rpc Commit (CommitRequest) returns (CommitResponse);
+
+  // GetBlocks lets a Leader that fell behind (e.g. lost its chain file) catch up.
+  // Every block returned is re-certified against Django before it is used.
+  rpc GetBlocks (GetBlocksRequest) returns (GetBlocksResponse);
 }

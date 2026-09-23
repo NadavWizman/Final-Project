@@ -417,6 +417,95 @@ func (x *CommitResponse) GetChainLength() int32 {
 	return 0
 }
 
+// GetBlocksRequest asks a Validator for its committed blocks from an index on
+type GetBlocksRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	FromIndex     int32                  `protobuf:"varint,1,opt,name=from_index,json=fromIndex,proto3" json:"from_index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetBlocksRequest) Reset() {
+	*x = GetBlocksRequest{}
+	mi := &file_consensus_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetBlocksRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetBlocksRequest) ProtoMessage() {}
+
+func (x *GetBlocksRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_consensus_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetBlocksRequest.ProtoReflect.Descriptor instead.
+func (*GetBlocksRequest) Descriptor() ([]byte, []int) {
+	return file_consensus_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GetBlocksRequest) GetFromIndex() int32 {
+	if x != nil {
+		return x.FromIndex
+	}
+	return 0
+}
+
+type GetBlocksResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Blocks        []*Block               `protobuf:"bytes,1,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetBlocksResponse) Reset() {
+	*x = GetBlocksResponse{}
+	mi := &file_consensus_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetBlocksResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetBlocksResponse) ProtoMessage() {}
+
+func (x *GetBlocksResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_consensus_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetBlocksResponse.ProtoReflect.Descriptor instead.
+func (*GetBlocksResponse) Descriptor() ([]byte, []int) {
+	return file_consensus_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *GetBlocksResponse) GetBlocks() []*Block {
+	if x != nil {
+		return x.Blocks
+	}
+	return nil
+}
+
 var File_consensus_proto protoreflect.FileDescriptor
 
 const file_consensus_proto_rawDesc = "" +
@@ -456,10 +545,16 @@ const file_consensus_proto_rawDesc = "" +
 	"\x0eCommitResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x05R\x05index\x12!\n" +
-	"\fchain_length\x18\x03 \x01(\x05R\vchainLength2\x90\x01\n" +
+	"\fchain_length\x18\x03 \x01(\x05R\vchainLength\"1\n" +
+	"\x10GetBlocksRequest\x12\x1d\n" +
+	"\n" +
+	"from_index\x18\x01 \x01(\x05R\tfromIndex\"=\n" +
+	"\x11GetBlocksResponse\x12(\n" +
+	"\x06blocks\x18\x01 \x03(\v2\x10.consensus.BlockR\x06blocks2\xd8\x01\n" +
 	"\x10ConsensusService\x12=\n" +
 	"\aPropose\x12\x19.consensus.ProposeRequest\x1a\x17.consensus.VoteResponse\x12=\n" +
-	"\x06Commit\x12\x18.consensus.CommitRequest\x1a\x19.consensus.CommitResponseB$Z\"github.com/trading/nodes/consensusb\x06proto3"
+	"\x06Commit\x12\x18.consensus.CommitRequest\x1a\x19.consensus.CommitResponse\x12F\n" +
+	"\tGetBlocks\x12\x1b.consensus.GetBlocksRequest\x1a\x1c.consensus.GetBlocksResponseB$Z\"github.com/trading/nodes/consensusb\x06proto3"
 
 var (
 	file_consensus_proto_rawDescOnce sync.Once
@@ -473,26 +568,31 @@ func file_consensus_proto_rawDescGZIP() []byte {
 	return file_consensus_proto_rawDescData
 }
 
-var file_consensus_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_consensus_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_consensus_proto_goTypes = []any{
-	(*Block)(nil),          // 0: consensus.Block
-	(*ProposeRequest)(nil), // 1: consensus.ProposeRequest
-	(*VoteResponse)(nil),   // 2: consensus.VoteResponse
-	(*CommitRequest)(nil),  // 3: consensus.CommitRequest
-	(*CommitResponse)(nil), // 4: consensus.CommitResponse
+	(*Block)(nil),             // 0: consensus.Block
+	(*ProposeRequest)(nil),    // 1: consensus.ProposeRequest
+	(*VoteResponse)(nil),      // 2: consensus.VoteResponse
+	(*CommitRequest)(nil),     // 3: consensus.CommitRequest
+	(*CommitResponse)(nil),    // 4: consensus.CommitResponse
+	(*GetBlocksRequest)(nil),  // 5: consensus.GetBlocksRequest
+	(*GetBlocksResponse)(nil), // 6: consensus.GetBlocksResponse
 }
 var file_consensus_proto_depIdxs = []int32{
 	0, // 0: consensus.ProposeRequest.block:type_name -> consensus.Block
 	0, // 1: consensus.CommitRequest.block:type_name -> consensus.Block
-	1, // 2: consensus.ConsensusService.Propose:input_type -> consensus.ProposeRequest
-	3, // 3: consensus.ConsensusService.Commit:input_type -> consensus.CommitRequest
-	2, // 4: consensus.ConsensusService.Propose:output_type -> consensus.VoteResponse
-	4, // 5: consensus.ConsensusService.Commit:output_type -> consensus.CommitResponse
-	4, // [4:6] is the sub-list for method output_type
-	2, // [2:4] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	0, // 2: consensus.GetBlocksResponse.blocks:type_name -> consensus.Block
+	1, // 3: consensus.ConsensusService.Propose:input_type -> consensus.ProposeRequest
+	3, // 4: consensus.ConsensusService.Commit:input_type -> consensus.CommitRequest
+	5, // 5: consensus.ConsensusService.GetBlocks:input_type -> consensus.GetBlocksRequest
+	2, // 6: consensus.ConsensusService.Propose:output_type -> consensus.VoteResponse
+	4, // 7: consensus.ConsensusService.Commit:output_type -> consensus.CommitResponse
+	6, // 8: consensus.ConsensusService.GetBlocks:output_type -> consensus.GetBlocksResponse
+	6, // [6:9] is the sub-list for method output_type
+	3, // [3:6] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_consensus_proto_init() }
@@ -506,7 +606,7 @@ func file_consensus_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_consensus_proto_rawDesc), len(file_consensus_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
