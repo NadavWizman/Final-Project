@@ -65,6 +65,14 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        'OPTIONS': {
+            # SQLite ignores SELECT ... FOR UPDATE. IMMEDIATE transactions take the
+            # write lock up front, so two settlements can never interleave their
+            # read-modify-write of the same wallet; `timeout` makes a contending
+            # writer wait instead of failing with "database is locked".
+            'transaction_mode': 'IMMEDIATE',
+            'timeout': 20,
+        },
     }
 }
 

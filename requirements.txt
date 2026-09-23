@@ -1,4 +1,4 @@
-Django>=5.0,<6.1
+Django>=5.1,<6.1
 djangorestframework>=3.15
 cryptography>=42.0
 grpcio>=1.62

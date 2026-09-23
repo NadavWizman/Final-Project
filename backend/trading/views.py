@@ -6,6 +6,7 @@ from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.db import transaction, IntegrityError
+from django.db.models import F
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
 from datetime import timedelta
@@ -146,8 +147,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         reason = str(request.data.get('reason', 'consensus not reached'))[:200]
 
         with transaction.atomic():
-            order = self.get_object()
-            order.refresh_from_db()
+            order = Order.objects.select_for_update().get(pk=self.get_object().pk)
 
             if order.status != 'SUBMITTED':
                 return Response(
@@ -183,9 +183,11 @@ class OrderViewSet(viewsets.ModelViewSet):
             execution_price = Decimal(str(execution_price_raw))
         except InvalidOperation:
             return Response({"error": "Invalid execution price."}, status=status.HTTP_400_BAD_REQUEST)
+        if not execution_price.is_finite() or execution_price <= 0:
+            return Response({"error": "Invalid execution price."}, status=status.HTTP_400_BAD_REQUEST)
 
         # stale-price check
-        oracle_time = parse_datetime(oracle_timestamp)
+        oracle_time = parse_datetime(str(oracle_timestamp))
         if not oracle_time:
             return Response({"error": "Invalid timestamp format."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -196,9 +198,40 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # ── network I/O first, outside the transaction ─────────────
+        # Oracle and option-chain lookups can take seconds; doing them while
+        # holding row locks would stall every other writer.
+        snapshot = self.get_object()
+        if snapshot.status != 'SUBMITTED':
+            return Response(
+                {"error": f"Only SUBMITTED orders can be executed. Current status: {snapshot.status}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Independent price re-verification. Django is the component that
+        # actually moves money, so it must not take the leader's word for the
+        # execution price. The nodes agree the price is honest, but nothing
+        # binds that agreed price to what the leader then sends here — a
+        # compromised leader could get an honest price approved by consensus
+        # and settle at another. Re-query the Oracle and reject a divergent
+        # price. Fail closed: if the price can't be verified, don't settle.
+        try:
+            live_price = _oracle_live_price(snapshot.stock_id)
+        except Exception:
+            return Response(
+                {"error": "Cannot verify execution price: Oracle unavailable."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        option_quote = None
+        if snapshot.trade_type in ('OPTION', 'OPT_CLOSE'):
+            option_quote = _quote_for_order(snapshot)
+
+        # ── settle under row locks ─────────────────────────────────
         with transaction.atomic():
-            order = self.get_object()
-            order.refresh_from_db()
+            order = (Order.objects.select_for_update()
+                     .select_related('user__profile', 'stock')
+                     .get(pk=snapshot.pk))
 
             if order.status != 'SUBMITTED':
                 return Response(
@@ -211,388 +244,312 @@ class OrderViewSet(viewsets.ModelViewSet):
             profile = getattr(order.user, 'profile', None)
             if not (profile and order.signature and verify_signature(
                     profile.ecdsa_public_key, order_signing_payload(order), order.signature)):
-                order.status = 'REJECTED'
-                order.save()
-                return Response(
-                    {"error": "Order no longer matches the user's signature."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return _reject(order, "Order no longer matches the user's signature.")
 
-            # Independent price re-verification. Django is the component that
-            # actually moves money, so it must not take the leader's word for the
-            # execution price. The nodes agree the price is honest, but nothing
-            # binds that agreed price to what the leader then sends here — a
-            # compromised leader could get an honest price approved by consensus
-            # and settle at another. Re-query the Oracle and reject a divergent
-            # price. Fail closed: if the price can't be verified, don't settle.
-            try:
-                _stub, _oracle_pb2 = _get_oracle_stub()
-                _resp = _stub.GetPrice(_oracle_pb2.PriceRequest(ticker=order.stock.ticker), timeout=5)
-                live_price = Decimal(str(_resp.execution_price))
-            except Exception:
-                return Response(
-                    {"error": "Cannot verify execution price: Oracle unavailable."},
-                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            divergence = abs(execution_price - live_price) / live_price
+            if divergence > ORACLE_PRICE_TOLERANCE:
+                return _reject(
+                    order,
+                    f"Execution price ${execution_price} diverges "
+                    f"{divergence * 100:.2f}% from live ${live_price} "
+                    f"(limit {ORACLE_PRICE_TOLERANCE * 100:.0f}%)."
                 )
-            if live_price > 0:
-                divergence = abs(execution_price - live_price) / live_price
-                if divergence > ORACLE_PRICE_TOLERANCE:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {"error": f"Execution price ${execution_price} diverges "
-                                  f"{divergence * 100:.2f}% from live ${live_price} "
-                                  f"(limit {ORACLE_PRICE_TOLERANCE * 100:.0f}%)."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
 
             # limit-price check
             if order.limit_price:
                 if order.order_type == 'BUY' and execution_price > order.limit_price:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {"error": f"Market price ${execution_price} exceeds limit price ${order.limit_price}."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                elif order.order_type == 'SELL' and execution_price < order.limit_price:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {"error": f"Market price ${execution_price} is below limit price ${order.limit_price}."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+                    return _reject(order, f"Market price ${execution_price} exceeds limit price ${order.limit_price}.")
+                if order.order_type == 'SELL' and execution_price < order.limit_price:
+                    return _reject(order, f"Market price ${execution_price} is below limit price ${order.limit_price}.")
 
-            wallet = order.user.wallet
+            wallet = Wallet.objects.select_for_update().get(user_id=order.user_id)
+            settle = _SETTLERS.get(order.trade_type, _settle_stock)
+            return settle(order, wallet, execution_price, option_quote)
 
-            if order.trade_type == 'CFD':
-                leverage    = order.leverage or 1
-                notional    = order.quantity * execution_price
-                margin      = (notional / leverage).quantize(Decimal('0.0001'))
-                direction   = 'LONG' if order.order_type == 'BUY' else 'SHORT'
 
-                if wallet.balance < margin:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {"error": f"Insufficient margin: need ${margin}, have ${wallet.balance}."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
+# ============================================================
+# 1b. Settlement — one function per trade type. Each runs inside the
+#     execute_order transaction with the order and wallet rows locked.
+# ============================================================
+def _reject(order, error, http_status=status.HTTP_400_BAD_REQUEST):
+    order.status = 'REJECTED'
+    order.save()
+    return Response({"error": error}, status=http_status)
 
-                wallet.balance -= margin
-                wallet.save()
-                CFDPosition.objects.create(
-                    user=order.user, stock=order.stock,
-                    direction=direction, quantity=order.quantity,
-                    entry_price=execution_price, leverage=leverage,
-                    margin_used=margin,
-                )
-                order.execution_price = execution_price
-                order.status = 'CONFIRMED'
-                order.save()
 
-                return Response({
-                    "status":        "success",
-                    "message":       "CFD position opened after gRPC consensus.",
-                    "direction":     direction,
-                    "entry_price":   str(execution_price),
-                    "notional":      str(notional),
-                    "leverage":      leverage,
-                    "margin_used":   str(margin),
-                })
+def _confirm(order, execution_price):
+    order.execution_price = execution_price
+    order.status = 'CONFIRMED'
+    order.save()
 
-            # --- close a CFD position, fully or partially ---
-            if order.trade_type == 'CFD_CLOSE':
-                try:
-                    pos = CFDPosition.objects.select_for_update().get(
-                        pk=order.position_id, user=order.user, is_open=True
-                    )
-                except CFDPosition.DoesNotExist:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {'error': 'CFD position not found or already closed'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
 
-                close_price = execution_price
-                # An SL/TP level may close only part of the position, so honour the
-                # order quantity and never close more than the position still holds.
-                close_qty = min(order.quantity, pos.quantity) if order.quantity else pos.quantity
-                if close_qty <= 0:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {'error': 'Close quantity must be greater than zero.'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+def _settle_cfd(order, wallet, execution_price, _quote):
+    leverage  = order.leverage or 1
+    notional  = order.quantity * execution_price
+    margin    = (notional / leverage).quantize(Decimal('0.0001'))
+    direction = 'LONG' if order.order_type == 'BUY' else 'SHORT'
 
-                partial_margin = (pos.margin_used * (close_qty / pos.quantity)).quantize(Decimal('0.0001'))
-                pnl = (close_price - pos.entry_price) * close_qty if pos.direction == 'LONG' \
-                      else (pos.entry_price - close_price) * close_qty
-                cash_returned = partial_margin + pnl
-                if cash_returned < Decimal('0'):
-                    cash_returned = Decimal('0')
+    if wallet.balance < margin:
+        return _reject(order, f"Insufficient margin: need ${margin}, have ${wallet.balance}.")
 
-                wallet.balance += cash_returned
-                wallet.save()
+    wallet.balance -= margin
+    wallet.save()
+    CFDPosition.objects.create(
+        user=order.user, stock=order.stock,
+        direction=direction, quantity=order.quantity,
+        entry_price=execution_price, leverage=leverage,
+        margin_used=margin,
+    )
+    _confirm(order, execution_price)
+    return Response({
+        "status":      "success",
+        "message":     "CFD position opened after gRPC consensus.",
+        "direction":   direction,
+        "entry_price": str(execution_price),
+        "notional":    str(notional),
+        "leverage":    leverage,
+        "margin_used": str(margin),
+    })
 
-                pos.quantity    -= close_qty
-                pos.margin_used -= partial_margin
-                pos.pnl          = (pos.pnl or Decimal('0')) + pnl
-                if pos.quantity <= 0:
-                    pos.is_open     = False
-                    pos.close_price = close_price
-                    pos.closed_at   = timezone.now()
-                pos.save()
 
-                order.execution_price = close_price
-                order.status = 'CONFIRMED'
-                order.save()
+def _settle_cfd_close(order, wallet, execution_price, _quote):
+    """Close a CFD position, fully or partially."""
+    try:
+        pos = CFDPosition.objects.select_for_update().get(
+            pk=order.position_id, user=order.user, is_open=True
+        )
+    except CFDPosition.DoesNotExist:
+        return _reject(order, 'CFD position not found or already closed')
 
-                return Response({
-                    'status':    'success',
-                    'message':   'CFD position closed after gRPC consensus.',
-                    'direction': pos.direction,
-                    'quantity':  str(close_qty),
-                    'remaining': str(pos.quantity),
-                    'pnl':       str(pnl),
-                })
+    # An SL/TP level may close only part of the position, so honour the
+    # order quantity and never close more than the position still holds.
+    close_qty = min(order.quantity, pos.quantity) if order.quantity else pos.quantity
+    if close_qty <= 0:
+        return _reject(order, 'Close quantity must be greater than zero.')
 
-            # --- close an option position (sell at market premium) ---
-            if order.trade_type == 'OPT_CLOSE':
-                try:
-                    pos = OptionPosition.objects.select_for_update().get(
-                        pk=order.position_id, user=order.user, status='OPEN'
-                    )
-                except OptionPosition.DoesNotExist:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {'error': 'Option position not found or already closed'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                try:
-                    import yfinance as yf
-                    chain   = yf.Ticker(pos.stock.ticker).option_chain(pos.expiry.isoformat())
-                    df      = chain.calls if pos.contract_type == 'CALL' else chain.puts
-                    mask    = (df['strike'] - float(pos.strike)).abs() < 0.01
-                    opt_row = df[mask]
-                    if opt_row.empty:
-                        raise ValueError('No market row found')
-                    bid  = float(opt_row.iloc[0].get('bid',       0) or 0)
-                    ask  = float(opt_row.iloc[0].get('ask',       0) or 0)
-                    last = float(opt_row.iloc[0].get('lastPrice', 0) or 0)
-                    mid  = (bid + ask) / 2 if bid > 0 and ask > 0 else last
-                    if mid <= 0:
-                        raise ValueError('No valid price')
-                    close_premium = Decimal(str(round(mid, 4)))
-                except Exception:
-                    # fallback: intrinsic value from oracle stock price
-                    if pos.contract_type == 'CALL':
-                        close_premium = max(Decimal('0'), execution_price - pos.strike)
-                    else:
-                        close_premium = max(Decimal('0'), pos.strike - execution_price)
+    partial_margin = (pos.margin_used * (close_qty / pos.quantity)).quantize(Decimal('0.0001'))
+    pnl = (execution_price - pos.entry_price) * close_qty if pos.direction == 'LONG' \
+          else (pos.entry_price - execution_price) * close_qty
+    cash_returned = max(partial_margin + pnl, Decimal('0'))
 
-                total_cost    = pos.premium_paid * pos.contracts * 100
-                cash_received = close_premium * pos.contracts * 100
-                pnl           = cash_received - total_cost
+    wallet.balance += cash_returned
+    wallet.save()
 
-                wallet.balance += cash_received
-                wallet.save()
+    pos.quantity    -= close_qty
+    pos.margin_used -= partial_margin
+    pos.pnl          = (pos.pnl or Decimal('0')) + pnl
+    if pos.quantity <= 0:
+        pos.is_open     = False
+        pos.close_price = execution_price
+        pos.closed_at   = timezone.now()
+    pos.save()
 
-                pos.status        = 'CLOSED'
-                pos.pnl           = pnl
-                pos.close_premium = close_premium
-                pos.closed_at     = timezone.now()
-                pos.save()
+    _confirm(order, execution_price)
+    return Response({
+        'status':    'success',
+        'message':   'CFD position closed after gRPC consensus.',
+        'direction': pos.direction,
+        'quantity':  str(close_qty),
+        'remaining': str(pos.quantity),
+        'pnl':       str(pnl),
+    })
 
-                order.execution_price = close_premium
-                order.status = 'CONFIRMED'
-                order.save()
 
-                return Response({
-                    'status':  'success',
-                    'message': 'Option position closed after gRPC consensus.',
-                    'pnl':     str(pnl),
-                })
+def _settle_option_close(order, wallet, execution_price, quote):
+    """Close an option position (sell at market premium)."""
+    try:
+        pos = OptionPosition.objects.select_for_update().get(
+            pk=order.position_id, user=order.user, status='OPEN'
+        )
+    except OptionPosition.DoesNotExist:
+        return _reject(order, 'Option position not found or already closed')
 
-            # --- exercise an option (cash-settled at intrinsic value) ---
-            if order.trade_type == 'OPT_EXER':
-                try:
-                    pos = OptionPosition.objects.select_for_update().get(
-                        pk=order.position_id, user=order.user, status='OPEN'
-                    )
-                except OptionPosition.DoesNotExist:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {'error': 'Option position not found or already closed'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                if pos.expiry < timezone.now().date():
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {'error': 'Option has expired and can no longer be exercised.'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                stock_price = execution_price
-                if pos.contract_type == 'CALL':
-                    intrinsic = stock_price - pos.strike
-                else:
-                    intrinsic = pos.strike - stock_price
-                if intrinsic <= 0:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {'error': f'Option is out of the money (intrinsic value ≤ 0)'},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
+    if quote is not None:
+        close_premium = quote
+    elif pos.contract_type == 'CALL':
+        # fallback: intrinsic value from the verified stock price
+        close_premium = max(Decimal('0'), execution_price - pos.strike)
+    else:
+        close_premium = max(Decimal('0'), pos.strike - execution_price)
 
-                total_cost    = pos.premium_paid * pos.contracts * 100
-                cash_received = intrinsic * pos.contracts * 100
-                pnl           = cash_received - total_cost
+    total_cost    = pos.premium_paid * pos.contracts * 100
+    cash_received = close_premium * pos.contracts * 100
+    pnl           = cash_received - total_cost
 
-                wallet.balance += cash_received
-                wallet.save()
+    wallet.balance += cash_received
+    wallet.save()
 
-                pos.status        = 'EXERCISED'
-                pos.pnl           = pnl
-                pos.close_premium = intrinsic
-                pos.closed_at     = timezone.now()
-                pos.save()
+    pos.status        = 'CLOSED'
+    pos.pnl           = pnl
+    pos.close_premium = close_premium
+    pos.closed_at     = timezone.now()
+    pos.save()
 
-                order.execution_price = stock_price
-                order.status = 'CONFIRMED'
-                order.save()
+    _confirm(order, close_premium)
+    return Response({
+        'status':  'success',
+        'message': 'Option position closed after gRPC consensus.',
+        'pnl':     str(pnl),
+    })
 
-                return Response({
-                    'status':    'success',
-                    'message':   'Option exercised after gRPC consensus.',
-                    'intrinsic': str(intrinsic),
-                    'pnl':       str(pnl),
-                })
 
-            # --- option order — premium fetched from yfinance server-side ---
-            if order.trade_type == 'OPTION':
-                try:
-                    import yfinance as yf
-                    expiry_str = order.option_expiry.isoformat()
-                    chain = yf.Ticker(order.stock.ticker).option_chain(expiry_str)
-                    df    = chain.calls if order.option_contract_type == 'CALL' else chain.puts
-                    mask  = (df['strike'] - float(order.option_strike)).abs() < 0.01
-                    opt_row = df[mask]
-                    if opt_row.empty:
-                        order.status = 'REJECTED'
-                        order.save()
-                        return Response(
-                            {'error': f'No market data for {order.stock.ticker} {order.option_contract_type} @{order.option_strike} exp {expiry_str}'},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    bid  = float(opt_row.iloc[0].get('bid',       0) or 0)
-                    ask  = float(opt_row.iloc[0].get('ask',       0) or 0)
-                    last = float(opt_row.iloc[0].get('lastPrice', 0) or 0)
-                    mid  = (bid + ask) / 2 if ask > 0 else last
-                    if mid <= 0:
-                        order.status = 'REJECTED'
-                        order.save()
-                        return Response(
-                            {'error': 'No valid market price available for this option contract'},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    premium   = Decimal(str(round(mid, 4)))
-                    contracts = int(order.quantity)
-                    total_cost = premium * contracts * 100
+def _settle_option_exercise(order, wallet, execution_price, _quote):
+    """Exercise an option (cash-settled at intrinsic value)."""
+    try:
+        pos = OptionPosition.objects.select_for_update().get(
+            pk=order.position_id, user=order.user, status='OPEN'
+        )
+    except OptionPosition.DoesNotExist:
+        return _reject(order, 'Option position not found or already closed')
+    if pos.expiry < timezone.now().date():
+        return _reject(order, 'Option has expired and can no longer be exercised.')
 
-                    if wallet.balance < total_cost:
-                        order.status = 'REJECTED'
-                        order.save()
-                        return Response(
-                            {'error': f'Insufficient funds: need ${total_cost:.2f}, have ${wallet.balance:.2f}'},
-                            status=status.HTTP_400_BAD_REQUEST,
-                        )
-                    wallet.balance -= total_cost
-                    wallet.save()
+    intrinsic = (execution_price - pos.strike) if pos.contract_type == 'CALL' \
+                else (pos.strike - execution_price)
+    if intrinsic <= 0:
+        return _reject(order, 'Option is out of the money (intrinsic value ≤ 0)')
 
-                    OptionPosition.objects.create(
-                        user=order.user, stock=order.stock,
-                        contract_type=order.option_contract_type,
-                        strike=order.option_strike,
-                        expiry=order.option_expiry,
-                        contracts=contracts,
-                        premium_paid=premium,
-                    )
-                    order.execution_price = premium
-                    order.status = 'CONFIRMED'
-                    order.save()
+    total_cost    = pos.premium_paid * pos.contracts * 100
+    cash_received = intrinsic * pos.contracts * 100
+    pnl           = cash_received - total_cost
 
-                    return Response({
-                        'status':     'success',
-                        'message':    'Option position opened after gRPC consensus.',
-                        'premium':    str(premium),
-                        'total_cost': str(total_cost),
-                        'contracts':  contracts,
-                    })
-                except Exception as e:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {'error': f'Option execution failed: {e}'},
-                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    )
+    wallet.balance += cash_received
+    wallet.save()
 
-            # --- regular stock order ---
-            total_value = order.quantity * execution_price
+    pos.status        = 'EXERCISED'
+    pos.pnl           = pnl
+    pos.close_premium = intrinsic
+    pos.closed_at     = timezone.now()
+    pos.save()
 
-            if order.order_type == 'BUY':
-                if wallet.balance < total_value:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {"error": f"Insufficient balance: ${wallet.balance} < ${total_value}."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                wallet.balance -= total_value
-                position, _ = Position.objects.get_or_create(user=order.user, stock=order.stock)
-                position.quantity += order.quantity
-                position.save()
+    _confirm(order, execution_price)
+    return Response({
+        'status':    'success',
+        'message':   'Option exercised after gRPC consensus.',
+        'intrinsic': str(intrinsic),
+        'pnl':       str(pnl),
+    })
 
-            elif order.order_type == 'SELL':
-                try:
-                    position = Position.objects.get(user=order.user, stock=order.stock)
-                except Position.DoesNotExist:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {"error": "No holdings found for this stock."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                if position.quantity < order.quantity:
-                    order.status = 'REJECTED'
-                    order.save()
-                    return Response(
-                        {"error": f"Insufficient shares: {position.quantity} < {order.quantity}."},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                position.quantity -= order.quantity
-                if position.quantity == 0:
-                    position.delete()
-                else:
-                    position.save()
-                wallet.balance += total_value
 
-            wallet.save()
-            order.execution_price = execution_price
-            order.status = 'CONFIRMED'
-            order.save()
+def _settle_option_open(order, wallet, _execution_price, premium):
+    """Buy an option — the premium is fetched server-side, never from the leader."""
+    if premium is None:
+        return _reject(
+            order,
+            f'No market price for {order.stock_id} {order.option_contract_type} '
+            f'@{order.option_strike} exp {order.option_expiry}',
+            http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    contracts  = int(order.quantity)
+    total_cost = premium * contracts * 100
 
-        return Response({
-            "status":          "success",
-            "message":         "Order executed after gRPC consensus.",
-            "execution_price": str(execution_price),
-            "total_value":     str(total_value),
-        })
+    if wallet.balance < total_cost:
+        return _reject(order, f'Insufficient funds: need ${total_cost:.2f}, have ${wallet.balance:.2f}')
+    wallet.balance -= total_cost
+    wallet.save()
+
+    OptionPosition.objects.create(
+        user=order.user, stock=order.stock,
+        contract_type=order.option_contract_type,
+        strike=order.option_strike,
+        expiry=order.option_expiry,
+        contracts=contracts,
+        premium_paid=premium,
+    )
+    _confirm(order, premium)
+    return Response({
+        'status':     'success',
+        'message':    'Option position opened after gRPC consensus.',
+        'premium':    str(premium),
+        'total_cost': str(total_cost),
+        'contracts':  contracts,
+    })
+
+
+def _settle_stock(order, wallet, execution_price, _quote):
+    total_value = order.quantity * execution_price
+
+    if order.order_type == 'BUY':
+        if wallet.balance < total_value:
+            return _reject(order, f"Insufficient balance: ${wallet.balance} < ${total_value}.")
+        wallet.balance -= total_value
+        position, _ = Position.objects.select_for_update().get_or_create(user=order.user, stock=order.stock)
+        position.quantity += order.quantity
+        position.save()
+    else:
+        try:
+            position = Position.objects.select_for_update().get(user=order.user, stock=order.stock)
+        except Position.DoesNotExist:
+            return _reject(order, "No holdings found for this stock.")
+        if position.quantity < order.quantity:
+            return _reject(order, f"Insufficient shares: {position.quantity} < {order.quantity}.")
+        position.quantity -= order.quantity
+        if position.quantity == 0:
+            position.delete()
+        else:
+            position.save()
+        wallet.balance += total_value
+
+    wallet.save()
+    _confirm(order, execution_price)
+    return Response({
+        "status":          "success",
+        "message":         "Order executed after gRPC consensus.",
+        "execution_price": str(execution_price),
+        "total_value":     str(total_value),
+    })
+
+
+_SETTLERS = {
+    'CFD':       _settle_cfd,
+    'CFD_CLOSE': _settle_cfd_close,
+    'OPTION':    _settle_option_open,
+    'OPT_CLOSE': _settle_option_close,
+    'OPT_EXER':  _settle_option_exercise,
+    'STOCK':     _settle_stock,
+}
+
+
+def _oracle_live_price(ticker):
+    """Live price from the Oracle. Raises if it is unavailable or unusable."""
+    stub, oracle_pb2 = _get_oracle_stub()
+    resp = stub.GetPrice(oracle_pb2.PriceRequest(ticker=ticker), timeout=5)
+    price = Decimal(str(resp.execution_price))
+    if not price.is_finite() or price <= 0:
+        raise ValueError(f"unusable oracle price {resp.execution_price!r}")
+    return price
+
+
+def _option_market_premium(ticker, expiry, contract_type, strike):
+    """Per-share market premium for one option contract from yfinance, or None."""
+    try:
+        import yfinance as yf
+        chain = yf.Ticker(ticker).option_chain(expiry.isoformat())
+        df    = chain.calls if contract_type == 'CALL' else chain.puts
+        row   = df[(df['strike'] - float(strike)).abs() < 0.01]
+        if row.empty:
+            return None
+        row  = row.iloc[0]
+        bid  = float(row.get('bid',       0) or 0)
+        ask  = float(row.get('ask',       0) or 0)
+        last = float(row.get('lastPrice', 0) or 0)
+        mid  = (bid + ask) / 2 if ask > 0 else last
+        if mid <= 0:
+            return None
+        return Decimal(str(round(mid, 4)))
+    except Exception:
+        return None
+
+
+def _quote_for_order(order):
+    """Market premium an OPTION / OPT_CLOSE order would settle at, or None."""
+    if order.trade_type == 'OPTION':
+        return _option_market_premium(order.stock_id, order.option_expiry,
+                                      order.option_contract_type, order.option_strike)
+    pos = OptionPosition.objects.filter(pk=order.position_id, user=order.user).first()
+    if pos is None:
+        return None
+    return _option_market_premium(pos.stock_id, pos.expiry, pos.contract_type, pos.strike)
 
 
 # ============================================================
@@ -683,9 +640,12 @@ def deposit_view(request):
                         status=status.HTTP_400_BAD_REQUEST)
     amount = serializer.validated_data['amount']
 
-    wallet, _ = Wallet.objects.get_or_create(user=request.user, defaults={'balance': Decimal('0.00')})
-    wallet.balance += amount
-    wallet.save()
+    # Atomic increment in SQL — a read-modify-write in Python would lose
+    # updates that settle concurrently (orders, SL/TP, option expiry).
+    with transaction.atomic():
+        Wallet.objects.get_or_create(user=request.user, defaults={'balance': Decimal('0.00')})
+        Wallet.objects.filter(user=request.user).update(balance=F('balance') + amount)
+    wallet = Wallet.objects.get(user=request.user)
 
     return Response({"message": f"Successfully deposited ${amount}.", "new_balance": str(wallet.balance)})
 

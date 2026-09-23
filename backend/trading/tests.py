@@ -739,6 +739,21 @@ class OrderPriceVerificationTests(TestCase):
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Order.objects.get(pk=self.order_id).status, 'REJECTED')
 
+    def test_unusable_oracle_price_fails_closed(self):
+        # a zero/garbage Oracle price must not skip the divergence check
+        for bad in ('0', '', 'nan'):
+            with self._oracle(bad):
+                r = self._execute('336.00')
+            self.assertEqual(r.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, bad)
+        self.assertEqual(Order.objects.get(pk=self.order_id).status, 'SUBMITTED')
+
+    def test_second_execution_of_same_order_is_refused(self):
+        with self._oracle('336.00'):
+            self.assertEqual(self._execute('336.00').status_code, 200)
+            r = self._execute('336.00')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Position.objects.get(user=self.user).quantity, Decimal('1'))
+
     def test_oracle_unavailable_fails_closed(self):
         # cannot verify → do not settle; order stays SUBMITTED so it can retry
         with patch('trading.views._get_oracle_stub', side_effect=Exception('oracle down')):
