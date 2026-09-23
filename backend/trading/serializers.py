@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from django.contrib.auth.models import User
@@ -81,21 +82,34 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         trade_type = data.get('trade_type', 'STOCK')
+        order_type = data.get('order_type')
         leverage   = data.get('leverage')
+        quantity   = data.get('quantity')
         if trade_type == 'CFD' and not leverage:
             raise serializers.ValidationError({"leverage": "Leverage is required for CFD orders."})
-        if trade_type == 'STOCK' and leverage:
+        if trade_type != 'CFD' and leverage:
             raise serializers.ValidationError({"leverage": "Leverage only applies to CFD orders."})
         if trade_type == 'OPTION':
+            if order_type != 'BUY':
+                raise serializers.ValidationError({"order_type": "Only buying option contracts is supported."})
             if not data.get('option_contract_type') or data['option_contract_type'] not in ('CALL', 'PUT'):
                 raise serializers.ValidationError({"option_contract_type": "Must be CALL or PUT for OPTION orders."})
             if not data.get('option_strike') or data['option_strike'] <= 0:
                 raise serializers.ValidationError({"option_strike": "Required and must be > 0 for OPTION orders."})
             if not data.get('option_expiry'):
                 raise serializers.ValidationError({"option_expiry": "Required for OPTION orders."})
+            if data['option_expiry'] < timezone.now().date():
+                raise serializers.ValidationError({"option_expiry": "This option has already expired."})
+        if trade_type in ('OPTION', 'OPT_CLOSE', 'OPT_EXER'):
+            if quantity is not None and quantity != quantity.to_integral_value():
+                raise serializers.ValidationError({"quantity": "Options trade in whole contracts."})
         if trade_type in ('CFD_CLOSE', 'OPT_CLOSE', 'OPT_EXER'):
             if not data.get('position_id'):
                 raise serializers.ValidationError({"position_id": "Required for close/exercise orders."})
+            if order_type != 'SELL':
+                raise serializers.ValidationError({"order_type": "Close/exercise orders must be SELL."})
+        if trade_type != 'OPTION' and any(data.get(f) for f in ('option_contract_type', 'option_strike', 'option_expiry')):
+            raise serializers.ValidationError({"trade_type": "Option fields only apply to OPTION orders."})
         return data
 
     def validate_nonce(self, value):

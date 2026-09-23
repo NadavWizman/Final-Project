@@ -6,7 +6,7 @@ from rest_framework import status
 
 from unittest.mock import patch, MagicMock
 
-from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel
+from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition
 from .crypto_utils import generate_key_pair, sign_order, verify_signature, _build_message
 
 
@@ -719,3 +719,57 @@ class OrderPriceVerificationTests(TestCase):
             r = self._execute('336.00')
         self.assertEqual(r.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertEqual(Order.objects.get(pk=self.order_id).status, 'SUBMITTED')
+
+
+class OptionOrderValidationTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user()
+        self.stock = make_stock('AAPL')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.future = (timezone.now().date() + timedelta(days=30)).isoformat()
+
+    def _option(self, **overrides):
+        body = {
+            'stock': 'AAPL', 'order_type': 'BUY', 'trade_type': 'OPTION', 'quantity': '1',
+            'nonce': overrides.pop('nonce', 'opt-n1'), 'option_contract_type': 'CALL',
+            'option_strike': '100', 'option_expiry': self.future,
+        }
+        body.update(overrides)
+        return self.client.post('/api/orders/', body, format='json')
+
+    def test_valid_option_order_accepted(self):
+        self.assertEqual(self._option().status_code, status.HTTP_201_CREATED)
+
+    def test_fractional_contracts_rejected(self):
+        self.assertEqual(self._option(quantity='0.5').status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_selling_options_rejected(self):
+        self.assertEqual(self._option(order_type='SELL').status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_expired_option_rejected(self):
+        self.assertEqual(self._option(option_expiry='2020-01-17').status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_close_requires_owned_open_position_on_same_stock(self):
+        other = make_user('bob')
+        pos = OptionPosition.objects.create(
+            user=other, stock=self.stock, contract_type='CALL', strike=Decimal('100'),
+            expiry=timezone.now().date() + timedelta(days=5), contracts=1, premium_paid=Decimal('2'),
+        )
+        r = self.client.post('/api/orders/', {
+            'stock': 'AAPL', 'order_type': 'SELL', 'trade_type': 'OPT_CLOSE',
+            'quantity': '1', 'nonce': 'close-x', 'position_id': pos.id,
+        }, format='json')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cannot_exercise_expired_option(self):
+        pos = OptionPosition.objects.create(
+            user=self.user, stock=self.stock, contract_type='CALL', strike=Decimal('100'),
+            expiry=timezone.now().date() - timedelta(days=1), contracts=1, premium_paid=Decimal('2'),
+        )
+        r = self.client.post('/api/orders/', {
+            'stock': 'AAPL', 'order_type': 'SELL', 'trade_type': 'OPT_EXER',
+            'quantity': '1', 'nonce': 'exer-x', 'position_id': pos.id,
+        }, format='json')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)

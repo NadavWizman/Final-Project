@@ -65,6 +65,22 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"error": f"Ticker {stock.ticker} is not in the S&P 500 index and is not allowed for trading."}
             )
+        # A close/exercise order must reference an open position the user owns,
+        # on the same stock the order (and later its signature) names.
+        trade_type  = serializer.validated_data.get('trade_type', 'STOCK')
+        position_id = serializer.validated_data.get('position_id')
+        if trade_type == 'CFD_CLOSE':
+            if not CFDPosition.objects.filter(pk=position_id, user=self.request.user,
+                                              stock=stock, is_open=True).exists():
+                raise ValidationError({"position_id": "No open CFD position with this id for this stock."})
+        elif trade_type in ('OPT_CLOSE', 'OPT_EXER'):
+            pos = OptionPosition.objects.filter(pk=position_id, user=self.request.user,
+                                                stock=stock, status='OPEN').first()
+            if pos is None:
+                raise ValidationError({"position_id": "No open option position with this id for this stock."})
+            if trade_type == 'OPT_EXER' and pos.expiry < timezone.now().date():
+                raise ValidationError({"position_id": "This option has expired and can no longer be exercised."})
+
         # Orders are always created as DRAFT — the user signs and submits via /submit
         serializer.save(user=self.request.user, status='DRAFT')
 
@@ -406,6 +422,13 @@ class OrderViewSet(viewsets.ModelViewSet):
                     order.save()
                     return Response(
                         {'error': 'Option position not found or already closed'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if pos.expiry < timezone.now().date():
+                    order.status = 'REJECTED'
+                    order.save()
+                    return Response(
+                        {'error': 'Option has expired and can no longer be exercised.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 stock_price = execution_price
