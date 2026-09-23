@@ -7,7 +7,8 @@ from rest_framework import status
 from unittest.mock import patch, MagicMock
 
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition
-from .crypto_utils import generate_key_pair, sign_order, verify_signature, _build_message
+from .crypto_utils import (generate_key_pair, sign_order, verify_signature, _build_message,
+                           order_signing_payload)
 
 
 def _patch_oracle(test, price='100.00', tolerance='1000'):
@@ -312,15 +313,32 @@ class OrderSubmitTests(TestCase):
     def test_signature_verifies_correctly(self):
         self.client.post(f'/api/orders/{self.order_id}/submit/')
         order = Order.objects.get(pk=self.order_id)
-        order_data = {
-            'stock':      order.stock.ticker,
-            'order_type': order.order_type,
-            'quantity':   str(order.quantity),
-            'nonce':      order.nonce or '',
-        }
         self.assertTrue(verify_signature(
-            self.user.profile.ecdsa_public_key, order_data, order.signature
+            self.user.profile.ecdsa_public_key, order_signing_payload(order), order.signature
         ))
+
+    def test_signature_covers_every_trade_field(self):
+        self.client.post(f'/api/orders/{self.order_id}/submit/')
+        order = Order.objects.get(pk=self.order_id)
+        pub = self.user.profile.ecdsa_public_key
+        for field, value in (('trade_type', 'CFD'), ('leverage', 100), ('limit_price', Decimal('1')),
+                             ('position_id', 7), ('quantity', Decimal('200'))):
+            tampered = order_signing_payload(order) | {field: value}
+            self.assertFalse(verify_signature(pub, tampered, order.signature), field)
+
+    def test_signed_message_exposed_to_nodes(self):
+        self.client.post(f'/api/orders/{self.order_id}/submit/')
+        r = self.client.get(f'/api/orders/{self.order_id}/')
+        order = Order.objects.get(pk=self.order_id)
+        self.assertEqual(r.data['signed_message'].encode(), _build_message(order_signing_payload(order)))
+        self.assertIn('"quantity":"2.0000"', r.data['signed_message'])
+
+    def test_nonce_with_json_special_characters_rejected(self):
+        for bad in ('a"b', 'a\\b', 'ünï', 'x' * 65, 'has space'):
+            r = self.client.post('/api/orders/', {
+                'stock': 'NVDA', 'order_type': 'BUY', 'quantity': '1', 'nonce': bad,
+            }, format='json')
+            self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST, bad)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -436,6 +454,17 @@ class OrderExecutionTests(TestCase):
     def test_execute_missing_fields_rejected(self):
         r = self.node_client.post(f'/api/orders/{self.order_id}/execute_order/', {}, format='json')
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_order_altered_after_signing_is_rejected_at_settlement(self):
+        # e.g. a direct database edit after consensus approved the signed order
+        Order.objects.filter(pk=self.order_id).update(quantity=Decimal('1000'))
+        r = self.node_client.post(f'/api/orders/{self.order_id}/execute_order/', {
+            'execution_price': '100.00', 'timestamp': _fresh_ts(),
+        }, format='json')
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Order.objects.get(pk=self.order_id).status, 'REJECTED')
+        self.user.wallet.refresh_from_db()
+        self.assertEqual(self.user.wallet.balance, Decimal('10000.00'))
 
     def test_regular_user_cannot_execute_orders(self):
         # the order owner must not be able to settle their own order and skip consensus
@@ -628,10 +657,7 @@ class CFDStopLossRoutingTests(TestCase):
         self._run_monitor_at('90.00')
         order = Order.objects.get(trade_type='CFD_CLOSE', user=self.user)
         self.assertTrue(verify_signature(
-            self.user.profile.ecdsa_public_key,
-            {'stock': 'AAPL', 'order_type': 'SELL',
-             'quantity': str(order.quantity), 'nonce': order.nonce},
-            order.signature,
+            self.user.profile.ecdsa_public_key, order_signing_payload(order), order.signature,
         ))
 
     def test_wallet_and_position_untouched_until_consensus_executes(self):

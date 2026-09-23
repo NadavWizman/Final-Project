@@ -75,6 +75,12 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 		found = true
 		submitted[order.ID] = true
 
+		if order.Signature == "" || order.SignedMessage == "" {
+			fmt.Printf("[Leader] Order #%d has no signature — rejecting\n", order.ID)
+			sendRejectOrder(cfg, order.ID, "order is not signed")
+			continue
+		}
+
 		// step 1: query Oracle
 		oracle, err := FetchPrice(cfg.OracleURL, order.Stock)
 		if err != nil {
@@ -114,9 +120,8 @@ func processLeaderCycle(cfg Config, chain *Chain, outages map[int]time.Time) {
 		)
 		fmt.Printf("[Leader] Block #%d | hash: %s...\n", block.Index, block.Hash[:16])
 
-		// build the signed message (same compact JSON format as Python)
-		signedMsg := fmt.Sprintf(`{"nonce":"%s","order_type":"%s","quantity":"%s","stock":"%s"}`,
-			order.Nonce, order.OrderType, order.Quantity, order.Stock)
+		// the exact bytes the user's signature covers, straight from Django
+		signedMsg := order.SignedMessage
 
 		// step 3: collect votes from Validators via gRPC
 		approvals := 1 // Leader counts itself as approved

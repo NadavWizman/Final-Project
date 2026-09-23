@@ -12,7 +12,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition
 from .serializers import OrderSerializer, SLTPLevelSerializer, DepositSerializer
-from .crypto_utils import generate_key_pair, sign_order, verify_signature
+from .crypto_utils import generate_key_pair, sign_order, verify_signature, order_signing_payload
 from django.contrib.auth.models import User
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
@@ -106,14 +106,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # sign the order
-        order_data = {
-            "stock":      order.stock.ticker,
-            "order_type": order.order_type,
-            "quantity":   str(order.quantity),
-            "nonce":      order.nonce or "",
-        }
-
+        # sign every trade-defining field of the order
+        order_data = order_signing_payload(order)
         signature = sign_order(profile.ecdsa_private_key, order_data)
 
         # self-verify (confirm the signature is valid before saving)
@@ -210,6 +204,18 @@ class OrderViewSet(viewsets.ModelViewSet):
                 return Response(
                     {"error": f"Only SUBMITTED orders can be executed. Current status: {order.status}"},
                     status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # The order must still be exactly what the user signed. Consensus
+            # verified the signature, but the row could have been altered since.
+            profile = getattr(order.user, 'profile', None)
+            if not (profile and order.signature and verify_signature(
+                    profile.ecdsa_public_key, order_signing_payload(order), order.signature)):
+                order.status = 'REJECTED'
+                order.save()
+                return Response(
+                    {"error": "Order no longer matches the user's signature."},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             # Independent price re-verification. Django is the component that

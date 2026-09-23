@@ -68,6 +68,19 @@ def _oracle_price(ticker) -> Decimal | None:
         return None
 
 
+def _create_signed_order(**fields):
+    """Create an order already signed with the owner's key, at SUBMITTED, so it
+    goes through node consensus exactly like a manual trade."""
+    from .models import Order
+    from .crypto_utils import sign_order, order_signing_payload
+
+    order = Order(nonce=uuid.uuid4().hex, status='SUBMITTED', **fields)
+    order.signature = sign_order(order.user.profile.ecdsa_private_key,
+                                 order_signing_payload(order))
+    order.save()
+    return order
+
+
 # ── stock SL/TP ──────────────────────────────────────────────────
 
 def _check_stocks():
@@ -96,21 +109,9 @@ def _check_stocks():
             continue
 
         try:
-            from .crypto_utils import sign_order
-            nonce = str(uuid.uuid4())
-            profile = lv.position.user.profile
-            order_data = {
-                'stock':      lv.position.stock.ticker,
-                'order_type': 'SELL',
-                'quantity':   str(lv.quantity),
-                'nonce':      nonce,
-            }
-            signature = sign_order(profile.ecdsa_private_key, order_data)
-            sell = Order.objects.create(
+            sell = _create_signed_order(
                 user=lv.position.user, stock=lv.position.stock,
-                order_type='SELL', trade_type='STOCK',
-                quantity=lv.quantity, nonce=nonce,
-                signature=signature, status='SUBMITTED',
+                order_type='SELL', trade_type='STOCK', quantity=lv.quantity,
             )
             lv.triggered    = True
             lv.triggered_at = timezone.now()
@@ -157,26 +158,15 @@ def _check_cfds():
             continue
 
         try:
-            from .crypto_utils import sign_order
             with transaction.atomic():
                 lv_fresh  = SLTPLevel.objects.select_for_update().get(pk=lv.pk, triggered=False)
                 pos_fresh = CFDPosition.objects.select_for_update().get(pk=pos.pk, is_open=True)
 
                 close_qty = min(lv_fresh.quantity, pos_fresh.quantity)
-                nonce     = str(uuid.uuid4())
-                profile   = pos_fresh.user.profile
-                order_data = {
-                    'stock':      pos_fresh.stock.ticker,
-                    'order_type': 'SELL',
-                    'quantity':   str(close_qty),
-                    'nonce':      nonce,
-                }
-                signature = sign_order(profile.ecdsa_private_key, order_data)
-                close = Order.objects.create(
+                close = _create_signed_order(
                     user=pos_fresh.user, stock=pos_fresh.stock,
                     order_type='SELL', trade_type='CFD_CLOSE',
                     quantity=close_qty, position_id=pos_fresh.pk,
-                    nonce=nonce, signature=signature, status='SUBMITTED',
                 )
 
                 # Mark the level triggered now, not when the order executes — the

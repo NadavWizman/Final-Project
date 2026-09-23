@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 
 from django.utils import timezone
@@ -5,6 +6,9 @@ from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
 from django.contrib.auth.models import User
 from .models import Stock, Wallet, Position, Order, SLTPLevel
+from .crypto_utils import canonical_order_message
+
+NONCE_RE = re.compile(r'[A-Za-z0-9_-]{1,64}')
 
 
 # 1. User serializer
@@ -39,6 +43,9 @@ class PositionSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     # user's public key — read automatically from UserProfile
     public_key = serializers.SerializerMethodField()
+    # the exact canonical message the signature covers, so the nodes verify the
+    # signature over these bytes instead of re-building the JSON themselves
+    signed_message = serializers.SerializerMethodField()
     # nonce is required at creation and must be unique (replay attack prevention)
     nonce = serializers.CharField(
         required=True,
@@ -54,9 +61,10 @@ class OrderSerializer(serializers.ModelSerializer):
             'option_contract_type', 'option_strike', 'option_expiry',
             'position_id',
             'status', 'created_at', 'execution_price',
-            'nonce', 'signature', 'public_key',
+            'nonce', 'signature', 'public_key', 'signed_message',
         ]
-        read_only_fields = ['id', 'user', 'status', 'created_at', 'execution_price', 'signature', 'public_key']
+        read_only_fields = ['id', 'user', 'status', 'created_at', 'execution_price',
+                            'signature', 'public_key', 'signed_message']
 
     def get_public_key(self, obj):
         """Returns the public key of the order owner (from UserProfile)."""
@@ -64,6 +72,9 @@ class OrderSerializer(serializers.ModelSerializer):
             return obj.user.profile.ecdsa_public_key
         except Exception:
             return None
+
+    def get_signed_message(self, obj):
+        return canonical_order_message(obj) if obj.signature else None
 
     def validate_quantity(self, value):
         if value <= 0:
@@ -113,8 +124,11 @@ class OrderSerializer(serializers.ModelSerializer):
         return data
 
     def validate_nonce(self, value):
-        if not value:
-            raise serializers.ValidationError("A unique nonce is required to prevent replay attacks.")
+        # Restricted charset: the nonce is embedded in the signed JSON message, and
+        # quotes, backslashes or non-ASCII would make the message ambiguous.
+        if not NONCE_RE.fullmatch(value or ''):
+            raise serializers.ValidationError(
+                "Nonce must be 1-64 characters of letters, digits, '-' or '_'.")
         return value
 
 

@@ -6,6 +6,7 @@ Uses the cryptography library (P-256 / SECP256R1)
 
 import base64
 import json
+from decimal import Decimal
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
@@ -41,7 +42,7 @@ def sign_order(private_pem: str, order_data: dict) -> str:
     Signs the order fields with the user's private key.
     Returns a Base64-encoded signature.
 
-    order_data must contain: stock, order_type, quantity, nonce
+    order_data holds the fields in SIGNED_ORDER_FIELDS (missing ones sign as "")
     """
     private_key = serialization.load_pem_private_key(
         private_pem.encode(),
@@ -76,57 +77,53 @@ def verify_signature(public_pem: str, order_data: dict, signature_b64: str) -> b
         return False
 
 
-def sign_option_order(private_pem: str, option_data: dict) -> str:
-    """
-    Signs option order fields with the user's private key.
-    option_data must contain: ticker, contract_type, strike, expiry, contracts, premium, nonce
-    """
-    private_key = serialization.load_pem_private_key(
-        private_pem.encode(),
-        password=None,
-        backend=default_backend()
-    )
-    message = _build_option_message(option_data)
-    signature_bytes = private_key.sign(message, ec.ECDSA(hashes.SHA256()))
-    return base64.b64encode(signature_bytes).decode()
+# ── canonical order payload ─────────────────────────────────────
+# Every field that decides what a trade does or how much money moves is signed,
+# so none of them can be changed after the user authorised the order.
+SIGNED_ORDER_FIELDS = (
+    "stock", "order_type", "trade_type", "quantity", "nonce", "leverage",
+    "limit_price", "position_id", "option_contract_type", "option_strike",
+    "option_expiry",
+)
+
+_FOUR_DP = Decimal("0.0001")
 
 
-def verify_option_signature(public_pem: str, option_data: dict, signature_b64: str) -> bool:
-    """Verifies an option order signature. Returns True if valid."""
-    try:
-        public_key = serialization.load_pem_public_key(
-            public_pem.encode(),
-            backend=default_backend()
-        )
-        message = _build_option_message(option_data)
-        signature_bytes = base64.b64decode(signature_b64)
-        public_key.verify(signature_bytes, message, ec.ECDSA(hashes.SHA256()))
-        return True
-    except Exception:
-        return False
+def _canon(value) -> str:
+    """Deterministic string form of a field value (Decimals fixed to 4 dp)."""
+    if value is None:
+        return ""
+    if isinstance(value, (Decimal, float)):
+        return format(Decimal(str(value)).quantize(_FOUR_DP), "f")
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def order_signing_payload(order) -> dict:
+    """The dict that is signed for an Order model instance."""
+    return {
+        "stock":                order.stock_id,
+        "order_type":           order.order_type,
+        "trade_type":           order.trade_type,
+        "quantity":             order.quantity,
+        "nonce":                order.nonce,
+        "leverage":             order.leverage,
+        "limit_price":          order.limit_price,
+        "position_id":          order.position_id,
+        "option_contract_type": order.option_contract_type,
+        "option_strike":        order.option_strike,
+        "option_expiry":        order.option_expiry,
+    }
+
+
+def canonical_order_message(order) -> str:
+    """The exact message signed for an order — shared with the nodes verbatim."""
+    return _build_message(order_signing_payload(order)).decode()
 
 
 # private helper
 def _build_message(order_data: dict) -> bytes:
-    """Builds the message to sign — key-sorted JSON."""
-    payload = {
-        "stock":      str(order_data.get("stock", "")),
-        "order_type": str(order_data.get("order_type", "")),
-        "quantity":   str(order_data.get("quantity", "")),
-        "nonce":      str(order_data.get("nonce", "")),
-    }
-    return json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
-
-
-def _build_option_message(option_data: dict) -> bytes:
-    """Builds the canonical message for option order signing."""
-    payload = {
-        "contracts":     str(option_data.get("contracts", "")),
-        "contract_type": str(option_data.get("contract_type", "")),
-        "expiry":        str(option_data.get("expiry", "")),
-        "nonce":         str(option_data.get("nonce", "")),
-        "premium":       str(option_data.get("premium", "")),
-        "strike":        str(option_data.get("strike", "")),
-        "ticker":        str(option_data.get("ticker", "")),
-    }
+    """Builds the message to sign — key-sorted compact JSON of every signed field."""
+    payload = {k: _canon(order_data.get(k)) for k in SIGNED_ORDER_FIELDS}
     return json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()

@@ -17,6 +17,9 @@ type Order struct {
 	Nonce     string `json:"nonce"`      // prevents replay attacks
 	Signature string `json:"signature"`  // user's ECDSA signature
 	PublicKey string `json:"public_key"` // PEM public key for verification
+	// SignedMessage is the exact canonical message the signature covers, as
+	// produced by Django. Nodes verify these bytes; they never rebuild them.
+	SignedMessage string `json:"signed_message"`
 }
 
 // fetchOrders — fetches orders from the Django API
