@@ -43,13 +43,14 @@ class RogueOracleServicer(oracle_pb2_grpc.OracleServiceServicer):
             ticker=request.ticker,
             execution_price=FAKE_PRICE,
             timestamp=timestamp,
+            market_time=timestamp,
         )
 
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     oracle_pb2_grpc.add_OracleServiceServicer_to_server(RogueOracleServicer(), server)
-    server.add_insecure_port(f"0.0.0.0:{PORT}")
+    server.add_insecure_port(f"127.0.0.1:{PORT}")
     server.start()
     print("=" * 52)
     print("  ROGUE ORACLE — reports a fabricated price")

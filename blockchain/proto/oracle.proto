@@ -14,7 +14,8 @@ message PriceRequest {
 message PriceResponse {
   string ticker          = 1;
   string execution_price = 2;
-  string timestamp       = 3;
+  string timestamp       = 3;  // when the Oracle produced this quote (freshness checks)
+  string market_time     = 4;  // time of the market data the price comes from
 }
 
 // OracleService is the gRPC interface exposed by the oracle microservice

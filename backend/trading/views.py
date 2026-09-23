@@ -1094,6 +1094,7 @@ def price_view(_request, ticker):
             "ticker":          resp.ticker,
             "execution_price": resp.execution_price,
             "timestamp":       resp.timestamp,
+            "market_time":     resp.market_time or None,
         })
     except Exception:
         return _service_error("Live price")
