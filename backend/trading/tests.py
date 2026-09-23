@@ -1102,3 +1102,83 @@ class NodeKeyRegistrationTests(TestCase):
     def test_malformed_key_rejected(self):
         for bad in ('', 'zz', 'ab' * 31, 'ab' * 33):
             self.assertEqual(self.client.post('/api/node-key/', {'public_key': bad}, format='json').status_code, 400)
+
+
+class StockStopLossTests(TestCase):
+    """Stock SL/TP levels sell only shares that are still held and unsold."""
+
+    def setUp(self):
+        self.user = make_user()
+        self.stock = make_stock('AAPL')
+        self.pos = Position.objects.create(user=self.user, stock=self.stock, quantity=Decimal('10'))
+
+    def _level(self, kind, price, qty):
+        return SLTPLevel.objects.create(position=self.pos, level_type=kind,
+                                        price=Decimal(price), quantity=Decimal(qty))
+
+    def _run_at(self, price):
+        from . import sltp
+        with patch.object(sltp, '_oracle_price', return_value=Decimal(price)):
+            sltp._check_stocks()
+
+    def _sells(self):
+        return list(Order.objects.filter(user=self.user, order_type='SELL').values_list('quantity', flat=True))
+
+    def test_trigger_creates_signed_sell(self):
+        self._level('SL', '95', '4')
+        self._run_at('90')
+        order = Order.objects.get(user=self.user)
+        self.assertEqual((order.status, order.quantity), ('SUBMITTED', Decimal('4.0000')))
+        self.assertTrue(verify_signature(self.user.profile.ecdsa_public_key,
+                                         order_signing_payload(order), order.signature))
+
+    def test_quantity_capped_at_current_holding(self):
+        lv = self._level('SL', '95', '10')
+        self.pos.quantity = Decimal('3')          # user sold 7 shares manually
+        self.pos.save()
+        self._run_at('90')
+        self.assertEqual(self._sells(), [Decimal('3.0000')])
+        lv.refresh_from_db()
+        self.assertTrue(lv.triggered)
+
+    def test_shares_already_pending_sale_are_not_sold_twice(self):
+        # at $90 both the stop (<= 95) and the target (>= 80) are reached;
+        # together they must not sell more than the 10 shares held
+        self._level('SL', '95', '10')
+        self._level('TP', '80', '10')
+        self._run_at('90')
+        self.assertEqual(sum(self._sells()), Decimal('10'))
+
+    def test_nothing_left_marks_level_without_ordering(self):
+        lv = self._level('SL', '95', '5')
+        self.pos.quantity = Decimal('0')
+        self.pos.save()
+        self._run_at('90')
+        self.assertEqual(self._sells(), [])
+        lv.refresh_from_db()
+        self.assertTrue(lv.triggered)
+
+
+class OptionExpiryTests(TestCase):
+
+    def test_expired_option_settles_at_expiry_close(self):
+        from . import sltp
+        user = make_user()
+        stock = make_stock('AAPL')
+        expiry = timezone.now().date() - timedelta(days=10)
+        pos = OptionPosition.objects.create(
+            user=user, stock=stock, contract_type='CALL', strike=Decimal('100'),
+            expiry=expiry, contracts=1, premium_paid=Decimal('2'))
+        with patch.object(sltp, '_expiry_price', return_value=Decimal('105')) as ep, \
+             patch.object(sltp, '_oracle_price', return_value=Decimal('150')):
+            sltp._check_options()
+        ep.assert_called_once_with('AAPL', expiry)
+        pos.refresh_from_db()
+        self.assertEqual((pos.status, pos.close_premium), ('EXERCISED', Decimal('5.0000')))
+        self.assertEqual(Wallet.objects.get(user=user).balance, Decimal('10500.00'))
+
+    def test_old_expiry_without_history_is_not_settled_at_todays_price(self):
+        from . import sltp
+        with patch('yfinance.Ticker', side_effect=Exception('offline')), \
+             patch.object(sltp, '_oracle_price', return_value=Decimal('150')):
+            self.assertIsNone(sltp._expiry_price('AAPL', timezone.now().date() - timedelta(days=10)))

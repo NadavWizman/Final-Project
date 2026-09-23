@@ -91,10 +91,32 @@ def _create_signed_order(**fields):
     return order
 
 
+def _expiry_price(ticker, expiry):
+    """Closing price of `ticker` on the expiry date (or the last trading day
+    before it). Falls back to the live Oracle price only if the expiry was the
+    previous day and history is unavailable; otherwise returns None so the
+    position is retried rather than settled at a wrong price."""
+    from datetime import timedelta
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker.replace('.', '-')).history(
+            start=(expiry - timedelta(days=6)).isoformat(),
+            end=(expiry + timedelta(days=1)).isoformat(),
+        )
+        if not hist.empty:
+            return Decimal(str(round(float(hist['Close'].iloc[-1]), 4)))
+    except Exception as e:
+        logger.warning('[OPTIONS] History lookup for %s on %s failed: %s', ticker, expiry, e)
+    if (timezone.now().date() - expiry).days <= 1:
+        return _oracle_price(ticker)
+    return None
+
+
 # ── stock SL/TP ──────────────────────────────────────────────────
 
 def _check_stocks():
-    from .models import SLTPLevel, Order
+    from django.db import transaction
+    from .models import SLTPLevel, Position
 
     levels = list(
         SLTPLevel.objects.filter(
@@ -119,24 +141,48 @@ def _check_stocks():
             continue
 
         try:
-            sell = _create_signed_order(
-                user=lv.position.user, stock=lv.position.stock,
-                order_type='SELL', trade_type='STOCK', quantity=lv.quantity,
-            )
-            lv.triggered    = True
-            lv.triggered_at = timezone.now()
-            lv.save(update_fields=['triggered', 'triggered_at'])
+            with transaction.atomic():
+                lv_f  = SLTPLevel.objects.select_for_update().get(pk=lv.pk, triggered=False)
+                pos_f = Position.objects.select_for_update().get(pk=lv_f.position_id)
+
+                # Never sell more than is actually held and not already on its
+                # way out: holdings shrink after manual sells, and a sibling
+                # level (e.g. the TP after an SL fired) may already be pending.
+                qty = min(lv_f.quantity, pos_f.quantity - _pending_close_qty(
+                    user=pos_f.user, stock=pos_f.stock, trade_type='STOCK'))
+
+                lv_f.triggered    = True
+                lv_f.triggered_at = timezone.now()
+                lv_f.save(update_fields=['triggered', 'triggered_at'])
+
+                if qty <= 0:
+                    logger.info('[SLTP] Level #%d reached but no unsold shares remain — nothing to sell', lv.pk)
+                    continue
+                sell = _create_signed_order(
+                    user=pos_f.user, stock=pos_f.stock,
+                    order_type='SELL', trade_type='STOCK', quantity=qty,
+                )
             logger.info('[SLTP] Stock auto-sell #%d for level #%d (%s @%s qty=%s) price=%s',
-                        sell.id, lv.id, lv.level_type, lv.price, lv.quantity, price)
+                        sell.id, lv.pk, lv.level_type, lv.price, qty, price)
+        except (SLTPLevel.DoesNotExist, Position.DoesNotExist):
+            pass
         except Exception:
-            logger.exception('[SLTP] Failed to create auto-sell for level #%d', lv.id)
+            logger.exception('[SLTP] Failed to create auto-sell for level #%d', lv.pk)
+
+
+def _pending_close_qty(**order_filter):
+    """Quantity already in SUBMITTED SELL/close orders matching the filter."""
+    from django.db.models import Sum
+    from .models import Order
+    return Order.objects.filter(status='SUBMITTED', order_type='SELL', **order_filter) \
+        .aggregate(total=Sum('quantity'))['total'] or Decimal('0')
 
 
 # ── CFD SL/TP ────────────────────────────────────────────────────
 
 def _check_cfds():
     from django.db import transaction
-    from .models import SLTPLevel, CFDPosition, Order
+    from .models import SLTPLevel, CFDPosition
 
     levels = list(
         SLTPLevel.objects.filter(
@@ -172,12 +218,8 @@ def _check_cfds():
                 lv_fresh  = SLTPLevel.objects.select_for_update().get(pk=lv.pk, triggered=False)
                 pos_fresh = CFDPosition.objects.select_for_update().get(pk=pos.pk, is_open=True)
 
-                close_qty = min(lv_fresh.quantity, pos_fresh.quantity)
-                close = _create_signed_order(
-                    user=pos_fresh.user, stock=pos_fresh.stock,
-                    order_type='SELL', trade_type='CFD_CLOSE',
-                    quantity=close_qty, position_id=pos_fresh.pk,
-                )
+                close_qty = min(lv_fresh.quantity, pos_fresh.quantity - _pending_close_qty(
+                    trade_type='CFD_CLOSE', position_id=pos_fresh.pk))
 
                 # Mark the level triggered now, not when the order executes — the
                 # monitor runs again in 15s and must not fire this level twice
@@ -185,6 +227,15 @@ def _check_cfds():
                 lv_fresh.triggered    = True
                 lv_fresh.triggered_at = timezone.now()
                 lv_fresh.save(update_fields=['triggered', 'triggered_at'])
+
+                if close_qty <= 0:
+                    logger.info('[SLTP] CFD level #%d reached but the position is already closing', lv.pk)
+                    continue
+                close = _create_signed_order(
+                    user=pos_fresh.user, stock=pos_fresh.stock,
+                    order_type='SELL', trade_type='CFD_CLOSE',
+                    quantity=close_qty, position_id=pos_fresh.pk,
+                )
 
             logger.info('[SLTP] CFD close order #%d for level #%d (%s @%s qty=%s) price=%s',
                         close.id, lv.pk, lv.level_type, lv.price, close_qty, price)
@@ -209,11 +260,10 @@ def _check_options():
     if not positions:
         return
 
-    tickers = {p.stock.ticker for p in positions}
-    prices  = {t: _oracle_price(t) for t in tickers}
-
     for pos in positions:
-        price = prices.get(pos.stock.ticker)
+        # Settle at the underlying's close ON the expiry date, not at today's
+        # price — the monitor (or the Oracle) may have been down for days.
+        price = _expiry_price(pos.stock.ticker, pos.expiry)
         if price is None:
             continue
         try:
