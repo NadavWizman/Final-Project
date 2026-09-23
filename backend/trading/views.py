@@ -13,6 +13,7 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition, NodeKey
 from .roles import is_consensus_node
+from .sltp import liquidation_price
 from .consensus import QUORUM, count_valid_votes, valid_public_key
 from .serializers import OrderSerializer, SLTPLevelSerializer, DepositSerializer
 from .crypto_utils import generate_key_pair, sign_order, verify_signature, order_signing_payload
@@ -814,6 +815,8 @@ def cfd_positions_view(request):
             "entry_price": str(pos.entry_price),
             "leverage":    pos.leverage,
             "margin_used": str(pos.margin_used),
+            "liquidation_price": (str(liquidation_price(pos).quantize(Decimal('0.01')))
+                                  if pos.is_open and pos.quantity else None),
             "is_open":     pos.is_open,
             "opened_at":   pos.opened_at,
             "close_price": str(pos.close_price) if pos.close_price else None,

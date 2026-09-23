@@ -50,6 +50,7 @@ def run_forever(interval=15):
 def run_once():
     _check_stocks()
     _check_cfds()
+    _check_cfd_margins()
     _check_options()
 
 
@@ -243,6 +244,58 @@ def _check_cfds():
             pass
         except Exception:
             logger.exception('[SLTP] Failed to create CFD close for level #%d', lv.pk)
+
+
+# ── CFD margin call / liquidation ─────────────────────────────
+
+# A CFD is closed automatically once its loss eats this share of the margin
+# posted, before the loss can exceed the margin (settlement caps the payout at
+# zero, so a larger loss would otherwise be absorbed by the platform).
+LIQUIDATION_THRESHOLD = Decimal('0.8')
+
+
+def liquidation_price(pos):
+    """Price at which the monitor liquidates a CFD position."""
+    if not pos.quantity:
+        return None
+    move = (pos.margin_used * LIQUIDATION_THRESHOLD) / pos.quantity
+    return pos.entry_price - move if pos.direction == 'LONG' else pos.entry_price + move
+
+
+def _check_cfd_margins():
+    from django.db import transaction
+    from .models import CFDPosition
+
+    positions = list(CFDPosition.objects.filter(is_open=True)
+                     .select_related('user', 'stock', 'user__profile'))
+    if not positions:
+        return
+    prices = {t: _oracle_price(t) for t in {p.stock.ticker for p in positions}}
+
+    for pos in positions:
+        price = prices.get(pos.stock.ticker)
+        limit = liquidation_price(pos)
+        if price is None or limit is None:
+            continue
+        breached = price <= limit if pos.direction == 'LONG' else price >= limit
+        if not breached:
+            continue
+        try:
+            with transaction.atomic():
+                pos_f = CFDPosition.objects.select_for_update().get(pk=pos.pk, is_open=True)
+                qty = pos_f.quantity - _pending_close_qty(trade_type='CFD_CLOSE', position_id=pos_f.pk)
+                if qty <= 0:
+                    continue       # already closing
+                close = _create_signed_order(
+                    user=pos_f.user, stock=pos_f.stock, order_type='SELL',
+                    trade_type='CFD_CLOSE', quantity=qty, position_id=pos_f.pk,
+                )
+            logger.warning('[MARGIN] Liquidating CFD #%d (%s %s @%s, price %s ≤ limit %s) via order #%d',
+                           pos.pk, pos.direction, pos.stock_id, pos.entry_price, price, limit, close.id)
+        except CFDPosition.DoesNotExist:
+            pass
+        except Exception:
+            logger.exception('[MARGIN] Failed to liquidate CFD #%d', pos.pk)
 
 
 # ── Options expiry ───────────────────────────────────────────

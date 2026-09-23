@@ -2555,7 +2555,7 @@ function renderCFD() {
       <span class="cfd-dir-badge ${dir.toLowerCase()}">${dir}</span>
       <div class="cfd-info">
         <div class="cfd-ticker">${pos.stock} <span style="font-size:13px;color:var(--label2);font-weight:500">${pos.leverage}x</span></div>
-        <div class="cfd-meta">${parseFloat(pos.quantity)} units · entry ${fmt$(pos.entry_price)} · margin ${fmt$(pos.margin_used)}</div>
+        <div class="cfd-meta">${parseFloat(pos.quantity)} units · entry ${fmt$(pos.entry_price)} · margin ${fmt$(pos.margin_used)}${pos.liquidation_price ? ` · liquidation ${fmt$(pos.liquidation_price)}` : ''}</div>
       </div>
       <div class="cfd-right">${pnlHtml}</div>
       <div style="display:flex;gap:8px;margin-top:8px">

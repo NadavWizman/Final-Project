@@ -1182,3 +1182,41 @@ class OptionExpiryTests(TestCase):
         with patch('yfinance.Ticker', side_effect=Exception('offline')), \
              patch.object(sltp, '_oracle_price', return_value=Decimal('150')):
             self.assertIsNone(sltp._expiry_price('AAPL', timezone.now().date() - timedelta(days=10)))
+
+
+class CFDLiquidationTests(TestCase):
+
+    def setUp(self):
+        self.user = make_user()
+        self.stock = make_stock('AAPL')
+        # $100 entry x 10 at 10x → $100 margin; liquidation at a $80 loss = $92
+        self.pos = CFDPosition.objects.create(
+            user=self.user, stock=self.stock, direction='LONG', quantity=Decimal('10'),
+            entry_price=Decimal('100'), leverage=10, margin_used=Decimal('100'))
+
+    def _run_at(self, price):
+        from . import sltp
+        with patch.object(sltp, '_oracle_price', return_value=Decimal(price)):
+            sltp._check_cfd_margins()
+
+    def test_liquidation_price(self):
+        from .sltp import liquidation_price
+        self.assertEqual(liquidation_price(self.pos), Decimal('92'))
+        short = CFDPosition(direction='SHORT', quantity=Decimal('10'), entry_price=Decimal('100'),
+                            margin_used=Decimal('100'))
+        self.assertEqual(liquidation_price(short), Decimal('108'))
+
+    def test_no_liquidation_above_threshold(self):
+        self._run_at('93')
+        self.assertFalse(Order.objects.filter(trade_type='CFD_CLOSE').exists())
+
+    def test_breach_creates_one_signed_full_close(self):
+        self._run_at('91')
+        self._run_at('90')          # next monitor pass: already closing, no duplicate
+        close = Order.objects.get(trade_type='CFD_CLOSE')
+        self.assertEqual((close.quantity, close.position_id, close.status),
+                         (Decimal('10.0000'), self.pos.id, 'SUBMITTED'))
+
+    def test_api_reports_liquidation_price(self):
+        c = APIClient(); c.force_authenticate(user=self.user)
+        self.assertEqual(c.get('/api/cfd/').data['cfd_positions'][0]['liquidation_price'], '92.00')
