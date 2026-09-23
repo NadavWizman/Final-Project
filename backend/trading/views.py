@@ -12,6 +12,7 @@ from django.contrib.auth.password_validation import validate_password
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition
+from .roles import is_consensus_node
 from .serializers import OrderSerializer, SLTPLevelSerializer, DepositSerializer
 from .crypto_utils import generate_key_pair, sign_order, verify_signature, order_signing_payload
 from django.contrib.auth.models import User
@@ -35,9 +36,7 @@ SP500_TICKERS = {
 ORACLE_PRICE_TOLERANCE = Decimal('0.02')  # 2%
 
 
-def _is_consensus_node(user):
-    """True for the accounts the blockchain nodes authenticate as."""
-    return bool(user and user.is_authenticated and user.is_staff)
+_is_consensus_node = is_consensus_node
 
 
 # ============================================================

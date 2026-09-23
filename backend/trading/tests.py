@@ -79,6 +79,14 @@ def make_user(username='alice', password='pass1234'):
     return user
 
 
+def make_node(username='node1'):
+    from django.contrib.auth.models import Group
+    from .roles import CONSENSUS_NODES_GROUP
+    node = User.objects.create_user(username=username, password='node-test-pass')
+    node.groups.add(Group.objects.get_or_create(name=CONSENSUS_NODES_GROUP)[0])
+    return node
+
+
 def make_stock(ticker='AAPL', name='Apple Inc.'):
     return Stock.objects.get_or_create(ticker=ticker, defaults={'name': name})[0]
 
@@ -358,7 +366,7 @@ class OrderExecutionTests(TestCase):
     def setUp(self):
         self.user = make_user()
         self.stock = make_stock('AAPL')
-        self.node = User.objects.create_user(username='node1', password='node1pass', is_staff=True)
+        self.node = make_node()
         self.node_client = APIClient()
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
@@ -466,6 +474,19 @@ class OrderExecutionTests(TestCase):
         self.user.wallet.refresh_from_db()
         self.assertEqual(self.user.wallet.balance, Decimal('10000.00'))
 
+    def test_admin_staff_is_not_a_consensus_node(self):
+        admin = User.objects.create_user(username='admin', password='x', is_staff=True)
+        c = APIClient(); c.force_authenticate(user=admin)
+        r = c.post(f'/api/orders/{self.order_id}/execute_order/', {
+            'execution_price': '100.00', 'timestamp': _fresh_ts()}, format='json')
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(Order.objects.get(pk=self.order_id).status, 'SUBMITTED')
+
+    def test_node_lists_every_order(self):
+        r = self.node_client.get('/api/orders/')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(self.order_id, [o['id'] for o in r.data])
+
     def test_regular_user_cannot_execute_orders(self):
         # the order owner must not be able to settle their own order and skip consensus
         r = self.user_client.post(f'/api/orders/{self.order_id}/execute_order/', {
@@ -497,7 +518,7 @@ class OrderConsensusRejectionTests(TestCase):
     def setUp(self):
         self.user = make_user()
         make_stock('AAPL')
-        self.node = User.objects.create_user(username='node1', password='node1pass', is_staff=True)
+        self.node = make_node()
         self.node_client = APIClient()
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
@@ -547,7 +568,7 @@ class CFDPartialCloseTests(TestCase):
     def setUp(self):
         self.user = make_user()
         self.stock = make_stock('AAPL')
-        self.node = User.objects.create_user(username='node1', password='node1pass', is_staff=True)
+        self.node = make_node()
         self.node_client = APIClient()
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
@@ -690,7 +711,7 @@ class OrderPriceVerificationTests(TestCase):
     def setUp(self):
         self.user = make_user()
         make_stock('AAPL')
-        self.node = User.objects.create_user(username='node1', password='node1pass', is_staff=True)
+        self.node = make_node()
         self.node_client = APIClient()
         self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient()
@@ -823,7 +844,7 @@ class OptionSettlementTests(TestCase):
     def setUp(self):
         self.user = make_user()
         self.stock = make_stock('AAPL')
-        self.node = User.objects.create_user(username='node1', password='node1pass', is_staff=True)
+        self.node = make_node()
         self.node_client = APIClient(); self.node_client.force_authenticate(user=self.node)
         self.user_client = APIClient(); self.user_client.force_authenticate(user=self.user)
         _patch_oracle(self)
