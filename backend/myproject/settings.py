@@ -141,4 +141,10 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    # Used by the throttles on /register/ (per client IP) and the Gemini-backed
+    # /ai-news/ and /ai-chat/ endpoints (per user).
+    'DEFAULT_THROTTLE_RATES': {
+        'register': config('THROTTLE_REGISTER', default='20/hour'),
+        'ai':       config('THROTTLE_AI', default='120/hour'),
+    },
 }

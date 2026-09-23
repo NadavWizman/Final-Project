@@ -143,6 +143,8 @@ def make_stock(ticker='AAPL', name='Apple Inc.'):
 class RegistrationTests(TestCase):
 
     def setUp(self):
+        from django.core.cache import cache
+        cache.clear()   # registration is rate-limited per client
         self.client = APIClient()
 
     def test_register_creates_user_wallet_and_profile(self):
@@ -1276,3 +1278,61 @@ class OrderSLTPTests(TestCase):
         ]
         for i, extra in enumerate(cases):
             self.assertEqual(self._place(nonce=f'bad{i}', **extra).status_code, 400, extra)
+
+
+class MarketDataAndAIEndpointTests(TestCase):
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.user = make_user()
+        self.client = APIClient(); self.client.force_authenticate(user=self.user)
+
+    def test_unlisted_tickers_never_reach_data_sources(self):
+        with patch('yfinance.Ticker') as T, patch('trading.views._get_oracle_stub') as stub:
+            for url in ('/api/price/SPY/', '/api/history/%3Cscript%3E/', '/api/options/chain/XYZ/',
+                        '/api/ai-news/NOPE/'):
+                self.assertEqual(self.client.get(url).status_code, 404, url)
+            r = self.client.post('/api/ai-chat/NOPE/', {'question': 'hi'}, format='json')
+            self.assertEqual(r.status_code, 404)
+        T.assert_not_called()
+        stub.assert_not_called()
+
+    def test_data_source_errors_are_not_echoed(self):
+        with patch('trading.views._get_oracle_stub', side_effect=Exception('secret internal path /etc/x')):
+            r = self.client.get('/api/price/AAPL/')
+        self.assertEqual(r.status_code, 503)
+        self.assertNotIn('/etc/x', r.data['error'])
+
+    def test_chat_input_validation(self):
+        with self.settings(GEMINI_API_KEY='k'):
+            long_q = self.client.post('/api/ai-chat/AAPL/', {'question': 'x' * 1001}, format='json')
+            bad_hist = self.client.post('/api/ai-chat/AAPL/', {'question': 'hi', 'history': 'x'}, format='json')
+        self.assertEqual(long_q.status_code, 400)
+        self.assertEqual(bad_hist.status_code, 400)
+
+    def test_chat_ignores_malformed_history_entries(self):
+        import sys, types
+        genai = types.ModuleType('google.genai')
+        client = MagicMock()
+        client.models.generate_content.return_value = MagicMock(text=' answer ')
+        genai.Client = MagicMock(return_value=client)
+        genai.errors = types.SimpleNamespace(ServerError=type('ServerError', (Exception,), {}))
+        genai.types = types.SimpleNamespace(GenerateContentConfig=MagicMock())
+        import yfinance  # noqa: F401 — import heavy deps before patching sys.modules
+        modules = {'google.genai': genai,
+                   'google.genai.errors': genai.errors, 'google.genai.types': genai.types}
+        history = [{'role': 'user'}, 'junk', 5, {'role': 'model', 'text': 'ok'}]
+        with patch.dict(sys.modules, modules), self.settings(GEMINI_API_KEY='k'), \
+             patch('yfinance.Ticker', side_effect=Exception('offline')):
+            r = self.client.post('/api/ai-chat/AAPL/', {'question': 'hi', 'history': history}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data['answer'], 'answer')
+        sent = client.models.generate_content.call_args.kwargs['contents']
+        self.assertEqual(len(sent), 2)          # the one valid history entry + the question
+
+    def test_registration_is_rate_limited(self):
+        anon = APIClient()
+        codes = [anon.post('/api/register/', {'username': f'u{i}', 'password': 'Tr4de-desk-1'},
+                           format='json').status_code for i in range(25)]
+        self.assertIn(429, codes)

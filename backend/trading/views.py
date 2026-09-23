@@ -1,5 +1,8 @@
+import logging
+
 from rest_framework import viewsets, status
-from rest_framework.decorators import api_view, permission_classes, action
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+from rest_framework.decorators import api_view, permission_classes, action, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import ValidationError
@@ -10,6 +13,7 @@ from django.db.models import F
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
 from datetime import timedelta
+import re
 from decimal import Decimal, InvalidOperation
 from .models import Order, Wallet, Position, Stock, UserProfile, CFDPosition, SLTPLevel, OptionPosition, NodeKey
 from .roles import is_consensus_node
@@ -36,6 +40,51 @@ SP500_TICKERS = {
 # live Oracle lookup at settlement. Wide enough to absorb genuine market movement
 # in the seconds since the order was priced, tight enough to catch manipulation.
 ORACLE_PRICE_TOLERANCE = Decimal('0.02')  # 2%
+
+logger = logging.getLogger(__name__)
+
+
+def _listed_ticker(ticker):
+    """Upper-cased ticker if it is on the trading whitelist, else None.
+
+    Market-data and AI endpoints only serve listed tickers: arbitrary input
+    must not reach yfinance, the Gemini prompt or the per-ticker caches.
+    """
+    ticker = (ticker or '').upper()
+    return ticker if ticker in SP500_TICKERS else None
+
+
+def _unlisted(ticker):
+    return Response({"error": f"{str(ticker)[:12]!r} is not a listed ticker."},
+                    status=status.HTTP_404_NOT_FOUND)
+
+
+def _service_error(what):
+    """Log the exception and give the client a message without internals."""
+    logger.exception('%s failed', what)
+    return Response({"error": f"{what} is unavailable right now. Please try again."},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+def _gemini_error(e):
+    """Classify a Gemini failure without echoing the raw exception."""
+    text = str(e)
+    logger.warning('Gemini call failed: %s', text)
+    if 'RESOURCE_EXHAUSTED' in text or 'quota' in text.lower():
+        msg = "Gemini API quota exceeded (RESOURCE_EXHAUSTED)."
+    elif 'NOT_FOUND' in text or '404' in text:
+        msg = "Gemini model unavailable (NOT_FOUND)."
+    elif 'API key' in text or 'PERMISSION_DENIED' in text:
+        msg = "Gemini rejected the API key — check GEMINI_API_KEY."
+    else:
+        msg = "The AI service is unavailable right now."
+    return Response({"error": msg}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class AIThrottle(UserRateThrottle):
+    """Per-user limit on the Gemini-backed endpoints (each call costs money)."""
+    scope = 'ai'
+
 
 # Largest page GET /orders/?limit= returns.
 MAX_ORDER_PAGE = 500
@@ -698,8 +747,14 @@ def portfolio_view(request):
 # ============================================================
 # 3. User registration
 # ============================================================
+class RegisterThrottle(AnonRateThrottle):
+    """Per-client-address limit on account creation."""
+    scope = 'register'
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([RegisterThrottle])
 def register_view(request):
     username = request.data.get('username')
     password = request.data.get('password')
@@ -775,6 +830,10 @@ def deposit_view(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def history_view(_request, ticker):
+    listed = _listed_ticker(ticker)
+    if not listed:
+        return _unlisted(ticker)
+    ticker = listed
     try:
         import yfinance as yf
         period   = _request.GET.get('period', '1mo')
@@ -792,7 +851,7 @@ def history_view(_request, ticker):
         elif interval in {'2m','5m','15m','30m','60m','1h'} and period not in {'1d','5d','1mo','3mo','6mo'}:
             period = '1mo'
 
-        data = yf.Ticker(ticker.upper()).history(period=period, interval=interval)
+        data = yf.Ticker(ticker.replace('.', '-')).history(period=period, interval=interval)
         if data.empty:
             return Response({"error": f"No data for {ticker}"}, status=status.HTTP_404_NOT_FOUND)
         prices = [
@@ -806,8 +865,8 @@ def history_view(_request, ticker):
             for row in data.itertuples()
         ]
         return Response({"ticker": ticker.upper(), "prices": prices})
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except Exception:
+        return _service_error("Price history")
 
 
 # ============================================================
@@ -954,11 +1013,16 @@ def sltp_delete_view(request, pk):
 @permission_classes([IsAuthenticated])
 def option_chain_view(request, ticker):
     """GET /options/chain/<ticker>/ — no ?expiry → expiry list; with ?expiry → full chain."""
-    ticker = ticker.upper()
+    listed = _listed_ticker(ticker)
+    if not listed:
+        return _unlisted(ticker)
+    ticker = listed
     expiry = request.query_params.get('expiry')
+    if expiry and not re.fullmatch(r'\d{4}-\d{2}-\d{2}', expiry):
+        return Response({'error': 'expiry must be YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
     try:
         import yfinance as yf
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(ticker.replace('.', '-'))
         if not expiry:
             return Response({'expiries': list(t.options)})
         chain = t.option_chain(expiry)
@@ -977,8 +1041,8 @@ def option_chain_view(request, ticker):
             return rows
 
         return Response({'calls': safe_df(chain.calls), 'puts': safe_df(chain.puts)})
-    except Exception as e:
-        return Response({'error': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except Exception:
+        return _service_error("Option chain")
 
 
 # ============================================================
@@ -1020,22 +1084,28 @@ def option_positions_view(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def price_view(_request, ticker):
+    listed = _listed_ticker(ticker)
+    if not listed:
+        return _unlisted(ticker)
     try:
         stub, pb = _get_oracle_stub()
-        resp = stub.GetPrice(pb.PriceRequest(ticker=ticker.upper()), timeout=5)
+        resp = stub.GetPrice(pb.PriceRequest(ticker=listed), timeout=5)
         return Response({
             "ticker":          resp.ticker,
             "execution_price": resp.execution_price,
             "timestamp":       resp.timestamp,
         })
-    except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    except Exception:
+        return _service_error("Live price")
 
 
 # ── AI News ──────────────────────────────────────────────────────────────────
 
-_AI_NEWS_CACHE = {}   # ticker -> (timestamp, result)
+_AI_NEWS_CACHE = {}   # listed ticker -> (timestamp, result); bounded by the whitelist
 _AI_NEWS_TTL   = 300  # seconds
+
+MAX_CHAT_QUESTION     = 1000   # characters
+MAX_CHAT_HISTORY_TEXT = 2000   # characters per prior message
 
 _COMPANY_NAMES = {
     'AAPL':'Apple','MSFT':'Microsoft','GOOGL':'Alphabet (Google)','GOOG':'Alphabet (Google)','AMZN':'Amazon',
@@ -1048,12 +1118,15 @@ _COMPANY_NAMES = {
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@throttle_classes([AIThrottle])
 def ai_news_view(_request, ticker):
     import time, json
     import yfinance as yf
     from django.conf import settings
 
-    ticker = ticker.upper()
+    ticker = _listed_ticker(ticker)
+    if not ticker:
+        return Response({"error": "Not a listed ticker."}, status=status.HTTP_404_NOT_FOUND)
 
     # simple in-process cache
     cached = _AI_NEWS_CACHE.get(ticker)
@@ -1069,7 +1142,7 @@ def ai_news_view(_request, ticker):
     # 1. Yahoo Finance direct news (new nested structure: item['content']['title'])
     yf_items = []
     try:
-        news = yf.Ticker(ticker).news or []
+        news = yf.Ticker(ticker.replace('.', '-')).news or []
         for item in news[:12]:
             content = item.get('content') or item  # handle both old and new yfinance formats
             title = content.get('title', '')
@@ -1129,7 +1202,6 @@ Return ONLY this JSON (no markdown, no explanation):
 NEWS DATA:
 {news_block}"""
 
-    last_err = None
     for attempt in range(3):
         try:
             resp = client.models.generate_content(
@@ -1144,10 +1216,13 @@ NEWS DATA:
             result = json.loads(raw.strip())
             break
         except genai_errors.ServerError:
-            last_err = "503"
             time.sleep(2 ** attempt)  # 1s, 2s, 4s
+        except (ValueError, json.JSONDecodeError):
+            logger.warning('Gemini returned unparseable news JSON for %s', ticker)
+            return Response({"error": "The AI service returned an unexpected answer."},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            return _gemini_error(e)
     else:
         return Response({"error": "Gemini is busy, try again in a moment."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
@@ -1159,16 +1234,25 @@ NEWS DATA:
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@throttle_classes([AIThrottle])
 def ai_chat_view(request, ticker):
     import time
     from django.conf import settings
 
-    ticker   = ticker.upper()
-    question = (request.data.get('question') or '').strip()
+    ticker = _listed_ticker(ticker)
+    if not ticker:
+        return Response({"error": "Not a listed ticker."}, status=status.HTTP_404_NOT_FOUND)
+    question = request.data.get('question')
     history  = request.data.get('history') or []   # [{role, text}, ...]
 
-    if not question:
+    if not isinstance(question, str) or not question.strip():
         return Response({"error": "No question provided."}, status=status.HTTP_400_BAD_REQUEST)
+    question = question.strip()
+    if len(question) > MAX_CHAT_QUESTION:
+        return Response({"error": f"Question is too long (max {MAX_CHAT_QUESTION} characters)."},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if not isinstance(history, list):
+        return Response({"error": "history must be a list."}, status=status.HTTP_400_BAD_REQUEST)
     if not settings.GEMINI_API_KEY:
         return Response({"error": "GEMINI_API_KEY not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
@@ -1182,7 +1266,7 @@ def ai_chat_view(request, ticker):
     market_context = ''
     try:
         import yfinance as yf
-        fi = yf.Ticker(ticker).fast_info
+        fi = yf.Ticker(ticker.replace('.', '-')).fast_info
 
         def _fmt_cap(v):
             if not v: return 'N/A'
@@ -1214,8 +1298,10 @@ def ai_chat_view(request, ticker):
     # Build conversation: history (up to 10 prior messages) + current question
     contents = []
     for msg in history[-10:]:
+        if not isinstance(msg, dict) or not isinstance(msg.get('text'), str):
+            continue   # ignore malformed entries instead of failing with a 500
         role = 'user' if msg.get('role') == 'user' else 'model'
-        contents.append({'role': role, 'parts': [{'text': msg['text']}]})
+        contents.append({'role': role, 'parts': [{'text': msg['text'][:MAX_CHAT_HISTORY_TEXT]}]})
     contents.append({'role': 'user', 'parts': [{'text': question}]})
 
     for attempt in range(3):
@@ -1227,10 +1313,10 @@ def ai_chat_view(request, ticker):
                     system_instruction=system_instruction,
                 ),
             )
-            return Response({"answer": resp.text.strip()})
+            return Response({"answer": (resp.text or '').strip()})
         except genai_errors.ServerError:
             time.sleep(2 ** attempt)
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            return _gemini_error(e)
 
     return Response({"error": "Gemini is busy, try again in a moment."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
