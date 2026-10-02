@@ -204,6 +204,11 @@ func Start(home string, fetcher quotes.Fetcher, logger cmtlog.Logger) (*Node, er
 	if err != nil {
 		return nil, err
 	}
+	// CometBFT's optional gRPC broadcast server is never started: nothing
+	// uses it, and gRPC servers are affected by GO-2026-6443 (a request
+	// without :authority/Host panics the server), which has no released fix
+	// yet. The node's only gRPC use is as a client of the price sources.
+	c.RPC.GRPCListenAddress = ""
 	if logger == nil {
 		logger = cmtlog.NewNopLogger()
 	}
