@@ -48,6 +48,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'gateway.security.SecurityHeadersMiddleware',
 ]
 
 ROOT_URLCONF = 'myproject.urls'
@@ -73,6 +74,10 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [],
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.AllowAny'],
     'UNAUTHENTICATED_USER': None,
+    # Rate limits count the client's own address. X-Forwarded-For is trusted
+    # only through this many reverse proxies (0: never), or anyone could
+    # dodge the limits by sending a different header each time.
+    'NUM_PROXIES': config('NUM_PROXIES', default=0, cast=int),
     'DEFAULT_THROTTLE_RATES': {
         'ai': config('THROTTLE_AI', default='120/hour'),
         'tx': config('THROTTLE_TX', default='600/minute'),

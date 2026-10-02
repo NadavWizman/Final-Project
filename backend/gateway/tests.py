@@ -122,3 +122,29 @@ class GatewayHasNoStateTests(SimpleTestCase):
         for name in dir(v):   # no settlement entry points remain in the gateway
             self.assertNotIn('execute', name.lower())
             self.assertNotIn('settle', name.lower())
+
+
+class SecurityTests(SimpleTestCase):
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.c = APIClient()
+
+    def test_forwarded_for_header_does_not_dodge_the_rate_limit(self):
+        from .throttles import TxThrottle
+        codes = []
+        with patch.object(TxThrottle, 'THROTTLE_RATES', {'tx': '2/minute'}), \
+             patch.object(chain, 'broadcast', return_value=('AB' * 32, 0, '')):
+            for i in range(4):
+                r = self.c.post('/api/tx/', {'msg': '{}', 'sig': 'x'}, format='json',
+                                HTTP_X_FORWARDED_FOR=f'10.0.0.{i}')
+                codes.append(r.status_code)
+        self.assertEqual(codes, [202, 202, 429, 429])
+
+    def test_page_has_a_content_security_policy(self):
+        r = self.c.get('/')
+        csp = r.headers.get('Content-Security-Policy', '')
+        for directive in ("connect-src 'self'", "img-src 'self' data:", "frame-ancestors 'none'",
+                          "object-src 'none'"):
+            self.assertIn(directive, csp)
