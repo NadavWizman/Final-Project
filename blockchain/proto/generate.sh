@@ -9,15 +9,13 @@ cd "$(dirname "$0")"
 ROOT="$(cd ../.. && pwd)"
 export PATH="$PATH:$(go env GOPATH)/bin"
 
-# Go: module "nodes", packages nodes/consensus and nodes/oracle
-for proto in consensus oracle; do
-    python3 -m grpc_tools.protoc -I . \
-        --go_out="$ROOT/nodes/$proto" --go_opt=paths=source_relative \
-        --go-grpc_out="$ROOT/nodes/$proto" --go-grpc_opt=paths=source_relative \
-        "$proto.proto"
-done
+# Go: module "nodes", package nodes/oracle (the nodes fetch signed quotes)
+python3 -m grpc_tools.protoc -I . \
+    --go_out="$ROOT/nodes/oracle" --go_opt=paths=source_relative \
+    --go-grpc_out="$ROOT/nodes/oracle" --go-grpc_opt=paths=source_relative \
+    oracle.proto
 
-# Python: the Oracle service and its Django client
+# Python: the price signers (and the gateway's display-price client)
 python3 -m grpc_tools.protoc -I . \
     --python_out="$ROOT/oracle_service" --grpc_python_out="$ROOT/oracle_service" \
     oracle.proto
