@@ -1,9 +1,11 @@
 package ledger
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -54,10 +56,11 @@ func (s *State) CheckTx(raw []byte, pendingNonce func(addr string) (uint64, bool
 		return "", 0, err
 	}
 	want := uint64(0)
-	if acc := s.Accounts[d.msg.From]; acc != nil {
-		if d.msg.Type == "register" {
-			return "", 0, fmt.Errorf("account already registered")
+	if d.msg.Type == "register" {
+		if err := s.checkRegister(d); err != nil {
+			return "", 0, err
 		}
+	} else if acc := s.Accounts[d.msg.From]; acc != nil {
 		want = acc.Nonce
 	}
 	if n, ok := pendingNonce(d.msg.From); ok && n > want {
@@ -117,26 +120,46 @@ func (s *State) applyTx(raw []byte, prices map[string]Cents) TxResult {
 	}
 }
 
+// checkRegister is everything that makes a registration invalid. CheckTx
+// runs it too, so a registration that could never be included does not sit
+// in the mempool.
+func (s *State) checkRegister(d *decoded) error {
+	m := d.msg
+	switch {
+	case s.Accounts[m.From] != nil:
+		return errors.New("account already registered")
+	case d.nonce != 0:
+		return errors.New("registration must use nonce 0")
+	case !usernameRe.MatchString(m.Username):
+		return errors.New("username must be 3-32 letters, digits, '.', '_' or '-'")
+	}
+	if _, taken := s.Usernames[usernameKey(m.Username)]; taken {
+		return errors.New("username already taken")
+	}
+	return nil
+}
+
+// usernameKey makes names unique regardless of case ("Alice" = "alice"),
+// so one user cannot pass for another by capitalisation.
+func usernameKey(name string) string { return strings.ToLower(name) }
+
+// AddressOf returns the address registered under a username.
+func (s *State) AddressOf(name string) (string, bool) {
+	a, ok := s.Usernames[usernameKey(name)]
+	return a, ok
+}
+
 func (s *State) register(d *decoded) TxResult {
 	m := d.msg
-	if s.Accounts[m.From] != nil {
-		return TxResult{Code: CodeInvalid, Log: "account already registered"}
-	}
-	if d.nonce != 0 {
-		return TxResult{Code: CodeInvalid, Log: "registration must use nonce 0"}
-	}
-	if !usernameRe.MatchString(m.Username) {
-		return TxResult{Code: CodeInvalid, Log: "username must be 3-32 letters, digits, '.', '_' or '-'"}
-	}
-	if _, taken := s.Usernames[m.Username]; taken {
-		return TxResult{Code: CodeInvalid, Log: "username already taken"}
+	if err := s.checkRegister(d); err != nil {
+		return TxResult{Code: CodeInvalid, Log: err.Error()}
 	}
 	acc := &Account{
 		Address: m.From, Username: m.Username, PubKey: d.pubKey, Nonce: 1,
 		Cash: s.Params.Faucet, Holdings: map[string]Qty{},
 	}
 	s.Accounts[m.From] = acc
-	s.Usernames[m.Username] = m.From
+	s.Usernames[usernameKey(m.Username)] = m.From
 	acc.record(s, &Record{ID: s.nextID(), Kind: "DEPOSIT", Status: "CONFIRMED",
 		Amount: s.Params.Faucet, Reason: "registration grant (faucet)"})
 	return TxResult{Code: CodeOK, Log: "registered"}
@@ -205,6 +228,12 @@ func limitReached(side string, px, limit Cents) bool {
 func (s *State) validateOrder(acc *Account, o *OrderMsg) error {
 	if !s.listed(o.Ticker) {
 		return fmt.Errorf("%s is not a listed ticker", o.Ticker)
+	}
+	if o.Limit != "" && len(acc.Resting) >= MaxResting {
+		return fmt.Errorf("at most %d open limit orders per account", MaxResting)
+	}
+	if (o.SL != "" || o.TP != "") && activeLevels(acc)+2 > MaxLevels {
+		return fmt.Errorf("at most %d stop-loss/take-profit levels per account", MaxLevels)
 	}
 	if o.Side != "BUY" && o.Side != "SELL" {
 		return fmt.Errorf("side must be BUY or SELL")
@@ -522,6 +551,9 @@ func (s *State) addLevel(acc *Account, lm *LevelMsg) TxResult {
 	if err != nil || q <= 0 {
 		return s.reject(acc, r, "invalid level quantity")
 	}
+	if activeLevels(acc) >= MaxLevels {
+		return s.reject(acc, r, fmt.Sprintf("at most %d stop-loss/take-profit levels per account", MaxLevels))
+	}
 	lvl := &Level{Kind: lm.Kind, Price: p, Qty: q}
 	var size Qty
 	if lm.CFD != "" {
@@ -590,4 +622,21 @@ func sortedTickers(m map[string]Cents) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// Every account's open limit orders and levels are checked in every block,
+// so their number is bounded (there are no fees to discourage spam).
+const (
+	MaxResting = 50
+	MaxLevels  = 50
+)
+
+func activeLevels(acc *Account) int {
+	n := 0
+	for _, l := range acc.Levels {
+		if !l.Triggered {
+			n++
+		}
+	}
+	return n
 }

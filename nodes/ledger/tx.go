@@ -194,6 +194,7 @@ func strictBase64(s string) ([]byte, error) {
 
 var (
 	tickerRe = regexp.MustCompile(`^[A-Z][A-Z.]{0,9}$`)
+	idRe     = regexp.MustCompile(`^[0-9]{1,19}$`)
 	keyRe    = regexp.MustCompile(`^[a-z_]+$`)
 
 	msgTypes   = map[string]bool{"register": true, "deposit": true, "order": true, "level_add": true, "level_cancel": true}
@@ -217,6 +218,8 @@ func checkShape(m *Msg) error {
 			return errors.New("malformed ticker")
 		case o.OptionType != "" && o.OptionType != "CALL" && o.OptionType != "PUT":
 			return errors.New("option type must be CALL or PUT")
+		case o.Position != "" && !idRe.MatchString(o.Position):
+			return errors.New("malformed position id")
 		}
 	}
 	if l := m.Level; l != nil {
@@ -226,6 +229,12 @@ func checkShape(m *Msg) error {
 		if l.Ticker != "" && !tickerRe.MatchString(l.Ticker) {
 			return errors.New("malformed ticker")
 		}
+		if l.CFD != "" && !idRe.MatchString(l.CFD) {
+			return errors.New("malformed position id")
+		}
+	}
+	if m.LevelID != "" && !idRe.MatchString(m.LevelID) {
+		return errors.New("malformed level id")
 	}
 	return nil
 }

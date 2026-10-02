@@ -63,7 +63,7 @@ func (a *App) Query(_ context.Context, req *abci.RequestQuery) (*abci.ResponseQu
 		return reply(map[string]any{"account": acc, "liquidation": liq, "last_prices": s.LastPrices, "time": s.Time})
 
 	case "/username":
-		addr, ok := s.Usernames[string(req.Data)]
+		addr, ok := s.AddressOf(string(req.Data))
 		if !ok {
 			return notFound("username")
 		}

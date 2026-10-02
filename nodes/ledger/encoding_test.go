@@ -95,3 +95,36 @@ func TestSignP1363IsLowS(t *testing.T) {
 		}
 	}
 }
+
+// A registration that could never be included is refused by CheckTx, so it
+// cannot fill the mempool; names are unique regardless of case.
+func TestRegistrationCheckedBeforeMempool(t *testing.T) {
+	s := newLedger()
+	alice := newUser(t)
+	mustOK(t, block(s, 1000, nil, alice.register(t, "Alice")))
+	for name, n := range map[string]string{"taken": "Alice", "case variant": "alice", "invalid": "<b>x</b>"} {
+		u := newUser(t)
+		if _, _, err := s.CheckTx(u.register(t, n), noPending); err == nil {
+			t.Errorf("%s username passed CheckTx", name)
+		}
+	}
+	if a, ok := s.AddressOf("ALICE"); !ok || a != alice.addr {
+		t.Fatal("lookup is not case-insensitive")
+	}
+}
+
+// Open limit orders per account are bounded.
+func TestRestingOrdersAreCapped(t *testing.T) {
+	s := newLedger()
+	u := newUser(t)
+	mustOK(t, block(s, 1000, nil, u.register(t, "spammer")))
+	acc := s.Accounts[u.addr]
+	var txs [][]byte
+	for i := 0; i < MaxResting+5; i++ {
+		txs = append(txs, u.order(t, OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1", Limit: "1.00"}))
+	}
+	mustOK(t, block(s, 1001, nil, txs...))
+	if len(acc.Resting) != MaxResting || !strings.Contains(last(acc).Reason, "at most") {
+		t.Fatalf("resting %d, last %+v", len(acc.Resting), last(acc))
+	}
+}
