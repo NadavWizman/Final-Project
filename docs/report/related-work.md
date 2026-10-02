@@ -1,0 +1,69 @@
+# עבודות קשורות
+
+הפרק ממקם את TradeDesk ביחס לפרוטוקולי קונצנזוס ולמערכות קיימות, ומסביר את הבחירות שעשינו.
+
+## PBFT: Practical Byzantine Fault Tolerance (Castro & Liskov, 1999)
+
+הפרוטוקול המעשי הראשון שסובל f צמתים זדוניים מתוך 3f+1, ברשת חלקית-סינכרונית. הוא עובד בשלושה שלבים: pre-prepare, prepare ו-commit, וכל שלב דורש 2f+1 הודעות תואמות. כשה-primary (המנהיג) חשוד, מתבצע view change.
+
+**הקשר אלינו:** הגבול n ≥ 3f+1 והדרישה ל-2f+1 חתימות על כל בלוק הם בדיוק ההנחות שלנו (4 מאמתים, f=1). החיסרון של PBFT הוא ה-view change: הוא מסובך, ותקשורת מסדר O(n²) בכל שלב. אנחנו לא מממשים את PBFT עצמו אלא את Tendermint, שפותח בהשראתו ומפשט את החלפת המנהיג.
+
+## Tendermint / CometBFT (Buchman, Kwon & Milosevic, 2018)
+
+פרוטוקול BFT שבו המנהיג מתחלף **בכל גובה ובכל סבב** (round-robin משוקלל לפי כוח הצבעה), ולא רק כשהוא חשוד. כל סבב עובר propose, prevote ו-precommit. בלוק נסגר כשיש לו יותר מ-2/3 precommits, ואז הוא **סופי מיד**, ללא fork וללא המתנה לאישורים נוספים. CometBFT הוא המימוש התעשייתי של Tendermint, ונמצא בשימוש ברשתות Cosmos.
+
+**הקשר אלינו:** זו התשתית שבחרנו, כפי שהמליץ המשוב. CometBFT משובץ בתוך התהליך שלנו (in-process) ומדבר עם מכונת המצב דרך ABCI++:
+
+- `PrepareProposal`: המציע מצרף לבלוק את הציטוטים החתומים ואת החציון.
+- `ProcessProposal`: כל מאמת מאמת את הציטוטים ומחשב את החציון מחדש. מאמת שמוצא בלוק לא תקין מצביע נגדו.
+- `FinalizeBlock`: ביצוע דטרמיניסטי של העסקאות ושל הכללים (SL/TP, חיסול, פקיעת אופציות), וחישוב `app_hash`.
+
+היתרון לעומת מימוש עצמי: החלפת מנהיג, mempool משותף, תעודות commit ושחזור צומת שנפל מקבלים מימוש שנבדק בייצור. החלפת המנהיג נמדדה בפועל בפרק הביצועים.
+
+## HotStuff (Yin et al., 2019)
+
+פרוטוקול BFT שבו המנהיג אוסף את ההצבעות לחתימה מצטברת (Quorum Certificate). כך התקשורת **ליניארית**, O(n), גם בהחלפת מנהיג. המבנה בצינור (pipelined): כל בלוק מקדם את האישור של הבלוקים הקודמים. HotStuff שימש כבסיס ל-DiemBFT של Libra (Meta).
+
+**הקשר אלינו:** עם 4 מאמתים, ההבדל בין O(n²) ל-O(n) זניח (12 הודעות לעומת 4 בכל שלב). HotStuff משתלם ברשתות של מאות מאמתים. מנגד, הסופיות שלו דורשת שרשרת של שלושה בלוקים, בעוד שב-Tendermint בלוק סופי מיד, ולכן Tendermint מתאים יותר למערכת מסחר שבה המשתמש מחכה לאישור. הרחבה של המערכת למאות מאמתים תצדיק מעבר ל-HotStuff.
+
+## Hyperledger Fabric (Androulaki et al., 2018)
+
+בלוקצ'יין **מורשה** (permissioned) לארגונים. הארכיטקטורה שלו היא execute-order-validate:
+
+1. **Endorsement:** צמתים נבחרים מריצים את העסקה מראש וחותמים על התוצאה.
+2. **Ordering:** שירות נפרד (Raft, ובגרסאות חדשות גם BFT) קובע סדר.
+3. **Validation:** כל צומת בודק את החתימות ואת ההתנגשויות.
+
+הזהויות מנוהלות ב-MSP עם תעודות X.509.
+
+**הקשר אלינו:** כמו Fabric, גם אנחנו רשת מורשה: המאמתים ומקורות המחיר קבועים ב-genesis, והחלפתם דורשת הסכמה של 3 מתוך 4. ההבדל הוא בסדר: אנחנו עובדים ב-order-execute (קודם מסכימים על סדר ואז כל מאמת מריץ בעצמו), כי מסחר דורש סדר גלובלי אחד. שתי הזמנות שמתחרות על אותה יתרה חייבות להתבצע ברצף. ב-Fabric עסקאות כאלה נכשלות בשלב ה-validation (MVCC conflict) וצריך לשלוח אותן מחדש. ה-ordering של Fabric היה בעבר Raft בלבד (CFT, ללא סבילות לזדון). אנחנו BFT גם בשלב הסדר.
+
+## Chainlink (Ellis, Juels & Nazarov, 2017; OCR 2021)
+
+רשת Oracles מבוזרת שמביאה מידע חיצוני (מחירים) לבלוקצ'יין. כל צומת Oracle מופעל על ידי מפעיל עצמאי ושולף ממקורות משלו. ב-Off-Chain Reporting (OCR) הצמתים מסכימים מחוץ לשרשרת על דוח, והמחיר הוא **החציון** של התצפיות. הדוח חתום על ידי רוב, כך שמיעוט זדוני לא יכול להזיז את החציון.
+
+**הקשר אלינו:** מנגנון המחיר שלנו הוא גרסה מוקטנת של אותו רעיון: 3 מקורות, כל אחד חותם במפתח Ed25519 שרשום ב-genesis, והמחיר הוא החציון המדויק. מאמת שמחשב חציון אחר דוחה את הבלוק. ההבדלים:
+
+- ב-Chainlink המפעילים עצמאיים ומשלמים בטוחה (staking) שנשרפת על התנהגות זדונית. אצלנו שלושת המקורות מופעלים על ידינו, והם עצמאיים רק במקור הנתונים (Yahoo, Nasdaq, CNBC).
+- ב-Chainlink יש עשרות צמתים לכל זוג מחירים. אצלנו 3, ולכן מקור אחד שנופל עוצר עסקאות שתלויות במחיר (ראו פרק מודל האמון).
+
+## סיכום ההשוואה
+
+| | PBFT | Tendermint/CometBFT | HotStuff | Fabric | **TradeDesk** |
+|---|---|---|---|---|---|
+| מודל כשל | BFT, f < n/3 | BFT, f < n/3 | BFT, f < n/3 | CFT/BFT בסדר | **BFT, f < n/3** |
+| החלפת מנהיג | view change (מורכב) | כל סבב | כל בלוק, ליניארי | — | **כל סבב (CometBFT)** |
+| סופיות | מיידית | מיידית | 3 בלוקים | מיידית | **מיידית** |
+| תקשורת לשלב | O(n²) | O(n²) | O(n) | — | O(n²), n=4 |
+| הרשאות | מורשה | מורשה/ציבורי | מורשה | מורשה | **מורשה (genesis)** |
+| מחיר חיצוני | — | — | — | — | **חציון של 3 מקורות חתומים** (כמו Chainlink בקטן) |
+
+## מקורות
+
+1. M. Castro, B. Liskov. *Practical Byzantine Fault Tolerance.* OSDI 1999.
+2. E. Buchman, J. Kwon, Z. Milosevic. *The latest gossip on BFT consensus.* arXiv:1807.04938, 2018.
+3. M. Yin, D. Malkhi, M. K. Reiter, G. Golan Gueta, I. Abraham. *HotStuff: BFT Consensus with Linearity and Responsiveness.* PODC 2019.
+4. E. Androulaki et al. *Hyperledger Fabric: A Distributed Operating System for Permissioned Blockchains.* EuroSys 2018.
+5. S. Ellis, A. Juels, S. Nazarov. *ChainLink: A Decentralized Oracle Network.* 2017; L. Breidenbach et al. *Chainlink 2.0.* 2021.
+6. L. Lamport, R. Shostak, M. Pease. *The Byzantine Generals Problem.* ACM TOPLAS, 1982.
+7. C. Dwork, N. Lynch, L. Stockmeyer. *Consensus in the Presence of Partial Synchrony.* JACM, 1988.
