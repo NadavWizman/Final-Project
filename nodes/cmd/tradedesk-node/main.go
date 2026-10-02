@@ -3,9 +3,15 @@
 //
 //	tradedesk-node init  [-dir testnet] [-validators 4] [-oracles yahoo,nasdaq,cnbc]
 //	tradedesk-node start -home testnet/node0
+//	tradedesk-node valset-sign   -home testnet/node0 -pubkey <base64> -power 10 -seq 0
+//	tradedesk-node valset-submit -rpc http://127.0.0.1:26657 -pubkey <base64> -power 10 -seq 0 approval.json...
 package main
 
 import (
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -15,7 +21,11 @@ import (
 	"time"
 
 	cmtlog "github.com/cometbft/cometbft/libs/log"
+	"github.com/cometbft/cometbft/privval"
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
+	"github.com/cometbft/cometbft/types"
 
+	"nodes/app"
 	"nodes/chainnode"
 	"nodes/quotes"
 )
@@ -29,6 +39,10 @@ func main() {
 		initCmd(os.Args[2:])
 	case "start":
 		startCmd(os.Args[2:])
+	case "valset-sign":
+		valsetSignCmd(os.Args[2:])
+	case "valset-submit":
+		valsetSubmitCmd(os.Args[2:])
 	default:
 		usage()
 	}
@@ -38,7 +52,10 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   tradedesk-node init  [-dir testnet] [-validators 4] [-chain-id tradedesk-local]
                        [-oracles yahoo,nasdaq,cnbc] [-base-port 26656] [-oracle-port 8001]
-  tradedesk-node start -home testnet/node0 [-oracles host:port,...] [-v]`)
+  tradedesk-node start -home testnet/node0 [-oracles host:port,...] [-v]
+  tradedesk-node valset-sign   -home testnet/node0 -pubkey <base64> -power <n> -seq <n>
+  tradedesk-node valset-submit -rpc <url> -pubkey <base64> -power <n> -seq <n> approval.json...
+    A validator-set change needs approvals from more than 2/3 of the voting power.`)
 	os.Exit(2)
 }
 
@@ -107,6 +124,68 @@ func startCmd(args []string) {
 	<-stop
 	_ = n.Stop()
 	n.Wait()
+}
+
+func valsetSignCmd(args []string) {
+	fs := flag.NewFlagSet("valset-sign", flag.ExitOnError)
+	home := fs.String("home", "", "this validator's home directory")
+	pub := fs.String("pubkey", "", "Ed25519 consensus key of the validator to set (base64)")
+	power := fs.Int64("power", 10, "voting power; 0 removes the validator")
+	seq := fs.Uint64("seq", 0, "number of validator-set changes so far")
+	_ = fs.Parse(args)
+	key, err := base64.StdEncoding.DecodeString(*pub)
+	if err != nil || len(key) != 32 {
+		fail(fmt.Errorf("-pubkey must be a base64 Ed25519 key"))
+	}
+	c, err := chainnode.LoadConfig(*home)
+	if err != nil {
+		fail(err)
+	}
+	gen, err := types.GenesisDocFromFile(c.GenesisFile())
+	if err != nil {
+		fail(err)
+	}
+	pv := privval.LoadFilePV(c.PrivValidatorKeyFile(), c.PrivValidatorStateFile())
+	approval := app.SignValset(ed25519.PrivateKey(pv.Key.PrivKey.Bytes()),
+		app.ValsetChange{Chain: gen.ChainID, Seq: *seq, PubKey: key, Power: *power})
+	out, _ := json.Marshal(approval)
+	fmt.Println(string(out))
+}
+
+func valsetSubmitCmd(args []string) {
+	fs := flag.NewFlagSet("valset-submit", flag.ExitOnError)
+	rpc := fs.String("rpc", "http://127.0.0.1:26657", "a node's RPC address")
+	chainID := fs.String("chain-id", "tradedesk-local", "chain id")
+	pub := fs.String("pubkey", "", "")
+	power := fs.Int64("power", 10, "")
+	seq := fs.Uint64("seq", 0, "")
+	_ = fs.Parse(args)
+	key, err := base64.StdEncoding.DecodeString(*pub)
+	if err != nil || len(key) != 32 {
+		fail(fmt.Errorf("-pubkey must be a base64 Ed25519 key"))
+	}
+	tx := app.ValsetTx{Valset: app.ValsetChange{Chain: *chainID, Seq: *seq, PubKey: key, Power: *power}}
+	for _, f := range fs.Args() {
+		var a app.ValsetApproval
+		b, err := os.ReadFile(f)
+		if err != nil || json.Unmarshal(b, &a) != nil {
+			fail(fmt.Errorf("cannot read approval %s", f))
+		}
+		tx.Sigs = append(tx.Sigs, a)
+	}
+	raw, _ := json.Marshal(tx)
+	client, err := rpchttp.New(*rpc, "/websocket")
+	if err != nil {
+		fail(err)
+	}
+	res, err := client.BroadcastTxCommit(context.Background(), raw)
+	if err != nil {
+		fail(err)
+	}
+	if res.CheckTx.Code != 0 {
+		fail(fmt.Errorf("refused: %s", res.CheckTx.Log))
+	}
+	fmt.Printf("validator set updated at height %d: %s\n", res.Height, res.TxResult.Log)
 }
 
 func fail(err error) {
