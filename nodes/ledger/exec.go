@@ -86,6 +86,15 @@ func (s *State) applyTx(raw []byte, prices map[string]Cents) TxResult {
 	if d.nonce != acc.Nonce {
 		return TxResult{Code: CodeInvalid, Log: fmt.Sprintf("wrong nonce: expected %d, got %d", acc.Nonce, d.nonce)}
 	}
+	// A market order needs this block's verified price. Without one it is
+	// not part of this block at all — invalid here, nonce untouched — so it
+	// waits in the mempool for a block that has the price. (Recording it as
+	// refused would let a proposer that leaves out a price burn users' orders.)
+	if o := m.Order; m.Type == "order" && o != nil && o.Limit == "" && s.listed(o.Ticker) {
+		if _, ok := prices[o.Ticker]; !ok {
+			return TxResult{Code: CodeInvalid, Log: "no verified price for " + o.Ticker + " in this block"}
+		}
+	}
 	// The nonce is used up even when the trade itself is refused, so a signed
 	// transaction can never be replayed.
 	acc.Nonce++
@@ -176,7 +185,7 @@ func (s *State) placeOrder(acc *Account, o OrderMsg, prices map[string]Cents) *R
 			acc.record(s, r)
 			return r
 		}
-	} else if !priced {
+	} else if !priced { // only reachable for an unlisted ticker, refused above
 		return fail("no verified price for " + o.Ticker + " in this block")
 	}
 	s.execute(acc, o, px, r)

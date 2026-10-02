@@ -54,7 +54,7 @@ const Marker = `{"quotes"`
 
 // Rules for accepting quotes, relative to the block time.
 const (
-	MaxAge    = 60 // a quote older than this (seconds) is stale
+	MaxAge    = 10 // a quote older than this (seconds) is stale; honest quotes are signed while the block is built
 	MaxFuture = 30 // clocks may run a little ahead of the block time
 )
 

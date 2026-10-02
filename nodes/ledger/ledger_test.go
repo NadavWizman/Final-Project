@@ -179,10 +179,15 @@ func TestStockTrading(t *testing.T) {
 	if r := last(acc); r.Status != "REJECTED" || !strings.Contains(r.Reason, "insufficient funds") {
 		t.Fatalf("overspend: %+v", r)
 	}
-	mustOK(t, block(s, t0, nil, u.order(t, OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1"})))
-	if r := last(acc); r.Status != "REJECTED" || !strings.Contains(r.Reason, "no verified price") {
-		t.Fatalf("no price: %+v", r)
+	// without a price in the block a market order is not part of the block:
+	// invalid, nothing recorded, nonce untouched (it waits in the mempool)
+	before, nonce := len(acc.History), acc.Nonce
+	res := block(s, t0, nil, u.order(t, OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1"}))
+	if res[0].Code != CodeInvalid || !strings.Contains(res[0].Log, "no verified price") ||
+		len(acc.History) != before || acc.Nonce != nonce {
+		t.Fatalf("no price: %+v, nonce %d→%d", res[0], nonce, acc.Nonce)
 	}
+	u.nonce--
 	mustOK(t, block(s, t0, p(1), u.order(t, OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "TSLA", Qty: "1"})))
 	if r := last(acc); r.Status != "REJECTED" {
 		t.Fatal("unlisted ticker accepted")
