@@ -17,7 +17,6 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -51,11 +50,7 @@ func (w *wallet) tx(m ledger.Msg) []byte {
 	m.Chain, m.From, m.Nonce = w.chain, w.addr, fmt.Sprint(w.nonce)
 	w.nonce++
 	msg, _ := json.Marshal(m)
-	d := sha256.Sum256(msg)
-	r, s, _ := ecdsa.Sign(rand.Reader, w.key, d[:])
-	sig := make([]byte, 64)
-	r.FillBytes(sig[:32])
-	s.FillBytes(sig[32:])
+	sig := ledger.SignP1363(w.key, msg)
 	env := ledger.Envelope{Msg: string(msg), Sig: base64.StdEncoding.EncodeToString(sig)}
 	if m.Type == "register" {
 		env.PubKey = base64.StdEncoding.EncodeToString(w.pub)

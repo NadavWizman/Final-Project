@@ -27,6 +27,7 @@ from locust import HttpUser, between, events, task
 
 TICKERS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'JPM', 'V', 'KO', 'AMD']
 FINALITY_TIMEOUT = 60
+P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551
 
 
 class Trader(HttpUser):
@@ -47,6 +48,7 @@ class Trader(HttpUser):
         msg = {**msg, 'chain': self.chain, 'from': self.addr, 'nonce': str(self.nonce)}
         raw = json.dumps(msg).encode()
         r, s = decode_dss_signature(self.key.sign(raw, ec.ECDSA(hashes.SHA256())))
+        s = min(s, P256_N - s)   # the chain accepts only the low-S form
         env = {'msg': raw.decode(),
                'sig': base64.b64encode(r.to_bytes(32, 'big') + s.to_bytes(32, 'big')).decode()}
         if msg['type'] == 'register':

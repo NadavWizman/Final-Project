@@ -889,8 +889,17 @@ async function newKey() {
   const raw = await crypto.subtle.exportKey('raw', kp.publicKey);
   return {privateKey: kp.privateKey, publicRaw: raw, address: await addressOf(raw)};
 }
+// The chain accepts only the low-S form of a signature, so every signed
+// transaction has a single encoding: if s > n/2, use n − s (equally valid).
+const P256_N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
 async function signText(key, text) {
-  return b64(await crypto.subtle.sign({name: 'ECDSA', hash: 'SHA-256'}, key, new TextEncoder().encode(text)));
+  const sig = new Uint8Array(await crypto.subtle.sign({name: 'ECDSA', hash: 'SHA-256'}, key, new TextEncoder().encode(text)));
+  const s = BigInt('0x' + toHex(sig.slice(32)));
+  if (s > P256_N / 2n) {
+    const low = (P256_N - s).toString(16).padStart(64, '0');
+    for (let i = 0; i < 32; i++) sig[32 + i] = parseInt(low.slice(2 * i, 2 * i + 2), 16);
+  }
+  return b64(sig);
 }
 
 async function downloadKeyBackup() {

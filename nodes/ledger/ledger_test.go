@@ -4,7 +4,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -35,11 +34,7 @@ func (u *user) sign(t *testing.T, m Msg, withKey bool) []byte {
 	m.Nonce = itoa(u.nonce)
 	u.nonce++
 	msg, _ := json.Marshal(m)
-	digest := sha256.Sum256(msg)
-	r, s, _ := ecdsa.Sign(rand.Reader, u.key, digest[:])
-	sig := make([]byte, 64)
-	r.FillBytes(sig[:32])
-	s.FillBytes(sig[32:])
+	sig := SignP1363(u.key, msg)
 	env := Envelope{Msg: string(msg), Sig: base64.StdEncoding.EncodeToString(sig)}
 	if withKey {
 		env.PubKey = base64.StdEncoding.EncodeToString(u.pub)
