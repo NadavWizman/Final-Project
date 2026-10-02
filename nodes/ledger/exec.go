@@ -399,7 +399,12 @@ func (s *State) closeCFD(acc *Account, c *CFD, qty Qty, px Cents) Cents {
 	pnl := cfdPnL(c, qty, px)
 	back := share + pnl
 	if back < 0 {
-		back = 0 // a loss beyond the margin is not charged (liquidation prevents it)
+		// The price gapped past the liquidation level (e.g. at the market
+		// open): the loss beyond the margin is charged to the account's cash,
+		// as far as it goes. Forgiving it let a hedged long+short pair turn
+		// a gap into free money.
+		acc.Cash -= min(-back, acc.Cash)
+		back = 0
 	}
 	acc.Cash += back
 	c.Qty -= qty
@@ -423,10 +428,13 @@ func cfdPnL(c *CFD, qty Qty, px Cents) Cents {
 	if abs < 0 {
 		abs = -abs
 	}
-	v, _ := mulDiv(abs, int64(qty), QtyScale)
+	// gains round down and losses round up, so splitting a close into many
+	// small pieces cannot collect rounding cents
 	if diff < 0 {
+		v, _ := mulDivUp(abs, int64(qty), QtyScale)
 		return -Cents(v)
 	}
+	v, _ := mulDiv(abs, int64(qty), QtyScale)
 	return Cents(v)
 }
 

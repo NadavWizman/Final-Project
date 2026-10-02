@@ -375,3 +375,50 @@ func TestOptionPremiumLongExpiry(t *testing.T) {
 		t.Fatalf("150-day ATM call on $200 priced at %d cents", p)
 	}
 }
+
+// A long and a short of the same stock cannot make money from a price gap
+// past the liquidation level: the loss beyond the margin is charged.
+func TestHedgedCFDGapMakesNoMoney(t *testing.T) {
+	s := newLedger()
+	u := newUser(t)
+	mustOK(t, block(s, 1000, nil, u.register(t, "gap")))
+	start := s.Accounts[u.addr].Cash
+	mustOK(t, block(s, 1001, p(10000),
+		u.order(t, OrderMsg{Kind: "CFD", Side: "BUY", Ticker: "AAPL", Qty: "10", Leverage: "100"}),
+		u.order(t, OrderMsg{Kind: "CFD", Side: "SELL", Ticker: "AAPL", Qty: "10", Leverage: "100"})))
+	block(s, 1002, p(10500)) // +5 %: the long is liquidated far past its level
+	acc := s.Accounts[u.addr]
+	for _, c := range acc.CFDs {
+		if c.Open {
+			mustOK(t, block(s, 1003, p(10500), u.order(t, OrderMsg{Kind: "CFD_CLOSE", Side: "BUY", Ticker: "AAPL", Qty: "10", Position: itoa(c.ID)})))
+		}
+	}
+	if acc.Cash > start {
+		t.Fatalf("hedged pair turned a gap into money: %s -> %s", start, acc.Cash)
+	}
+}
+
+// Closing a losing CFD in many small pieces cannot round its loss away.
+func TestCFDChunkedCloseKeepsLosses(t *testing.T) {
+	s := newLedger()
+	u := newUser(t)
+	mustOK(t, block(s, 1000, nil, u.register(t, "chunks")))
+	start := s.Accounts[u.addr].Cash
+	mustOK(t, block(s, 1001, p(10000),
+		u.order(t, OrderMsg{Kind: "CFD", Side: "BUY", Ticker: "AAPL", Qty: "1", Leverage: "2"}),
+		u.order(t, OrderMsg{Kind: "CFD", Side: "SELL", Ticker: "AAPL", Qty: "1", Leverage: "2"})))
+	acc := s.Accounts[u.addr]
+	long, short := acc.CFDs[0], acc.CFDs[1]
+	txs := [][]byte{u.order(t, OrderMsg{Kind: "CFD_CLOSE", Side: "SELL", Ticker: "AAPL", Qty: "1", Position: itoa(long.ID)})}
+	for i := 0; i < 50; i++ {
+		txs = append(txs, u.order(t, OrderMsg{Kind: "CFD_CLOSE", Side: "BUY", Ticker: "AAPL", Qty: "0.0199", Position: itoa(short.ID)}))
+	}
+	txs = append(txs, u.order(t, OrderMsg{Kind: "CFD_CLOSE", Side: "BUY", Ticker: "AAPL", Qty: "0.005", Position: itoa(short.ID)}))
+	mustOK(t, block(s, 1002, p(10050), txs...))
+	if short.Open || long.Open {
+		t.Fatalf("positions still open")
+	}
+	if acc.Cash > start {
+		t.Fatalf("chunked close made money: %s -> %s", start, acc.Cash)
+	}
+}
