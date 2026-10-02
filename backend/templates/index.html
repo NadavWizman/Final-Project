@@ -1210,9 +1210,9 @@ function renderPortfolio() {
       // JSON-encode for the JS string, then HTML-escape for the attribute
       const safeName = esc(JSON.stringify(String(h.name || h.ticker)));
       return `
-        <div class="holding-card" onclick="openModal('${h.ticker}',${safeName},${qty})">
+        <div class="holding-card" onclick="openModal('${esc(h.ticker)}',${safeName},${qty})">
           <div class="holding-dot"></div>
-          <div class="holding-ticker">${h.ticker}</div>
+          <div class="holding-ticker">${esc(h.ticker)}</div>
           <div class="holding-name">${esc(h.name)}</div>
           <div class="holding-qty">${qty.toLocaleString()} shares</div>
           <div class="holding-divider"></div>
@@ -1220,9 +1220,9 @@ function renderPortfolio() {
           ${total ? `<div class="holding-value">${fmt$(total)}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:8px">
             <button class="btn-small gray" style="flex:1;font-size:11px;padding:5px 8px"
-              onclick="event.stopPropagation();openModal('${h.ticker}',${safeName},${qty})">Trade</button>
+              onclick="event.stopPropagation();openModal('${esc(h.ticker)}',${safeName},${qty})">Trade</button>
             <button class="btn-small blue" style="flex:1;font-size:11px;padding:5px 8px"
-              onclick="event.stopPropagation();openSLTPModal('position',${h.id},'${h.ticker} · ${qty} shares',${qty},${S.holdingPrices[h.ticker]?parseFloat(S.holdingPrices[h.ticker].execution_price):'null'},'LONG')">SL/TP</button>
+              onclick="event.stopPropagation();openSLTPModal('position','${esc(h.id)}','${esc(h.ticker)} · ${qty} shares',${qty},${S.holdingPrices[h.ticker]?parseFloat(S.holdingPrices[h.ticker].execution_price):'null'},'LONG')">SL/TP</button>
           </div>
         </div>`;
     }).join('');
@@ -1252,7 +1252,7 @@ function renderTrade() {
     <div class="submit-bar">
       <div class="submit-bar-text">
         <strong>Order #${o.id} ready to submit</strong>
-        <span>${o.order_type} ${parseFloat(o.quantity)} ${o.stock} · ${timeAgo(o.created_at)}</span>
+        <span>${esc(o.order_type)} ${parseFloat(o.quantity)} ${esc(o.stock)} · ${timeAgo(o.created_at)}</span>
       </div>
       <button class="btn-small blue" onclick="doSubmit(${o.id})">Submit →</button>
     </div>`).join('');
@@ -1350,7 +1350,7 @@ function updateTradePriceCard() {
     : '';
   card.innerHTML = `
     <div class="price-header">
-      <span class="price-ticker-label">${p.ticker}</span>
+      <span class="price-ticker-label">${esc(p.ticker)}</span>
       <span class="price-live"><span class="price-live-dot"></span>Live</span>
     </div>
     <div class="price-big">${fmt$(p.execution_price)}</div>
@@ -2316,7 +2316,7 @@ async function loadSLTPLevels() {
         pnlHtml = `<span style="font-size:12px;color:${pnlColor};font-weight:600">${pnl>=0?'+':''}${fmt$(pnl)}</span>`;
       }
       return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--sep);opacity:${fired?0.5:1}">
-        <span style="background:${bgClr};color:${color};padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;min-width:28px;text-align:center">${lv.level_type}</span>
+        <span style="background:${bgClr};color:${color};padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;min-width:28px;text-align:center">${esc(lv.level_type)}</span>
         <span style="flex:1;font-size:13px">${fmt$(lv.price)} &times; ${parseFloat(lv.quantity)} ${unit}</span>
         ${pnlHtml}
         ${fired
@@ -2530,11 +2530,11 @@ function renderActivity() {
       return `<div class="order-row ${isBuy?'buy':'sell'}">
         <div class="order-info">
           <div class="order-title" style="color:${isBuy?'var(--green)':'var(--red)'}">
-            ${label} ${qtyTxt}${esc(o.stock)}${cfdTag}${optTag}
+            ${esc(label)} ${qtyTxt}${esc(o.stock)}${cfdTag}${optTag}
           </div>
           <div class="order-sub">
-            <span class="status-badge badge-${o.status.toLowerCase()}"${o.reject_reason ? ` title="${esc(o.reject_reason)}"` : ''}>${o.status}</span>
-            &nbsp;· #${o.id} · ${timeAgo(o.created_at)}${o.status === 'REJECTED' && o.reject_reason ? ` · ${esc(o.reject_reason)}` : ''}
+            <span class="status-badge badge-${esc(o.status.toLowerCase())}"${o.reject_reason ? ` title="${esc(o.reject_reason)}"` : ''}>${esc(o.status)}</span>
+            &nbsp;· #${esc(o.id)} · ${timeAgo(o.created_at)}${o.status === 'REJECTED' && o.reject_reason ? ` · ${esc(o.reject_reason)}` : ''}
           </div>
         </div>
         <div class="order-right">
@@ -2665,13 +2665,13 @@ function renderCFD() {
     return `<div class="cfd-card ${dir.toLowerCase()}" data-cfd-id="${pos.id}">
       <span class="cfd-dir-badge ${dir.toLowerCase()}">${dir}</span>
       <div class="cfd-info">
-        <div class="cfd-ticker">${pos.stock} <span style="font-size:13px;color:var(--label2);font-weight:500">${pos.leverage}x</span></div>
+        <div class="cfd-ticker">${esc(pos.stock)} <span style="font-size:13px;color:var(--label2);font-weight:500">${pos.leverage}x</span></div>
         <div class="cfd-meta">${parseFloat(pos.quantity)} units · entry ${fmt$(pos.entry_price)} · margin ${fmt$(pos.margin_used)}${pos.liquidation_price ? ` · liquidation ${fmt$(pos.liquidation_price)}` : ''}</div>
       </div>
       <div class="cfd-right">${pnlHtml}</div>
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn-small blue" style="font-size:11px;padding:5px 10px"
-          onclick="openSLTPModal('cfd',${pos.id},'${dir} ${parseFloat(pos.quantity)} ${pos.stock}',${parseFloat(pos.quantity)},${parseFloat(pos.entry_price)},'${pos.direction}')">
+          onclick="openSLTPModal('cfd',${pos.id},'${dir} ${parseFloat(pos.quantity)} ${esc(pos.stock)}',${parseFloat(pos.quantity)},${parseFloat(pos.entry_price)},'${esc(pos.direction)}')">
           SL/TP</button>
         <button class="btn-small red" onclick="doCloseCFD(${pos.id},this)">Close</button>
       </div>
@@ -2688,7 +2688,7 @@ function renderCFD() {
       return `<div class="order-row ${pos.direction==='LONG'?'buy':'sell'}">
         <div class="order-info">
           <div class="order-title" style="color:${pos.direction==='LONG'?'var(--green)':'var(--red)'}">
-            ${pos.direction} ${parseFloat(pos.quantity)} ${pos.stock} (${pos.leverage}x)
+            ${esc(pos.direction)} ${parseFloat(pos.quantity)} ${esc(pos.stock)} (${pos.leverage}x)
           </div>
           <div class="order-sub">
             <span class="status-badge ${pnl>=0?'badge-confirmed':'badge-rejected'}">CLOSED</span>
@@ -3107,7 +3107,7 @@ function renderOptions() {
       const isITM   = intrinsic !== null && intrinsic > 0;
       const expDate  = new Date(pos.expiry + 'T00:00:00');
       const daysLeft = Math.ceil((expDate - new Date()) / 86400000);
-      const expLabel = daysLeft <= 7 ? `${daysLeft}d left` : `exp ${pos.expiry}`;
+      const expLabel = daysLeft <= 7 ? `${daysLeft}d left` : `exp ${esc(pos.expiry)}`;
       const side     = pos.contract_type === 'CALL' ? 'long' : 'short';
       let pnlHtml;
       if (sp !== null) {
@@ -3119,9 +3119,9 @@ function renderOptions() {
                    <div class="cfd-sub">Fetching…</div>`;
       }
       return `<div class="cfd-card ${side}">
-        <span class="cfd-dir-badge ${side}">${pos.contract_type}</span>
+        <span class="cfd-dir-badge ${side}">${esc(pos.contract_type)}</span>
         <div class="cfd-info">
-          <div class="cfd-ticker">${pos.stock} <span style="font-size:13px;color:var(--label2);font-weight:500">strike ${fmt$(pos.strike)}</span>${isITM?' <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(52,199,89,.12);padding:2px 6px;border-radius:4px;vertical-align:middle">ITM</span>':''}</div>
+          <div class="cfd-ticker">${esc(pos.stock)} <span style="font-size:13px;color:var(--label2);font-weight:500">strike ${fmt$(pos.strike)}</span>${isITM?' <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(52,199,89,.12);padding:2px 6px;border-radius:4px;vertical-align:middle">ITM</span>':''}</div>
           <div class="cfd-meta">${pos.contracts} contract${pos.contracts!==1?'s':''} · paid ${fmt$(pos.premium_paid)}/sh · ${expLabel}</div>
         </div>
         <div class="cfd-right">${pnlHtml}</div>
@@ -3146,11 +3146,11 @@ function renderOptions() {
         return `<div class="order-row ${side}">
           <div class="order-info">
             <div class="order-title" style="color:${pos.contract_type==='CALL'?'var(--green)':'var(--red)'}">
-              ${pos.contract_type} ${pos.stock} · strike ${fmt$(pos.strike)}
+              ${esc(pos.contract_type)} ${esc(pos.stock)} · strike ${fmt$(pos.strike)}
             </div>
             <div class="order-sub">
-              <span class="status-badge ${badgeCls}">${pos.status}</span>
-              &nbsp;· ${pos.contracts} contract${pos.contracts!==1?'s':''} · exp ${pos.expiry}
+              <span class="status-badge ${badgeCls}">${esc(pos.status)}</span>
+              &nbsp;· ${pos.contracts} contract${pos.contracts!==1?'s':''} · exp ${esc(pos.expiry)}
             </div>
           </div>
           <div class="order-right">
