@@ -1,91 +1,50 @@
 #!/usr/bin/env bash
-# setup.sh — one-shot bootstrap for TradeDesk
-# Run once after cloning: bash setup.sh
-set -e
+# setup.sh — one-time setup for TradeDesk. Run once after cloning: bash setup.sh
+#
+#   1. Python dependencies (gateway, oracle signers)
+#   2. backend/.env with a random SECRET_KEY
+#   3. builds the node binary (nodes/tradedesk-node)
+#   4. creates a local network in ./testnet: 4 validators, their keys,
+#      one genesis file, and a signing key for each of the 3 price sources
+#
+# Then: ./run.sh start
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-BACKEND="$ROOT/backend"
-NODES="$ROOT/nodes"
-ORACLE="$ROOT/oracle_service"
+cd "$ROOT"
 
 echo ""
 echo "========================================"
-echo "  TradeDesk — Project Setup"
+echo "  TradeDesk — setup"
 echo "========================================"
-echo ""
 
-# ── 1. Python dependencies ────────────────────────────────────────
-echo "[1/5] Installing Python dependencies..."
-command -v python3 &>/dev/null || { echo "      ✗ python3 not found"; exit 1; }
-pip3 install -r "$ROOT/requirements.txt" --quiet
+echo "[1/4] Python dependencies…"
+command -v python3 >/dev/null || { echo "  ✗ python3 not found"; exit 1; }
+pip3 install -r requirements.txt --quiet
 
-# ── 2. Secrets (.env files) ───────────────────────────────────────
-echo "[2/5] Configuring environment and generating secrets..."
-rand() { python3 -c "import secrets; print(secrets.token_urlsafe($1))"; }
-
-if [ ! -f "$BACKEND/.env" ]; then
-    sed "s|^SECRET_KEY=.*|SECRET_KEY=$(rand 50)|" "$BACKEND/.env.example" > "$BACKEND/.env"
-    chmod 600 "$BACKEND/.env"
-    echo "      Created backend/.env with a random SECRET_KEY"
-    echo "      ℹ  Add your free Gemini API key to GEMINI_API_KEY to enable AI news & chat."
-    echo "         Get one at: https://aistudio.google.com/app/apikey"
+echo "[2/4] Gateway configuration…"
+if [ ! -f backend/.env ]; then
+    key=$(python3 -c "import secrets; print(secrets.token_urlsafe(50))")
+    sed "s|^SECRET_KEY=.*|SECRET_KEY=$key|" backend/.env.example > backend/.env
+    chmod 600 backend/.env
+    echo "  created backend/.env (random SECRET_KEY)"
 else
-    echo "      backend/.env already exists — skipped."
+    echo "  backend/.env exists — kept"
 fi
 
-if [ ! -f "$NODES/.env" ]; then
-    sed -e "s|^CLUSTER_SECRET=.*|CLUSTER_SECRET=$(rand 32)|" \
-        -e "s|^NODE1_PASS=.*|NODE1_PASS=$(rand 24)|" \
-        -e "s|^NODE2_PASS=.*|NODE2_PASS=$(rand 24)|" \
-        -e "s|^NODE3_PASS=.*|NODE3_PASS=$(rand 24)|" \
-        "$NODES/.env.example" > "$NODES/.env"
-    chmod 600 "$NODES/.env"
-    echo "      Created nodes/.env with a random cluster secret and node passwords"
+echo "[3/4] Building the node…"
+command -v go >/dev/null || { echo "  ✗ Go is not installed: https://go.dev/dl/ (1.26+)"; exit 1; }
+(cd nodes && go build -o tradedesk-node ./cmd/tradedesk-node)
+echo "  built nodes/tradedesk-node"
+
+echo "[4/4] Local network…"
+if [ -d testnet ]; then
+    echo "  ./testnet exists — kept (delete it to start a fresh chain)"
 else
-    echo "      nodes/.env already exists — skipped."
+    nodes/tradedesk-node init -dir testnet -validators 4 -oracles yahoo,nasdaq,cnbc | sed 's/^/  /'
 fi
 
-# ── 3. Database ───────────────────────────────────────────────────
-echo "[3/5] Running Django migrations..."
-python3 "$BACKEND/manage.py" migrate
-
-echo "      Seeding S&P 500 stock catalog..."
-python3 "$BACKEND/manage.py" seed_stocks
-
-echo "      Creating blockchain node users (passwords from nodes/.env)..."
-python3 "$BACKEND/manage.py" create_node_users
-
-# ── 4. Go binary ─────────────────────────────────────────────────
-echo "[4/5] Building Go nodes binary..."
-if ! command -v go &>/dev/null; then
-    echo "      ✗ Go is not installed. Install Go 1.26+ from https://go.dev/dl/ and re-run setup.sh."
-    exit 1
-fi
-(cd "$NODES" && go build -o nodes_bin . && echo "      nodes_bin built successfully.")
-
-# ── 5. Done ───────────────────────────────────────────────────────
-echo "[5/5] Setup complete!"
 echo ""
-echo "Start everything with one command:"
-echo ""
-echo "    ./run.sh start        (./run.sh stop to stop, ./run.sh status, ./run.sh logs)"
-echo ""
-echo "Or, to watch each service, open five terminals and run:"
-echo ""
-echo "  Terminal 1 — Oracle:"
-echo "    cd oracle_service && python3 oracle_server.py"
-echo ""
-echo "  Terminal 2 — Node 1 (Leader):"
-echo "    cd nodes && NODE_NAME=node1 IS_LEADER=true ./nodes_bin"
-echo ""
-echo "  Terminal 3 — Node 2 (Validator):"
-echo "    cd nodes && NODE_NAME=node2 ./nodes_bin"
-echo ""
-echo "  Terminal 4 — Node 3 (Validator):"
-echo "    cd nodes && NODE_NAME=node3 ./nodes_bin"
-echo ""
-echo "  Terminal 5 — Django (also runs the SL/TP monitor):"
-echo "    cd backend && python3 manage.py runserver"
-echo ""
-echo "  Then open: http://127.0.0.1:8000"
+echo "Done. Start everything with:   ./run.sh start"
+echo "Then open http://127.0.0.1:8000 and create an account."
 echo ""

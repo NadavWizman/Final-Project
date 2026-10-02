@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # run.sh — start, stop and inspect every TradeDesk service with one command.
 #
-#   ./run.sh start     start the Oracle, Django, both Validators and the Leader, in order
+#   ./run.sh start     3 oracle signers, 4 validators, then the gateway
 #   ./run.sh stop      stop everything started by this script
 #   ./run.sh status    show which services are running
-#   ./run.sh logs [s]  follow the logs (s = oracle | node1 | node2 | node3 | django)
+#   ./run.sh logs [s]  follow logs (s = yahoo | nasdaq | cnbc | node0..node3 | gateway)
 #
 # Options (environment variables):
-#   DJANGO_PORT=8000          port for the web app / API
-#   ORACLE_MODE=live          live Yahoo Finance prices (default), or
-#   ORACLE_MODE=fixed         offline demo: every ticker is priced at FIXED_PRICE
-#   FIXED_PRICE=190.00        price used when ORACLE_MODE=fixed
+#   DJANGO_PORT=8000          port of the web app / gateway
+#   ORACLE_MODE=live          live prices from Yahoo, Nasdaq and CNBC (default), or
+#   ORACLE_MODE=fixed         offline demo: every source signs FIXED_PRICE
+#   FIXED_PRICE=190.00
 #
 # Run `bash setup.sh` once before the first start.
 set -euo pipefail
@@ -18,52 +18,33 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 RUN="$ROOT/.run"
 LOGS="$ROOT/logs"
+NET="$ROOT/testnet"
 DJANGO_PORT="${DJANGO_PORT:-8000}"
 ORACLE_MODE="${ORACLE_MODE:-live}"
 FIXED_PRICE="${FIXED_PRICE:-190.00}"
-SERVICES=(oracle node2 node3 node1 django)
+ORACLES=(yahoo nasdaq cnbc)
+SERVICES=(yahoo nasdaq cnbc node0 node1 node2 node3 gateway)
 
 port_of() {
     case "$1" in
-        oracle) echo 8001 ;;
-        node2)  echo 9002 ;;
-        node3)  echo 9003 ;;
-        django) echo "$DJANGO_PORT" ;;
-        *)      echo "" ;;       # the Leader does not listen on a port
+        yahoo)   echo 8001 ;;  nasdaq) echo 8002 ;;  cnbc) echo 8003 ;;
+        node0)   echo 26657 ;; node1)  echo 26667 ;; node2) echo 26677 ;; node3) echo 26687 ;;
+        gateway) echo "$DJANGO_PORT" ;;
     esac
 }
 
-pid_of() { [ -f "$RUN/$1.pid" ] && cat "$RUN/$1.pid" || true; }
-
-is_running() {
-    local pid; pid="$(pid_of "$1")"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
-}
-
-port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+pid_of()     { [ -f "$RUN/$1.pid" ] && cat "$RUN/$1.pid" || true; }
+is_running() { local p; p="$(pid_of "$1")"; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+port_busy()  { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+fail()       { echo "✗ $*" >&2; exit 1; }
 
 wait_for_port() {   # wait_for_port <service> <port>
-    for _ in $(seq 1 40); do
+    for _ in $(seq 1 60); do
         port_busy "$2" && return 0
         is_running "$1" || return 1
         sleep 0.5
     done
     return 1
-}
-
-fail() { echo "✗ $*" >&2; exit 1; }
-
-preflight() {
-    [ -f "$ROOT/backend/.env" ] || fail "backend/.env is missing — run: bash setup.sh"
-    [ -f "$ROOT/nodes/.env" ]   || fail "nodes/.env is missing — run: bash setup.sh"
-    [ -x "$ROOT/nodes/nodes_bin" ] || fail "nodes/nodes_bin is not built — run: bash setup.sh"
-    for s in "${SERVICES[@]}"; do
-        is_running "$s" && fail "$s is already running — use ./run.sh stop first"
-        local p; p="$(port_of "$s")"
-        if [ -n "$p" ] && port_busy "$p"; then
-            fail "port $p (needed by $s) is already in use by another program"
-        fi
-    done
 }
 
 launch() {   # launch <service> <dir> <command...>
@@ -74,50 +55,63 @@ launch() {   # launch <service> <dir> <command...>
     echo $! >"$RUN/$name.pid"
 }
 
+preflight() {
+    [ -f "$ROOT/backend/.env" ]          || fail "backend/.env is missing — run: bash setup.sh"
+    [ -x "$ROOT/nodes/tradedesk-node" ]  || fail "the node is not built — run: bash setup.sh"
+    [ -f "$NET/node0/config/genesis.json" ] || fail "no network in ./testnet — run: bash setup.sh"
+    for s in "${SERVICES[@]}"; do
+        is_running "$s" && fail "$s is already running — use ./run.sh stop first"
+        if port_busy "$(port_of "$s")"; then
+            fail "port $(port_of "$s") (needed by $s) is already in use by another program"
+        fi
+    done
+}
+
 start() {
     preflight
     mkdir -p "$RUN" "$LOGS"
-    export DJANGO_URL="http://127.0.0.1:$DJANGO_PORT/api"
-
     echo "Starting TradeDesk…"
-    if [ "$ORACLE_MODE" = "fixed" ]; then
-        launch oracle "$ROOT/oracle_service" env ROGUE_PORT=8001 ROGUE_PRICE="$FIXED_PRICE" python3 rogue_oracle.py
-        echo "  oracle   fixed price \$$FIXED_PRICE (offline demo mode)"
-    else
-        launch oracle "$ROOT/oracle_service" python3 oracle_server.py
-        echo "  oracle   live prices (Yahoo Finance)"
-    fi
-    wait_for_port oracle 8001 || fail "the Oracle did not start — see logs/oracle.log"
 
-    launch django "$ROOT/backend" python3 manage.py runserver "127.0.0.1:$DJANGO_PORT"
-    wait_for_port django "$DJANGO_PORT" || fail "Django did not start — see logs/django.log"
-    echo "  django   http://127.0.0.1:$DJANGO_PORT"
+    for i in 0 1 2; do
+        local o="${ORACLES[$i]}"
+        if [ "$ORACLE_MODE" = "fixed" ]; then
+            launch "$o" "$ROOT/oracle_service" python3 oracle_server.py --source fixed --price "$FIXED_PRICE" \
+                --name "$o" --key "$NET/oracles/$o.key" --port "$(port_of "$o")"
+        else
+            launch "$o" "$ROOT/oracle_service" python3 oracle_server.py --source "$o" \
+                --key "$NET/oracles/$o.key" --port "$(port_of "$o")"
+        fi
+    done
+    for o in "${ORACLES[@]}"; do
+        wait_for_port "$o" "$(port_of "$o")" || fail "oracle $o did not start — see logs/$o.log"
+    done
+    [ "$ORACLE_MODE" = "fixed" ] && echo "  oracles   yahoo, nasdaq, cnbc — fixed \$$FIXED_PRICE (offline demo)" \
+                                 || echo "  oracles   yahoo, nasdaq, cnbc — live prices, each signed"
 
-    launch node2 "$ROOT/nodes" env NODE_NAME=node2 ./nodes_bin
-    launch node3 "$ROOT/nodes" env NODE_NAME=node3 ./nodes_bin
-    wait_for_port node2 9002 || fail "node2 did not start — see logs/node2.log"
-    wait_for_port node3 9003 || fail "node3 did not start — see logs/node3.log"
-    echo "  node2    validator on :9002"
-    echo "  node3    validator on :9003"
+    for i in 0 1 2 3; do
+        launch "node$i" "$ROOT" "$ROOT/nodes/tradedesk-node" start -home "$NET/node$i"
+    done
+    for i in 0 1 2 3; do
+        wait_for_port "node$i" "$(port_of "node$i")" || fail "node$i did not start — see logs/node$i.log"
+    done
+    echo "  nodes     4 validators (RPC :26657 :26667 :26677 :26687)"
 
-    launch node1 "$ROOT/nodes" env NODE_NAME=node1 IS_LEADER=true ./nodes_bin
-    sleep 2
-    is_running node1 || fail "the Leader did not start — see logs/node1.log"
-    echo "  node1    leader"
+    launch gateway "$ROOT/backend" python3 manage.py runserver "127.0.0.1:$DJANGO_PORT"
+    wait_for_port gateway "$DJANGO_PORT" || fail "the gateway did not start — see logs/gateway.log"
+    echo "  gateway   http://127.0.0.1:$DJANGO_PORT"
 
     echo ""
     echo "✓ All services running. Open http://127.0.0.1:$DJANGO_PORT"
-    echo "  Logs: ./run.sh logs [oracle|node1|node2|node3|django]   Stop: ./run.sh stop"
+    echo "  Logs: ./run.sh logs [yahoo|nasdaq|cnbc|node0..node3|gateway]   Stop: ./run.sh stop"
 }
 
 stop() {
     local any=0
-    # stop in reverse start order: Django and the Leader first, the Oracle last
+    # reverse start order: the gateway first, the oracles last
     for (( i=${#SERVICES[@]}-1; i>=0; i-- )); do
         local s="${SERVICES[$i]}" pid; pid="$(pid_of "$s")"
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            # runserver spawns a child process; stop the whole group of children too
-            pkill -TERM -P "$pid" 2>/dev/null || true
+            pkill -TERM -P "$pid" 2>/dev/null || true   # runserver's child process
             kill "$pid" 2>/dev/null || true
             echo "  stopped $s"
             any=1
@@ -129,21 +123,14 @@ stop() {
 
 status() {
     for s in "${SERVICES[@]}"; do
-        if is_running "$s"; then
-            printf "  %-7s running (pid %s)\n" "$s" "$(pid_of "$s")"
-        else
-            printf "  %-7s stopped\n" "$s"
-        fi
+        if is_running "$s"; then printf "  %-8s running (pid %s)\n" "$s" "$(pid_of "$s")"
+        else printf "  %-8s stopped\n" "$s"; fi
     done
 }
 
 logs() {
     mkdir -p "$LOGS"
-    if [ $# -gt 0 ]; then
-        tail -n 50 -f "$LOGS/$1.log"
-    else
-        tail -n 20 -f "$LOGS"/*.log
-    fi
+    if [ $# -gt 0 ]; then tail -n 50 -f "$LOGS/$1.log"; else tail -n 20 -f "$LOGS"/*.log; fi
 }
 
 case "${1:-}" in

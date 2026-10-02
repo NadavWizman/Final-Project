@@ -34,3 +34,7 @@ nodes/nodes_bin
 # run.sh runtime files
 .run/
 logs/
+
+# local network and node binary (bash setup.sh)
+testnet/
+nodes/tradedesk-node
