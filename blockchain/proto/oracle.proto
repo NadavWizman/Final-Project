@@ -18,8 +18,22 @@ message PriceResponse {
   string market_time     = 4;  // time of the market data the price comes from
 }
 
-// OracleService is the gRPC interface exposed by the oracle microservice
+// SignedQuote is one price source's quote, signed with that source's Ed25519
+// key (registered in the genesis file). The signed bytes are
+//   "tradedesk-quote|<source>|<ticker>|<price_cents>|<timestamp>"
+message SignedQuote {
+  string source      = 1;
+  string ticker      = 2;
+  int64  price_cents = 3;
+  int64  timestamp   = 4;  // unix seconds
+  bytes  signature   = 5;
+}
+
+// OracleService is the gRPC interface exposed by each oracle signer
 service OracleService {
-  // GetPrice fetches the current market price for a given ticker
+  // GetPrice returns the current price (display only, unsigned)
   rpc GetPrice (PriceRequest) returns (PriceResponse);
+
+  // SignQuote returns a signed quote that consensus can verify
+  rpc SignQuote (PriceRequest) returns (SignedQuote);
 }

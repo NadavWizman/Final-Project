@@ -26,7 +26,7 @@ if _version_not_supported:
 
 
 class OracleServiceStub:
-    """OracleService is the gRPC interface exposed by the oracle microservice
+    """OracleService is the gRPC interface exposed by each oracle signer
     """
 
     def __init__(self, channel):
@@ -40,14 +40,26 @@ class OracleServiceStub:
                 request_serializer=oracle__pb2.PriceRequest.SerializeToString,
                 response_deserializer=oracle__pb2.PriceResponse.FromString,
                 _registered_method=True)
+        self.SignQuote = channel.unary_unary(
+                '/oracle.OracleService/SignQuote',
+                request_serializer=oracle__pb2.PriceRequest.SerializeToString,
+                response_deserializer=oracle__pb2.SignedQuote.FromString,
+                _registered_method=True)
 
 
 class OracleServiceServicer:
-    """OracleService is the gRPC interface exposed by the oracle microservice
+    """OracleService is the gRPC interface exposed by each oracle signer
     """
 
     def GetPrice(self, request, context):
-        """GetPrice fetches the current market price for a given ticker
+        """GetPrice returns the current price (display only, unsigned)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SignQuote(self, request, context):
+        """SignQuote returns a signed quote that consensus can verify
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -61,6 +73,11 @@ def add_OracleServiceServicer_to_server(servicer, server):
                     request_deserializer=oracle__pb2.PriceRequest.FromString,
                     response_serializer=oracle__pb2.PriceResponse.SerializeToString,
             ),
+            'SignQuote': grpc.unary_unary_rpc_method_handler(
+                    servicer.SignQuote,
+                    request_deserializer=oracle__pb2.PriceRequest.FromString,
+                    response_serializer=oracle__pb2.SignedQuote.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'oracle.OracleService', rpc_method_handlers)
@@ -70,7 +87,7 @@ def add_OracleServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class OracleService:
-    """OracleService is the gRPC interface exposed by the oracle microservice
+    """OracleService is the gRPC interface exposed by each oracle signer
     """
 
     @staticmethod
@@ -90,6 +107,33 @@ class OracleService:
             '/oracle.OracleService/GetPrice',
             oracle__pb2.PriceRequest.SerializeToString,
             oracle__pb2.PriceResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SignQuote(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/oracle.OracleService/SignQuote',
+            oracle__pb2.PriceRequest.SerializeToString,
+            oracle__pb2.SignedQuote.FromString,
             options,
             channel_credentials,
             insecure,

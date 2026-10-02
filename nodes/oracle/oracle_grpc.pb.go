@@ -19,17 +19,20 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	OracleService_GetPrice_FullMethodName = "/oracle.OracleService/GetPrice"
+	OracleService_GetPrice_FullMethodName  = "/oracle.OracleService/GetPrice"
+	OracleService_SignQuote_FullMethodName = "/oracle.OracleService/SignQuote"
 )
 
 // OracleServiceClient is the client API for OracleService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// OracleService is the gRPC interface exposed by the oracle microservice
+// OracleService is the gRPC interface exposed by each oracle signer
 type OracleServiceClient interface {
-	// GetPrice fetches the current market price for a given ticker
+	// GetPrice returns the current price (display only, unsigned)
 	GetPrice(ctx context.Context, in *PriceRequest, opts ...grpc.CallOption) (*PriceResponse, error)
+	// SignQuote returns a signed quote that consensus can verify
+	SignQuote(ctx context.Context, in *PriceRequest, opts ...grpc.CallOption) (*SignedQuote, error)
 }
 
 type oracleServiceClient struct {
@@ -50,14 +53,26 @@ func (c *oracleServiceClient) GetPrice(ctx context.Context, in *PriceRequest, op
 	return out, nil
 }
 
+func (c *oracleServiceClient) SignQuote(ctx context.Context, in *PriceRequest, opts ...grpc.CallOption) (*SignedQuote, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignedQuote)
+	err := c.cc.Invoke(ctx, OracleService_SignQuote_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OracleServiceServer is the server API for OracleService service.
 // All implementations must embed UnimplementedOracleServiceServer
 // for forward compatibility.
 //
-// OracleService is the gRPC interface exposed by the oracle microservice
+// OracleService is the gRPC interface exposed by each oracle signer
 type OracleServiceServer interface {
-	// GetPrice fetches the current market price for a given ticker
+	// GetPrice returns the current price (display only, unsigned)
 	GetPrice(context.Context, *PriceRequest) (*PriceResponse, error)
+	// SignQuote returns a signed quote that consensus can verify
+	SignQuote(context.Context, *PriceRequest) (*SignedQuote, error)
 	mustEmbedUnimplementedOracleServiceServer()
 }
 
@@ -70,6 +85,9 @@ type UnimplementedOracleServiceServer struct{}
 
 func (UnimplementedOracleServiceServer) GetPrice(context.Context, *PriceRequest) (*PriceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPrice not implemented")
+}
+func (UnimplementedOracleServiceServer) SignQuote(context.Context, *PriceRequest) (*SignedQuote, error) {
+	return nil, status.Error(codes.Unimplemented, "method SignQuote not implemented")
 }
 func (UnimplementedOracleServiceServer) mustEmbedUnimplementedOracleServiceServer() {}
 func (UnimplementedOracleServiceServer) testEmbeddedByValue()                       {}
@@ -110,6 +128,24 @@ func _OracleService_GetPrice_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _OracleService_SignQuote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PriceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(OracleServiceServer).SignQuote(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: OracleService_SignQuote_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(OracleServiceServer).SignQuote(ctx, req.(*PriceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // OracleService_ServiceDesc is the grpc.ServiceDesc for OracleService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -120,6 +156,10 @@ var OracleService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetPrice",
 			Handler:    _OracleService_GetPrice_Handler,
+		},
+		{
+			MethodName: "SignQuote",
+			Handler:    _OracleService_SignQuote_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

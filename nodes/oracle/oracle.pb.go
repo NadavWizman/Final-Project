@@ -135,6 +135,86 @@ func (x *PriceResponse) GetMarketTime() string {
 	return ""
 }
 
+// SignedQuote is one price source's quote, signed with that source's Ed25519
+// key (registered in the genesis file). The signed bytes are
+//
+//	"tradedesk-quote|<source>|<ticker>|<price_cents>|<timestamp>"
+type SignedQuote struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Source        string                 `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	Ticker        string                 `protobuf:"bytes,2,opt,name=ticker,proto3" json:"ticker,omitempty"`
+	PriceCents    int64                  `protobuf:"varint,3,opt,name=price_cents,json=priceCents,proto3" json:"price_cents,omitempty"`
+	Timestamp     int64                  `protobuf:"varint,4,opt,name=timestamp,proto3" json:"timestamp,omitempty"` // unix seconds
+	Signature     []byte                 `protobuf:"bytes,5,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignedQuote) Reset() {
+	*x = SignedQuote{}
+	mi := &file_oracle_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignedQuote) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignedQuote) ProtoMessage() {}
+
+func (x *SignedQuote) ProtoReflect() protoreflect.Message {
+	mi := &file_oracle_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignedQuote.ProtoReflect.Descriptor instead.
+func (*SignedQuote) Descriptor() ([]byte, []int) {
+	return file_oracle_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *SignedQuote) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *SignedQuote) GetTicker() string {
+	if x != nil {
+		return x.Ticker
+	}
+	return ""
+}
+
+func (x *SignedQuote) GetPriceCents() int64 {
+	if x != nil {
+		return x.PriceCents
+	}
+	return 0
+}
+
+func (x *SignedQuote) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+func (x *SignedQuote) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
 var File_oracle_proto protoreflect.FileDescriptor
 
 const file_oracle_proto_rawDesc = "" +
@@ -147,9 +227,17 @@ const file_oracle_proto_rawDesc = "" +
 	"\x0fexecution_price\x18\x02 \x01(\tR\x0eexecutionPrice\x12\x1c\n" +
 	"\ttimestamp\x18\x03 \x01(\tR\ttimestamp\x12\x1f\n" +
 	"\vmarket_time\x18\x04 \x01(\tR\n" +
-	"marketTime2H\n" +
+	"marketTime\"\x9a\x01\n" +
+	"\vSignedQuote\x12\x16\n" +
+	"\x06source\x18\x01 \x01(\tR\x06source\x12\x16\n" +
+	"\x06ticker\x18\x02 \x01(\tR\x06ticker\x12\x1f\n" +
+	"\vprice_cents\x18\x03 \x01(\x03R\n" +
+	"priceCents\x12\x1c\n" +
+	"\ttimestamp\x18\x04 \x01(\x03R\ttimestamp\x12\x1c\n" +
+	"\tsignature\x18\x05 \x01(\fR\tsignature2\x80\x01\n" +
 	"\rOracleService\x127\n" +
-	"\bGetPrice\x12\x14.oracle.PriceRequest\x1a\x15.oracle.PriceResponseB$Z\x1fgithub.com/trading/nodes/oracle\x90\x01\x01b\x06proto3"
+	"\bGetPrice\x12\x14.oracle.PriceRequest\x1a\x15.oracle.PriceResponse\x126\n" +
+	"\tSignQuote\x12\x14.oracle.PriceRequest\x1a\x13.oracle.SignedQuoteB$Z\x1fgithub.com/trading/nodes/oracle\x90\x01\x01b\x06proto3"
 
 var (
 	file_oracle_proto_rawDescOnce sync.Once
@@ -163,16 +251,19 @@ func file_oracle_proto_rawDescGZIP() []byte {
 	return file_oracle_proto_rawDescData
 }
 
-var file_oracle_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_oracle_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_oracle_proto_goTypes = []any{
 	(*PriceRequest)(nil),  // 0: oracle.PriceRequest
 	(*PriceResponse)(nil), // 1: oracle.PriceResponse
+	(*SignedQuote)(nil),   // 2: oracle.SignedQuote
 }
 var file_oracle_proto_depIdxs = []int32{
 	0, // 0: oracle.OracleService.GetPrice:input_type -> oracle.PriceRequest
-	1, // 1: oracle.OracleService.GetPrice:output_type -> oracle.PriceResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
+	0, // 1: oracle.OracleService.SignQuote:input_type -> oracle.PriceRequest
+	1, // 2: oracle.OracleService.GetPrice:output_type -> oracle.PriceResponse
+	2, // 3: oracle.OracleService.SignQuote:output_type -> oracle.SignedQuote
+	2, // [2:4] is the sub-list for method output_type
+	0, // [0:2] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -189,7 +280,7 @@ func file_oracle_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_oracle_proto_rawDesc), len(file_oracle_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
