@@ -30,7 +30,7 @@ type ValsetChange struct {
 
 // ValsetTx is a change plus the approving validators' signatures.
 type ValsetTx struct {
-	Valset ValsetChange    `json:"valset"`
+	Valset ValsetChange     `json:"valset"`
 	Sigs   []ValsetApproval `json:"sigs"`
 }
 
