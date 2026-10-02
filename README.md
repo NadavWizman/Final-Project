@@ -138,10 +138,10 @@ A transaction is final in about 2 seconds, when its block is committed.
 | Who | Can | Cannot |
 |-----|-----|--------|
 | User | Act on their own account | Act on another account or replay a tx (strict per-account nonce) |
-| Gateway | Refuse to forward (censor); a user then uses another node | Forge, alter or invent anything; it holds no keys and no state |
+| Gateway | Refuse to forward (censor); a user then uses another node. It also serves the page that holds the keys: a compromised gateway serving malicious JavaScript could steal them (mitigated by a strict CSP; see the trust model) | Forge, alter or invent a transaction that passes through it; it holds no keys and no state |
 | One validator | Go offline, propose badly | Insert unsigned txs, shift a price, add validators; honest validators reject its block |
 | One price source | Lie or go offline | Move the median; while it is offline, price-dependent txs wait |
-| Genesis (money bridge) | Sets the signup grant and deposit cap | — this is the one trusted point, stated explicitly |
+| Money bridge | In the demo: a $10,000 signup grant and a self-service `deposit` faucet (up to $1M per tx) | — the one trusted point, stated explicitly; a real bridge would require a custodian's signature |
 
 **Assumptions:** at most 1 of 4 validators and at most 1 of 3 price sources is dishonest.
 The validator set is fixed in genesis; changing it needs Ed25519 approvals from more than
