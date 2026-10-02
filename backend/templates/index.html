@@ -1080,6 +1080,10 @@ function logout() {
 function enterApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app-screen').classList.add('visible');
+  // every sign-in starts on the portfolio (not the tab the last session left
+  // open), so the first screen is always drawn from this account's data
+  const portfolioBtn = document.querySelector(".tab-btn[onclick*=\"'portfolio'\"]");
+  if (portfolioBtn) switchTab('portfolio', portfolioBtn);
   updateHeader();
   loadData();
   S.refreshTimer = setInterval(loadData, 8000);
