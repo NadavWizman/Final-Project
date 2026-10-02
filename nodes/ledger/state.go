@@ -159,6 +159,9 @@ func (s *State) nextID() uint64 {
 	return id
 }
 
+// Listed reports whether a ticker can be traded.
+func (s *State) Listed(ticker string) bool { return s.listed(ticker) }
+
 func (s *State) listed(ticker string) bool {
 	i := sort.SearchStrings(s.Params.Tickers, ticker)
 	return i < len(s.Params.Tickers) && s.Params.Tickers[i] == ticker

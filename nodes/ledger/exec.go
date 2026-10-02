@@ -36,6 +36,14 @@ func (s *State) ApplyBlock(height, blockTime int64, prices map[string]Cents, txs
 	return results
 }
 
+// Simulate applies one transaction to this state (meant for a scratch copy)
+// at the given block height, time and prices, without running the automatic
+// rules. Used by the proposer to leave out transactions that would be invalid.
+func (s *State) Simulate(height, blockTime int64, prices map[string]Cents, tx []byte) TxResult {
+	s.Height, s.Time = height, blockTime
+	return s.applyTx(tx, prices)
+}
+
 // CheckTx validates a transaction for the mempool against this state, without
 // changing it. pendingNonce is the next nonce the mempool expects from the
 // sender (it may be ahead of the committed one while earlier transactions of
@@ -539,7 +547,9 @@ func (s *State) cancelLevel(acc *Account, id string) TxResult {
 	return s.reject(acc, &Record{Kind: "LEVEL"}, "no such level")
 }
 
-// expiryCutoff is the unix time at which an option dated YYYY-MM-DD expires.
+// ExpiryCutoff is the unix time at which an option dated YYYY-MM-DD expires.
+func (s *State) ExpiryCutoff(date string) (int64, error) { return s.expiryCutoff(date) }
+
 func (s *State) expiryCutoff(date string) (int64, error) {
 	t, err := time.Parse("2006-01-02", date)
 	if err != nil {
