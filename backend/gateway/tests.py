@@ -148,3 +148,14 @@ class SecurityTests(SimpleTestCase):
         for directive in ("connect-src 'self'", "img-src 'self' data:", "frame-ancestors 'none'",
                           "object-src 'none'"):
             self.assertIn(directive, csp)
+
+    def test_ai_news_output_is_reduced_to_the_expected_shape(self):
+        from .market import _clean_news
+        out = _clean_news({'points': [
+            {'text': 'ok', 'url': 'https://example.com/a', 'indirect': False},
+            {'text': 'x' * 1000, 'url': 'javascript:alert(1)', 'indirect': True, 'reason': 'r'},
+            {'text': 5}, 'junk'] + [{'text': 't', 'url': 'http://e.com'}] * 20, 'extra': '<script>'})
+        self.assertEqual(set(out), {'points', 'disclaimer'})
+        self.assertEqual(len(out['points']), 8)
+        self.assertEqual(out['points'][0]['url'], 'https://example.com/a')
+        self.assertEqual((out['points'][1]['url'], len(out['points'][1]['text'])), ('', 400))
