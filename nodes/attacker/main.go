@@ -1,238 +1,157 @@
-// malicious_proposer — a stand-in for a compromised leader, used as a security
-// regression test for the consensus layer.
+// attacker plays a compromised gateway (or any outsider who can reach a
+// node's RPC) against a running TradeDesk network, and reports what the
+// network did with each attempt. Every attempt must be refused; the tool
+// exits non-zero if one is accepted.
 //
-// It is NOT part of the running system. Like oracle_service/rogue_oracle.py it
-// only does something when a human launches it. It talks gRPC directly to the
-// running validators and tries two attacks with a forged block — 1000 shares
-// at $1.00 — backed by a validly signed order it made up itself:
+//	cd nodes && go run ./attacker                 # node RPC on :26657
+//	go run ./attacker -rpc http://127.0.0.1:26667
 //
-//  1. Propose: ask the validators to vote for the forged block.
-//  2. Commit:  skip voting and ask them to append the forged block directly.
-//
-// Both must be refused: without CLUSTER_SECRET the calls are Unauthenticated;
-// with it, Propose fails because the order does not exist in Django (and the
-// key is not the user's), and Commit fails because Django never certified the
-// block. If either is ever accepted, a defence has regressed.
-//
-//	Run from the nodes/ directory, with the Oracle and validators up:
-//	  go run ./attacker                                        # outsider
-//	  CLUSTER_SECRET=<value from nodes/.env> go run ./attacker # compromised insider
+// The deeper attacks a dishonest *validator* could try (shifting a price,
+// altering a quote, censoring, equivocating, replaying inside a block) are
+// played automatically by the acceptance tests in nodes/e2e.
 package main
 
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 
-	"nodes/clusterauth"
-	pbc "nodes/consensus"
-	pbo "nodes/oracle"
+	"nodes/app"
+	"nodes/ledger"
+	"nodes/quotes"
 )
 
-const (
-	oracleAddr = "127.0.0.1:8001"
-	ticker     = "AAPL"
-)
-
-var validators = []string{"localhost:9002", "localhost:9003"}
-
-// block mirrors nodes/blockchain.go's Block (same fields, order and JSON tags)
-// so computeHash below produces exactly the hash a validator expects.
-type block struct {
-	Index     int    `json:"index"`
-	PrevHash  string `json:"prev_hash"`
-	Timestamp int64  `json:"timestamp"`
-	OrderID   int    `json:"order_id"`
-	Stock     string `json:"stock"`
-	OrderType string `json:"order_type"`
-	Quantity  string `json:"quantity"`
-	Price     string `json:"price"`
-	NodeName  string `json:"node_name"`
-	Signature string `json:"signature"`
-	PublicKey string `json:"public_key"`
-	Hash      string `json:"hash"`
+type wallet struct {
+	key   *ecdsa.PrivateKey
+	pub   []byte
+	addr  string
+	nonce uint64
+	chain string
 }
 
-// computeHash reproduces nodes/blockchain.go exactly. The forged block must hash
-// correctly or the validator's chain-continuity check (check 1) would reject it —
-// and we want every real check to pass, so only the missing check is exposed.
-func computeHash(b block) string {
-	b.Hash = ""
-	raw, _ := json.Marshal(b)
-	h := sha256.Sum256(raw)
-	return hex.EncodeToString(h[:])
+func newWallet(chain string) *wallet {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pub, _ := k.PublicKey.Bytes()
+	return &wallet{key: k, pub: pub, addr: ledger.Address(pub), chain: chain}
 }
 
-// readValidatorHead reads a validator's on-disk chain so the forged block can be
-// chained onto its current head. A real attacker would learn this just as easily.
-func readValidatorHead(path string) (int, string) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		fmt.Printf("  cannot read %s: %v\n", path, err)
-		os.Exit(1)
+func (w *wallet) tx(m ledger.Msg) []byte {
+	m.Chain, m.From, m.Nonce = w.chain, w.addr, fmt.Sprint(w.nonce)
+	w.nonce++
+	msg, _ := json.Marshal(m)
+	d := sha256.Sum256(msg)
+	r, s, _ := ecdsa.Sign(rand.Reader, w.key, d[:])
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	env := ledger.Envelope{Msg: string(msg), Sig: base64.StdEncoding.EncodeToString(sig)}
+	if m.Type == "register" {
+		env.PubKey = base64.StdEncoding.EncodeToString(w.pub)
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	var head struct {
-		Index int    `json:"index"`
-		Hash  string `json:"hash"`
-	}
-	json.Unmarshal([]byte(lines[len(lines)-1]), &head)
-	return head.Index, head.Hash
+	raw, _ := json.Marshal(env)
+	return raw
 }
 
-func fetchHonestPrice() string {
-	conn, err := grpc.NewClient(oracleAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		fmt.Printf("  oracle dial failed: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	resp, err := pbo.NewOracleServiceClient(conn).GetPrice(ctx, &pbo.PriceRequest{Ticker: ticker})
-	if err != nil {
-		fmt.Printf("  oracle rpc failed: %v\n", err)
-		os.Exit(1)
-	}
-	return resp.ExecutionPrice
+func buy(qty string) ledger.Msg {
+	return ledger.Msg{Type: "order", Order: &ledger.OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: qty}}
 }
 
 func main() {
-	line := strings.Repeat("─", 64)
-	cred := "NONE (outsider with no cluster credential)"
-	if os.Getenv("CLUSTER_SECRET") != "" {
-		cred = "PRESENTED (simulating a compromised node that holds the secret)"
+	rpc := flag.String("rpc", "http://127.0.0.1:26657", "a node's RPC address")
+	flag.Parse()
+	client, err := rpchttp.New(*rpc, "/websocket")
+	if err != nil {
+		fail(err)
 	}
-	fmt.Printf("\n%s\n  MALICIOUS PROPOSER — impersonating the leader on the network\n%s\n", line, line)
-	fmt.Printf("  Cluster credential: %s\n\n", cred)
-
-	// 1. A genuinely valid signature over an HONEST order: BUY 1 AAPL.
-	//    This is what the user actually authorised and signed.
-	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	pubDER, _ := x509.MarshalPKIXPublicKey(&priv.PublicKey)
-	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER}))
-
-	nonce := fmt.Sprintf("attack-%d", time.Now().UnixNano())
-	honestMsg := fmt.Sprintf(`{"nonce":"%s","order_type":"BUY","quantity":"1","stock":"AAPL"}`, nonce)
-	digest := sha256.Sum256([]byte(honestMsg))
-	sigDER, _ := ecdsa.SignASN1(rand.Reader, priv, digest[:])
-	sig := base64.StdEncoding.EncodeToString(sigDER)
-
-	fmt.Printf("  Signed order (what the user authorised):\n    %s\n", honestMsg)
-
-	// 2. The honest, current price — so the divergence check (check 4) passes.
-	honestPrice := fetchHonestPrice()
-	fmt.Printf("  Honest oracle price presented in the envelope: $%s\n\n", honestPrice)
-
-	// 3. The FORGED block — 1000 shares at $1.00 — chained onto the validator's
-	//    head and re-hashed so chain validation still succeeds.
-	headIdx, headHash := readValidatorHead("chain_node2.jsonl")
-	ts := time.Now().Unix()
-	fIndex := headIdx + 1
-	fQty, fPrice := "1000", "1.00"
-	if os.Getenv("HONEST_PRICE") == "1" {
-		fPrice = honestPrice // forge only the quantity; price matches the oracle
+	ctx := context.Background()
+	st, err := client.Status(ctx)
+	if err != nil {
+		fail(fmt.Errorf("cannot reach %s: %v", *rpc, err))
 	}
-	fHash := computeHash(block{
-		Index: fIndex, PrevHash: headHash, Timestamp: ts, OrderID: 9999,
-		Stock: ticker, OrderType: "BUY", Quantity: fQty, Price: fPrice,
-		NodeName: "node1", Signature: sig, PublicKey: pubPEM,
-	})
+	chain := st.NodeInfo.Network
+	line := strings.Repeat("─", 66)
+	fmt.Printf("\n%s\n  ATTACKER — a compromised gateway against chain %q\n%s\n", line, chain, line)
 
-	fmt.Printf("  Forged block (what would actually be committed):\n")
-	fmt.Printf("    block #%d | BUY %s %s @ $%s\n\n", fIndex, fQty, ticker, fPrice)
-	fmt.Printf("  Mismatch the validators are supposed to catch:\n")
-	fmt.Printf("    signed for   1  share  @ market ($%s)\n", honestPrice)
-	fmt.Printf("    committing  %s shares @ $%s\n\n%s\n\n", fQty, fPrice, line)
-
-	forged := &pbc.Block{
-		Index: int32(fIndex), PrevHash: headHash, Timestamp: ts,
-		OrderId: 9999, Stock: ticker, OrderType: "BUY",
-		Quantity: fQty, Price: fPrice, NodeName: "node1",
-		Signature: sig, PublicKey: pubPEM, Hash: fHash,
+	// a victim with a genuine account
+	victim := newWallet(chain)
+	if res, err := client.BroadcastTxCommit(ctx, victim.tx(ledger.Msg{Type: "register",
+		Username: fmt.Sprintf("victim_%d", time.Now().Unix()%100000)})); err != nil || res.TxResult.Code != 0 {
+		fail(fmt.Errorf("could not register the victim: %v", err))
 	}
+	fmt.Printf("  victim registered: %s\n\n", victim.addr)
 
-	approvals := 0
-	for _, addr := range validators {
-		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			fmt.Printf("  %s — dial failed: %v\n", addr, err)
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if secret := os.Getenv("CLUSTER_SECRET"); secret != "" {
-			ctx = metadata.AppendToOutgoingContext(ctx, clusterauth.MetadataKey,
-				clusterauth.Token(secret, pbc.ConsensusService_Propose_FullMethodName, time.Now()))
-		}
-		resp, err := pbc.NewConsensusServiceClient(conn).Propose(ctx, &pbc.ProposeRequest{
-			Block:           forged,
-			OraclePrice:     honestPrice,
-			OracleTimestamp: time.Now().UTC().Format(time.RFC3339Nano),
-			Signature:       sig,
-			PublicKey:       pubPEM,
-			SignedMessage:   honestMsg,
-		})
-		cancel()
-		conn.Close()
-		if err != nil {
-			fmt.Printf("  %s — rpc error: %v\n", addr, err)
-			continue
-		}
-		if resp.Approve {
-			approvals++
-			fmt.Printf("  %s  ▶  APPROVE   (forged block accepted!)\n", resp.NodeId)
-		} else {
-			fmt.Printf("  %s  ▶  REJECT    %s\n", resp.NodeId, resp.Reason)
-		}
-	}
-
-	// Attack 2: skip consensus and ask the validators to append the block.
-	commits := 0
-	for _, addr := range validators {
-		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if secret := os.Getenv("CLUSTER_SECRET"); secret != "" {
-			ctx = metadata.AppendToOutgoingContext(ctx, clusterauth.MetadataKey,
-				clusterauth.Token(secret, pbc.ConsensusService_Commit_FullMethodName, time.Now()))
-		}
-		resp, err := pbc.NewConsensusServiceClient(conn).Commit(ctx, &pbc.CommitRequest{Block: forged})
-		cancel()
-		conn.Close()
+	accepted := 0
+	try := func(name string, tx []byte) {
+		res, err := client.BroadcastTxSync(ctx, tx)
 		switch {
 		case err != nil:
-			fmt.Printf("  %s  ▶  COMMIT REFUSED   rpc error: %v\n", addr, err)
-		case resp.Status == "committed":
-			commits++
-			fmt.Printf("  %s  ▶  COMMIT ACCEPTED  (forged block appended!)\n", addr)
+			fmt.Printf("  %-46s REFUSED  %s\n", name, short(err.Error()))
+		case res.Code != 0:
+			fmt.Printf("  %-46s REFUSED  %s\n", name, short(res.Log))
 		default:
-			fmt.Printf("  %s  ▶  COMMIT REFUSED   %s\n", addr, resp.Status)
+			accepted++
+			fmt.Printf("  %-46s ACCEPTED — a defence has regressed!\n", name)
 		}
 	}
 
+	// 1. sign an order in the victim's name with the gateway's own key
+	forger := newWallet(chain)
+	forger.addr, forger.nonce = victim.addr, victim.nonce
+	try("order signed with a key that is not the victim's", forger.tx(buy("50")))
+
+	// 2. change a genuinely signed order in transit
+	var env ledger.Envelope
+	genuine := victim.tx(buy("1"))
+	_ = json.Unmarshal(genuine, &env)
+	env.Msg = strings.Replace(env.Msg, `"qty":"1"`, `"qty":"50"`, 1)
+	altered, _ := json.Marshal(env)
+	try("victim's order with the quantity changed", altered)
+
+	// 3. replay a used transaction (the registration)
+	victim.nonce = 0
+	try("replay of an already-executed transaction", victim.tx(ledger.Msg{Type: "register", Username: "again"}))
+
+	// 4. inject prices: a quote bundle signed with an unregistered key
+	_, fake, _ := ed25519.GenerateKey(nil)
+	q := quotes.Quote{Source: "yahoo", Ticker: "AAPL", Price: 100, Time: time.Now().Unix()}
+	q.Sig = ed25519.Sign(fake, q.Message())
+	try("forged price quotes sent to the mempool", quotes.Encode(quotes.Bundle{Quotes: []quotes.Quote{q},
+		Prices: map[string]int64{"AAPL": 100}}))
+
+	// 5. take over the network: add a validator with a single signature
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	ch := app.ValsetChange{Chain: chain, Seq: 0, PubKey: pub, Power: 1000}
+	vtx, _ := json.Marshal(app.ValsetTx{Valset: ch, Sigs: []app.ValsetApproval{app.SignValset(priv, ch)}})
+	try("add a validator without 3 of 4 approvals", vtx)
+
 	fmt.Printf("\n%s\n", line)
-	if approvals > 0 || commits > 0 {
-		fmt.Printf("  RESULT: forged block approved by %d and appended by %d validator(s).\n", approvals, commits)
-		fmt.Printf("  VULNERABILITY — a defence has regressed.\n")
-	} else {
-		fmt.Printf("  RESULT: every attempt was refused. DEFENCE HOLDS.\n")
+	if accepted > 0 {
+		fmt.Printf("  RESULT: %d attack(s) accepted — VULNERABILITY\n%s\n\n", accepted, line)
+		os.Exit(1)
 	}
-	fmt.Printf("%s\n\n", line)
+	fmt.Printf("  RESULT: every attempt was refused. DEFENCE HOLDS.\n%s\n\n", line)
+}
+
+func short(s string) string {
+	if len(s) > 60 {
+		return s[:60] + "…"
+	}
+	return s
+}
+
+func fail(err error) {
+	fmt.Fprintln(os.Stderr, "error:", err)
+	os.Exit(2)
 }

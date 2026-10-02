@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	abci "github.com/cometbft/cometbft/abci/types"
@@ -94,7 +95,12 @@ type App struct {
 	// Byzantine hooks, used only by the acceptance tests to play a dishonest
 	// proposer. Nil in a real node.
 	ByzantinePrepare func(txs [][]byte) [][]byte
+
+	rejected atomic.Int64 // proposals this node voted against
 }
+
+// RejectedProposals is how many proposals this node has refused.
+func (a *App) RejectedProposals() int64 { return a.rejected.Load() }
 
 type evaluate struct {
 	chain   *Chain
@@ -229,6 +235,7 @@ func (a *App) ProcessProposal(_ context.Context, req *abci.RequestProcessProposa
 	a.mu.Unlock()
 	ev := base.run(req.Height, req.Time.Unix(), req.Txs, false)
 	if ev.err != nil {
+		a.rejected.Add(1)
 		a.logger.Info("rejecting proposal", "height", req.Height, "reason", ev.err)
 		return &abci.ResponseProcessProposal{Status: abci.ResponseProcessProposal_REJECT}, nil
 	}

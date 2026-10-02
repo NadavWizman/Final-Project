@@ -79,18 +79,36 @@ func (c *cluster) start(i int) {
 	c.nodes[i] = n
 }
 
-func (c *cluster) stop(i int) {
-	if n := c.nodes[i]; n != nil && n.IsRunning() {
-		_ = n.Stop()
-		n.Wait()
+// stop shuts nodes down safely. CometBFT v0.38's consensus reactor has a
+// goroutine per peer that sleeps 2 s between queries and may then read the
+// block store; stopping the node outright can close the store under it.
+// Disconnecting first and waiting out that sleep lets those goroutines exit.
+func (c *cluster) stop(idx ...int) {
+	var live []int
+	for _, i := range idx {
+		if n := c.nodes[i]; n != nil && n.IsRunning() {
+			_ = n.Switch().Stop()
+			live = append(live, i)
+		}
 	}
-	c.nodes[i] = nil
+	if len(live) > 0 {
+		time.Sleep(2500 * time.Millisecond)
+	}
+	for _, i := range live {
+		_ = c.nodes[i].Stop()
+		c.nodes[i].Wait()
+	}
+	for _, i := range idx {
+		c.nodes[i] = nil
+	}
 }
 
 func (c *cluster) stopAll() {
+	var all []int
 	for i := range c.nodes {
-		c.stop(i)
+		all = append(all, i)
 	}
+	c.stop(all...)
 }
 
 // setPrice sets what each source reports for a ticker.
