@@ -358,3 +358,20 @@ func TestLevelLimits(t *testing.T) {
 		t.Fatal("level not cancelled")
 	}
 }
+
+// The time value must keep growing with time to expiry over long horizons;
+// T × 10^12 overflowed int64 after ~107 days and priced options at 1 cent.
+func TestOptionPremiumLongExpiry(t *testing.T) {
+	const day = 24 * 3600
+	prev := Cents(0)
+	for d := int64(1); d <= 3*365; d++ {
+		p := OptionPremium(true, 20000, 20000, d*day, 3000)
+		if p < prev {
+			t.Fatalf("premium fell from %d to %d at %d days", prev, p, d)
+		}
+		prev = p
+	}
+	if p := OptionPremium(true, 20000, 20000, 150*day, 3000); p < 1500 {
+		t.Fatalf("150-day ATM call on $200 priced at %d cents", p)
+	}
+}

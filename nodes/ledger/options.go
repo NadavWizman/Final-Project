@@ -19,8 +19,14 @@ func OptionPremium(call bool, s, k Cents, secondsLeft, volBps int64) Cents {
 	if secondsLeft <= 0 {
 		return iv
 	}
-	// √(T in years) × 10^6, from integer square root
-	sqrtT := isqrt(secondsLeft * 1_000_000_000_000 / secondsPerYear)
+	// √(T in years) × 10^6, from integer square root. T × 10^12 is computed
+	// with a 128-bit intermediate: secondsLeft × 10^12 overflows int64 after
+	// about 107 days.
+	tYears, err := mulDiv(secondsLeft, 1_000_000_000_000, secondsPerYear)
+	if err != nil {
+		return max(iv, 1)
+	}
+	sqrtT := isqrt(tYears)
 	// one standard deviation of the price move, in cents: S × σ × √T
 	band, err := mulDiv(int64(s), volBps*sqrtT, 10_000*1_000_000)
 	if err != nil || band <= 0 {
