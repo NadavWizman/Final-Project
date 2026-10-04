@@ -22,7 +22,7 @@ import (
 )
 
 // cluster is a 4-validator TradeDesk network running in this process, with
-// three in-process oracle signers.
+// five in-process oracle signers (a price needs three of them).
 type cluster struct {
 	t       *testing.T
 	net     chainnode.Testnet
@@ -30,15 +30,16 @@ type cluster struct {
 	sources []quotes.LocalSource
 	mu      sync.Mutex
 	prices  map[string]map[string]int64 // source → ticker → cents
+	down    map[string]bool             // sources that answer nothing
 }
 
 func newCluster(t *testing.T, validators int) *cluster {
 	t.Helper()
 	base := 30000 + mrand.Intn(20000)
-	c := &cluster{t: t, prices: map[string]map[string]int64{}}
+	c := &cluster{t: t, prices: map[string]map[string]int64{}, down: map[string]bool{}}
 	c.net = chainnode.Testnet{
 		Dir: t.TempDir(), Validators: validators, ChainID: "tradedesk-e2e",
-		Oracles: []string{"yahoo", "nasdaq", "cnbc"}, BasePort: base, OracleBase: base + 900,
+		Oracles: []string{"yahoo", "nasdaq", "cnbc", "tradingview", "google"}, BasePort: base, OracleBase: base + 900,
 		BlockTime: 200 * time.Millisecond, EmptyEvery: time.Second, TimeoutPropose: time.Second,
 	}
 	if _, err := chainnode.Init(c.net); err != nil {
@@ -54,6 +55,9 @@ func newCluster(t *testing.T, validators int) *cluster {
 		c.sources = append(c.sources, quotes.LocalSource{Name: name, Key: key, Price: func(ticker string) (int64, bool) {
 			c.mu.Lock()
 			defer c.mu.Unlock()
+			if c.down[name] {
+				return 0, false
+			}
 			p, ok := c.prices[name][ticker]
 			return p, ok
 		}})
@@ -120,6 +124,15 @@ func (c *cluster) setPrice(ticker string, perSource ...int64) {
 			p = perSource[i]
 		}
 		c.prices[name][ticker] = p
+	}
+}
+
+// setDown takes price sources down (down=true) or brings them back.
+func (c *cluster) setDown(down bool, names ...string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, n := range names {
+		c.down[n] = down
 	}
 }
 

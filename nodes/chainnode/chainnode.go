@@ -88,8 +88,8 @@ func Init(t Testnet) (*types.GenesisDoc, error) {
 	if t.Validators < 1 {
 		return nil, fmt.Errorf("need at least one validator")
 	}
-	if len(t.Oracles)%2 == 0 {
-		return nil, fmt.Errorf("use an odd number of oracle sources (got %d)", len(t.Oracles))
+	if len(t.Oracles) < quotes.MinQuorum {
+		return nil, fmt.Errorf("need at least %d oracle sources (got %d)", quotes.MinQuorum, len(t.Oracles))
 	}
 	var sources []quotes.Source
 	var oracleAddrs []string

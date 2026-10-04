@@ -44,6 +44,7 @@ type Params struct {
 	OptionVolBps        int64    `json:"option_vol_bps"`         // annual volatility for the option model
 	OptionExpiryUTCHour int64    `json:"option_expiry_utc_hour"` // options expire at this hour on their date
 	MaxHistory          int      `json:"max_history"`            // order records kept per account
+	OracleQuorum        int      `json:"oracle_quorum"`          // signed quotes a price needs (of the genesis sources)
 }
 
 // DefaultParams are used by tests and by the generated genesis file.
@@ -63,6 +64,7 @@ func DefaultParams(chainID string, tickers []string) Params {
 		OptionVolBps:        3_000, // 30 % a year
 		OptionExpiryUTCHour: 20,    // 16:00 New York
 		MaxHistory:          200,
+		OracleQuorum:        3,
 	}
 }
 

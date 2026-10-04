@@ -76,6 +76,24 @@ class SourceParsingTests(unittest.TestCase):
             with self.assertRaises(LookupError):
                 o.nasdaq('AAPL')
 
+    def test_tradingview_takes_the_exchange_that_has_the_symbol(self):
+        reply = {'data': [{'s': 'NASDAQ:JPM', 'd': [None]}, {'s': 'NYSE:JPM', 'd': [332.38]}]}
+        with patch.object(o, '_get_json', return_value=reply) as g:
+            self.assertEqual(o.tradingview('JPM')[0], Decimal('332.38'))
+        self.assertEqual(g.call_args.kwargs['body']['symbols']['tickers'], ['NASDAQ:JPM', 'NYSE:JPM', 'AMEX:JPM'])
+        with patch.object(o, '_get_json', return_value={'data': []}):
+            with self.assertRaises(LookupError):
+                o.tradingview('JPM')
+
+    def test_google_reads_the_price_next_to_its_own_symbol(self):
+        page = ('...["MSFT","NASDAQ"],"Microsoft",0,"USD",[512.8,1]...'
+                '["AAPL","NASDAQ"],"Apple Inc",0,"USD",[333.69,3.37,1.02]...')
+        with patch.object(o, '_get_text', return_value=page):
+            self.assertEqual(o.google('AAPL')[0], Decimal('333.69'))
+        with patch.object(o, '_get_text', return_value='<html>consent page</html>'):
+            with self.assertRaises(LookupError):
+                o.google('AAPL')
+
 
 if __name__ == '__main__':
     unittest.main()

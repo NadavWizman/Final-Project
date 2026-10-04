@@ -1,7 +1,7 @@
 // tradedesk-node runs a TradeDesk validator: CometBFT consensus with the
 // TradeDesk ledger as its application.
 //
-//	tradedesk-node init  [-dir testnet] [-validators 4] [-oracles yahoo,nasdaq,cnbc]
+//	tradedesk-node init  [-dir testnet] [-validators 4] [-oracles yahoo,nasdaq,cnbc,tradingview,google]
 //	tradedesk-node start -home testnet/node0
 //	tradedesk-node valset-sign   -home testnet/node0 -pubkey <base64> -power 10 -seq 0
 //	tradedesk-node valset-submit -rpc http://127.0.0.1:26657 -pubkey <base64> -power 10 -seq 0 approval.json...
@@ -55,7 +55,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   tradedesk-node init  [-dir testnet] [-validators 4] [-chain-id tradedesk-local]
-                       [-oracles yahoo,nasdaq,cnbc] [-base-port 26656] [-oracle-port 8001]
+                       [-oracles yahoo,nasdaq,cnbc,tradingview,google] [-base-port 26656] [-oracle-port 8001]
   tradedesk-node start -home testnet/node0 [-oracles host:port,...] [-v]
   tradedesk-node valset-sign   -home testnet/node0 -pubkey <base64> -power <n> -seq <n>
   tradedesk-node valset-submit -rpc <url> -pubkey <base64> -power <n> -seq <n> approval.json...
@@ -70,7 +70,7 @@ func initCmd(args []string) {
 	dir := fs.String("dir", "testnet", "output directory")
 	n := fs.Int("validators", 4, "number of validators (n >= 3f+1; 4 tolerates one faulty node)")
 	chainID := fs.String("chain-id", "tradedesk-local", "chain id, signed into every transaction")
-	oracles := fs.String("oracles", "yahoo,nasdaq,cnbc", "price sources (odd number), one signing key each")
+	oracles := fs.String("oracles", "yahoo,nasdaq,cnbc,tradingview,google", "price sources (at least 3), one signing key each; a price needs 3 of them")
 	basePort := fs.Int("base-port", 26656, "node i listens on base+10i (p2p) and base+10i+1 (RPC)")
 	oraclePort := fs.Int("oracle-port", 8001, "oracle signer i listens on oracle-port+i")
 	_ = fs.Parse(args)

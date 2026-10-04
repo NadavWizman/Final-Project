@@ -137,8 +137,9 @@ func (a *App) InitChain(_ context.Context, req *abci.RequestInitChain) (*abci.Re
 	if err := json.Unmarshal(req.AppStateBytes, &g); err != nil {
 		return nil, fmt.Errorf("invalid app_state in genesis: %w", err)
 	}
-	if len(g.Oracles)%2 == 0 {
-		return nil, fmt.Errorf("the number of oracle sources must be odd (median of one real quote), got %d", len(g.Oracles))
+	if q := g.Params.OracleQuorum; q < quotes.MinQuorum || q > len(g.Oracles) {
+		return nil, fmt.Errorf("oracle_quorum must be between %d and the number of sources (%d), got %d",
+			quotes.MinQuorum, len(g.Oracles), q)
 	}
 	g.Params.ChainID = req.ChainId
 	c := &Chain{Ledger: ledger.NewState(g.Params), Oracles: g.Oracles}
@@ -192,7 +193,7 @@ func (a *App) PrepareProposal(ctx context.Context, req *abci.RequestPreparePropo
 
 	var bundle []byte
 	if tickers := neededTickers(base.Ledger, user, at); len(tickers) > 0 && a.fetcher != nil {
-		b := quotes.Build(a.fetcher.Fetch(ctx, tickers), len(base.Oracles))
+		b := quotes.Build(a.fetcher.Fetch(ctx, tickers), base.Ledger.Params.OracleQuorum)
 		if len(b.Quotes) > 0 {
 			bundle = quotes.Encode(b)
 		}
@@ -206,7 +207,7 @@ func (a *App) PrepareProposal(ctx context.Context, req *abci.RequestPreparePropo
 	var prices map[string]ledger.Cents
 	if bundle != nil {
 		txs = append(txs, bundle)
-		if medians, err := quotes.Verify(bundle, base.Oracles, base.Ledger.Listed, at); err == nil {
+		if medians, err := quotes.Verify(bundle, base.Oracles, base.Ledger.Params.OracleQuorum, base.Ledger.Listed, at); err == nil {
 			prices = toCents(medians)
 		}
 	}
@@ -297,7 +298,7 @@ func (c *Chain) run(height, at int64, txs [][]byte, lenient bool) *evaluate {
 				}
 				return &evaluate{err: fmt.Errorf("quote bundle must be the first transaction")}
 			}
-			medians, err := quotes.Verify(tx, c.Oracles, next.Ledger.Listed, at)
+			medians, err := quotes.Verify(tx, c.Oracles, c.Ledger.Params.OracleQuorum, next.Ledger.Listed, at)
 			if err != nil {
 				if !lenient {
 					return &evaluate{err: err}

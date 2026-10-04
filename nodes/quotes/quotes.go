@@ -1,14 +1,20 @@
 // Package quotes verifies signed price quotes and turns them into the
-// execution price of each ticker: the exact median of one quote per source.
+// execution price of each ticker: the median of the sources' signed quotes.
 //
-// Each price source (Yahoo, Nasdaq, CNBC, …) runs behind an oracle signer
-// that signs (source, ticker, price, time) with its own Ed25519 key; the
-// public keys are fixed in the genesis file. The block proposer collects the
-// quotes and puts them in the block, and every validator recomputes the
-// medians from the signatures — there is no tolerance band. A proposer can
-// neither shift a price (any changed quote fails its signature, and a
-// declared median must match exactly) nor rely on one lying source (the
-// median of three ignores it).
+// Each price source (Yahoo, Nasdaq, CNBC, TradingView, Google) runs behind an
+// oracle signer that signs (source, ticker, price, time) with its own Ed25519
+// key; the public keys are fixed in the genesis file. The block proposer
+// collects the quotes and puts them in the block, and every validator
+// recomputes the medians from the signatures — there is no tolerance band.
+//
+// Availability policy: a ticker gets a price when at least `quorum` distinct
+// sources (genesis parameter, 3 of 5) quoted it, so one or two sources that
+// are down do not stop trading. The price is the lower median — always one
+// real quote, never an average — and with at most one lying source among
+// three or more quotes it lies between two honest quotes: a liar can never
+// move it outside the honest range. A proposer can neither shift a price
+// (any changed quote fails its signature, and a declared median must match
+// exactly) nor make up a quote.
 package quotes
 
 import (
@@ -69,11 +75,17 @@ func IsBundle(tx []byte) bool {
 	return len(tx) >= len(Marker) && string(tx[:len(Marker)]) == Marker
 }
 
+// MinQuorum is the least number of quotes a price may come from: with one
+// lying source, three quotes still put two honest ones around the median.
+const MinQuorum = 3
+
 // Verify checks every quote in a bundle and returns the median price per
-// ticker. A ticker gets a price only when every registered source quoted it
-// (so the median of an odd number of sources is always one real quote). The
-// declared medians must match the recomputed ones exactly.
-func Verify(raw []byte, sources []Source, listed func(string) bool, blockTime int64) (map[string]int64, error) {
+// ticker. A ticker gets a price only when at least quorum distinct sources
+// quoted it. The declared medians must match the recomputed ones exactly.
+func Verify(raw []byte, sources []Source, quorum int, listed func(string) bool, blockTime int64) (map[string]int64, error) {
+	if quorum < MinQuorum || quorum > len(sources) {
+		return nil, fmt.Errorf("quorum %d is outside %d..%d sources", quorum, MinQuorum, len(sources))
+	}
 	var b Bundle
 	if err := json.Unmarshal(raw, &b); err != nil {
 		return nil, fmt.Errorf("malformed quote bundle: %v", err)
@@ -110,8 +122,8 @@ func Verify(raw []byte, sources []Source, listed func(string) bool, blockTime in
 
 	medians := map[string]int64{}
 	for ticker, bySource := range perTicker {
-		if len(bySource) != len(sources) {
-			continue // not every source quoted it: no price this block
+		if len(bySource) < quorum {
+			continue // too few sources quoted it: no price this block
 		}
 		medians[ticker] = Median(bySource)
 	}
@@ -126,19 +138,23 @@ func Verify(raw []byte, sources []Source, listed func(string) bool, blockTime in
 	return medians, nil
 }
 
-// Median of an odd number of prices is the middle one.
+// Median is the lower median: the middle quote of an odd number, the lower
+// of the two middle ones of an even number — always a quote some source
+// actually signed. With k ≥ 3 quotes and at most one liar, at least one
+// honest quote lies on each side of it.
 func Median(bySource map[string]int64) int64 {
 	vals := make([]int64, 0, len(bySource))
 	for _, v := range bySource {
 		vals = append(vals, v)
 	}
 	sort.Slice(vals, func(i, j int) bool { return vals[i] < vals[j] })
-	return vals[len(vals)/2]
+	return vals[(len(vals)-1)/2]
 }
 
 // Build assembles a bundle from fetched quotes: keeps one quote per source
-// and ticker and declares the medians the validators will recompute.
-func Build(qs []Quote, nSources int) Bundle {
+// and ticker and declares the medians the validators will recompute, for
+// every ticker quoted by at least quorum sources.
+func Build(qs []Quote, quorum int) Bundle {
 	seen := map[string]bool{}
 	perTicker := map[string]map[string]int64{}
 	var kept []Quote
@@ -162,7 +178,7 @@ func Build(qs []Quote, nSources int) Bundle {
 	}
 	prices := map[string]int64{}
 	for t, m := range perTicker {
-		if len(m) == nSources {
+		if len(m) >= quorum {
 			prices[t] = Median(m)
 		}
 	}

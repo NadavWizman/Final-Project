@@ -2,8 +2,8 @@
 
 It signs a fixed fabricated price with a key that IS registered in the genesis
 file, so its quotes are valid — the source itself is lying. Run it in place of
-one honest signer (here the "cnbc" slot): the median of three still comes from
-the two honest sources, so the execution price does not move.
+one honest signer (here the "cnbc" slot): the median of the five still comes from
+the four honest sources, so the execution price does not move.
 
     python3 rogue_oracle.py                    # replaces cnbc on :8003 with $1.00
     ROGUE_PRICE=5000 ROGUE_NAME=nasdaq ROGUE_PORT=8002 python3 rogue_oracle.py

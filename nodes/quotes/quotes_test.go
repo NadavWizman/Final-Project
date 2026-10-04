@@ -36,7 +36,7 @@ const now = int64(1_790_000_000)
 func TestMedianOfThreeIgnoresOneLiar(t *testing.T) {
 	ss, src := newSigners("yahoo", "nasdaq", "rogue")
 	b := Build([]Quote{ss[0].quote("AAPL", 19025, now), ss[1].quote("AAPL", 19030, now), ss[2].quote("AAPL", 100, now)}, 3)
-	prices, err := Verify(Encode(b), src, listed, now)
+	prices, err := Verify(Encode(b), src, 3, listed, now)
 	if err != nil || prices["AAPL"] != 19025 {
 		t.Fatalf("median = %v, %v", prices, err)
 	}
@@ -46,7 +46,7 @@ func TestShiftedDeclaredPriceIsRejected(t *testing.T) {
 	ss, src := newSigners("a", "b", "c")
 	b := Build([]Quote{ss[0].quote("AAPL", 20000, now), ss[1].quote("AAPL", 20010, now), ss[2].quote("AAPL", 19990, now)}, 3)
 	b.Prices["AAPL"] = 20100 // the proposer shifts the price by 0.5 %
-	if _, err := Verify(Encode(b), src, listed, now); err == nil || !strings.Contains(err.Error(), "median") {
+	if _, err := Verify(Encode(b), src, 3, listed, now); err == nil || !strings.Contains(err.Error(), "median") {
 		t.Fatalf("shifted price accepted: %v", err)
 	}
 }
@@ -56,7 +56,7 @@ func TestAlteredQuoteFailsItsSignature(t *testing.T) {
 	b := Build([]Quote{ss[0].quote("AAPL", 20000, now), ss[1].quote("AAPL", 20010, now), ss[2].quote("AAPL", 19990, now)}, 3)
 	b.Quotes[1].Price = 25000 // changed on the network
 	b.Prices["AAPL"] = 20010
-	if _, err := Verify(Encode(b), src, listed, now); err == nil || !strings.Contains(err.Error(), "signature") {
+	if _, err := Verify(Encode(b), src, 3, listed, now); err == nil || !strings.Contains(err.Error(), "signature") {
 		t.Fatalf("altered quote accepted: %v", err)
 	}
 }
@@ -70,26 +70,26 @@ func TestOtherRejections(t *testing.T) {
 		"unlisted": Build([]Quote{ss[0].quote("TSLA", 1, now), ss[1].quote("TSLA", 1, now), ss[2].quote("TSLA", 1, now)}, 3),
 	}
 	for name, b := range cases {
-		if _, err := Verify(Encode(b), src, listed, now); err == nil {
+		if _, err := Verify(Encode(b), src, 3, listed, now); err == nil {
 			t.Errorf("%s bundle accepted", name)
 		}
 	}
 	good := Build([]Quote{ss[0].quote("AAPL", 1, now), ss[1].quote("AAPL", 1, now), ss[2].quote("AAPL", 1, now)}, 3)
 	srcWrongKey := append([]Source{stranger[0]}, src[1:]...)
-	if _, err := Verify(Encode(good), srcWrongKey, listed, now); err == nil {
+	if _, err := Verify(Encode(good), srcWrongKey, 3, listed, now); err == nil {
 		t.Error("quote signed by an unregistered key accepted")
 	}
 	dup := good
 	dup.Quotes = append(dup.Quotes, ss[0].quote("AAPL", 1, now))
-	if _, err := Verify(Encode(dup), src, listed, now); err == nil {
+	if _, err := Verify(Encode(dup), src, 3, listed, now); err == nil {
 		t.Error("two quotes from one source accepted")
 	}
 }
 
-func TestTickerWithoutAllSourcesHasNoPrice(t *testing.T) {
+func TestTickerBelowQuorumHasNoPrice(t *testing.T) {
 	ss, src := newSigners("a", "b", "c")
 	b := Build([]Quote{ss[0].quote("AAPL", 100, now), ss[1].quote("AAPL", 100, now)}, 3)
-	prices, err := Verify(Encode(b), src, listed, now)
+	prices, err := Verify(Encode(b), src, 3, listed, now)
 	if err != nil || len(prices) != 0 {
 		t.Fatalf("partial quotes priced: %v %v", prices, err)
 	}

@@ -41,7 +41,7 @@ echo "[4/4] Local network…"
 if [ -d testnet ]; then
     echo "  ./testnet exists — kept (delete it to start a fresh chain)"
 else
-    nodes/tradedesk-node init -dir testnet -validators 4 -oracles yahoo,nasdaq,cnbc | sed 's/^/  /'
+    nodes/tradedesk-node init -dir testnet -validators 4 -oracles yahoo,nasdaq,cnbc,tradingview,google | sed 's/^/  /'
 fi
 
 echo ""

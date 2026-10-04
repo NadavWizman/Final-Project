@@ -1,15 +1,19 @@
 """Oracle signer — one price source, every quote signed with that source's key.
 
-The network uses three independent sources (Yahoo, Nasdaq, CNBC by default).
-Each runs its own signer process with its own Ed25519 key; the public keys are
-fixed in the genesis file. The block proposer collects one signed quote per
-source and the validators take the exact median, so one wrong or lying source
-cannot move the execution price, and a quote changed in transit fails its
-signature.
+The network uses five independent sources — Yahoo, Nasdaq, CNBC, TradingView
+and Google Finance, five different data providers. Each runs its own signer
+process with its own Ed25519 key; the public keys are fixed in the genesis
+file. The block proposer collects the signed quotes and the validators take
+the median of at least three of them, so one wrong or lying source cannot move
+the execution price, one or two sources down do not stop trading, and a quote
+changed in transit fails its signature. (In the demo all five keys are made
+on one machine; in a real deployment each source is run by another operator.)
 
-    python3 oracle_server.py --source yahoo  --key ../testnet/oracles/yahoo.key  --port 8001
-    python3 oracle_server.py --source nasdaq --key ../testnet/oracles/nasdaq.key --port 8002
-    python3 oracle_server.py --source cnbc   --key ../testnet/oracles/cnbc.key   --port 8003
+    python3 oracle_server.py --source yahoo       --key ../testnet/oracles/yahoo.key       --port 8001
+    python3 oracle_server.py --source nasdaq      --key ../testnet/oracles/nasdaq.key      --port 8002
+    python3 oracle_server.py --source cnbc        --key ../testnet/oracles/cnbc.key        --port 8003
+    python3 oracle_server.py --source tradingview --key ../testnet/oracles/tradingview.key --port 8004
+    python3 oracle_server.py --source google      --key ../testnet/oracles/google.key      --port 8005
 
     # a dishonest source (demo): signs a fixed price under a registered name
     python3 oracle_server.py --source fixed --price 1.00 --name cnbc --key ../testnet/oracles/cnbc.key --port 8003
@@ -20,6 +24,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -40,10 +45,17 @@ CACHE_S = float(os.getenv('ORACLE_CACHE_S', '3'))
 UA = {'User-Agent': 'Mozilla/5.0 (TradeDesk oracle)', 'Accept': 'application/json'}
 
 
-def _get_json(url, timeout=6):
-    req = urllib.request.Request(url, headers=UA)
+def _get_json(url, timeout=6, body=None):
+    req = urllib.request.Request(url, headers={**UA, 'Content-Type': 'application/json'} if body else UA,
+                                 data=json.dumps(body).encode() if body else None)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
+
+
+def _get_text(url, timeout=6):
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode('utf-8', 'replace')
 
 
 def _money(text):
@@ -91,6 +103,31 @@ def cnbc(ticker):
     return price, q.get('last_time', '')
 
 
+EXCHANGES = ('NASDAQ', 'NYSE', 'AMEX')
+
+
+def tradingview(ticker):
+    """TradingView's public market scanner (no key), asked on every US exchange."""
+    d = _get_json('https://scanner.tradingview.com/america/scan',
+                  body={'symbols': {'tickers': [f'{ex}:{ticker}' for ex in EXCHANGES]}, 'columns': ['close']})
+    for row in d.get('data') or []:
+        price = _money((row.get('d') or [None])[0])
+        if price is not None:
+            return price, ''
+    raise LookupError('no data')
+
+
+def google(ticker):
+    """Google Finance's quote page, which embeds the last price next to the
+    symbol: ["AAPL","NASDAQ"],"Apple Inc",0,"USD",[333.69, …"""
+    for ex in EXCHANGES[:2]:
+        page = _get_text(f'https://www.google.com/finance/quote/{urllib.parse.quote(ticker)}:{ex}')
+        m = re.search(r'\["' + re.escape(ticker) + r'","' + ex + r'"\],"[^"]*",\d+,"USD",\[([0-9.]+)', page)
+        if m and _money(m.group(1)) is not None:
+            return _money(m.group(1)), ''
+    raise LookupError('no data')
+
+
 def fixed(price_text):
     price = _money(price_text)
     if price is None:
@@ -98,7 +135,7 @@ def fixed(price_text):
     return lambda ticker: (price, datetime.now(timezone.utc).isoformat())
 
 
-SOURCES = {'yahoo': yahoo, 'nasdaq': nasdaq, 'cnbc': cnbc}
+SOURCES = {'yahoo': yahoo, 'nasdaq': nasdaq, 'cnbc': cnbc, 'tradingview': tradingview, 'google': google}
 
 
 class OracleServicer(oracle_pb2_grpc.OracleServiceServicer):

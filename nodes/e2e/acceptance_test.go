@@ -341,3 +341,50 @@ func TestStopLossFiresInsideTheChain(t *testing.T) {
 	}
 	t.Fatal("the stop-loss never fired")
 }
+
+// 14. Price sources down. The availability policy: a price needs signed
+// quotes from 3 of the 5 sources. With one or two sources down trading
+// continues, at the lower median of the rest; with three down there is no
+// price, so a market order waits in the mempool (nonce untouched) and
+// executes as soon as a source comes back.
+func TestPriceSourcesDown(t *testing.T) {
+	c := newCluster(t, 4)
+	c.setPrice("AAPL", 20000, 20010, 19990, 20020, 20005)
+	w := registered(t, c, "alice")
+
+	c.setDown(true, "google")
+	c.submit(0, w.buy("AAPL", "1"))
+	if r := lastRecord(c.account(0, w.addr)); r.Status != "CONFIRMED" || r.Price != 20000 {
+		t.Fatalf("one source down: %+v", r) // lower median of 19990, 20000, 20010, 20020
+	}
+	c.setDown(true, "tradingview")
+	c.submit(1, w.buy("AAPL", "1"))
+	if r := lastRecord(c.account(0, w.addr)); r.Status != "CONFIRMED" || r.Price != 20000 {
+		t.Fatalf("two sources down: %+v", r) // median of 19990, 20000, 20010
+	}
+
+	c.setDown(true, "cnbc") // three down: no price
+	nonce := c.account(0, w.addr).Nonce
+	tx := w.buy("AAPL", "1")
+	if code, log := c.broadcastRaw(2, tx); code != 0 {
+		t.Fatalf("refused by the mempool: %s", log)
+	}
+	c.waitHeight(c.height()+4, 20*time.Second)
+	if a := c.account(0, w.addr); a.Nonce != nonce || a.Holdings["AAPL"] != 2*ledger.QtyScale {
+		t.Fatalf("executed or burned without a price: nonce %d→%d, holding %s", nonce, a.Nonce, a.Holdings["AAPL"])
+	}
+
+	c.setDown(false, "cnbc") // back to three sources: the waiting order executes
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if a := c.account(0, w.addr); a.Holdings["AAPL"] == 3*ledger.QtyScale {
+			if r := lastRecord(a); r.Status != "CONFIRMED" || r.Price != 20000 {
+				t.Fatalf("after recovery: %+v", r)
+			}
+			c.sameStateEverywhere()
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("the waiting order did not execute after a source came back")
+}
