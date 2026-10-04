@@ -6,18 +6,21 @@ import (
 )
 
 // Root is the state root: a Merkle root over the whole ledger. Leaf 0 is the
-// global state (height, time, parameters, prices, id counter); then one leaf
+// global state (height, time, parameters, prices, counters, usernames); then one leaf
 // per account, in address order. Two nodes have the same state exactly when
 // they have the same root, and the root goes into every block, so any node
 // or client can check a copy of the state against the chain.
 func (s *State) Root() [32]byte {
 	global := struct {
-		Height     int64            `json:"height"`
-		Time       int64            `json:"time"`
-		Params     Params           `json:"params"`
-		LastPrices map[string]Cents `json:"last_prices"`
-		NextID     uint64           `json:"next_id"`
-	}{s.Height, s.Time, s.Params, s.LastPrices, s.NextID}
+		Height     int64             `json:"height"`
+		Time       int64             `json:"time"`
+		Params     Params            `json:"params"`
+		LastPrices map[string]Cents  `json:"last_prices"`
+		NextID     uint64            `json:"next_id"`
+		CustodySeq uint64            `json:"custody_seq"`
+		FaucetPaid Cents             `json:"faucet_paid"`
+		Usernames  map[string]string `json:"usernames"`
+	}{s.Height, s.Time, s.Params, s.LastPrices, s.NextID, s.CustodySeq, s.FaucetPaid, s.Usernames}
 
 	leaves := [][32]byte{leafHash(global)}
 	for _, addr := range s.sortedAddresses() {

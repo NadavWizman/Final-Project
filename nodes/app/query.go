@@ -42,8 +42,15 @@ func (a *App) Query(_ context.Context, req *abci.RequestQuery) (*abci.ResponseQu
 		for i, o := range c.Oracles {
 			names[i] = o.Name
 		}
+		var debt ledger.Cents // losses past the margin not yet repaid (owed to the house)
+		for _, a := range s.Accounts {
+			if a.Cash < 0 {
+				debt -= a.Cash
+			}
+		}
 		return reply(map[string]any{
-			"height": s.Height, "time": s.Time, "chain_id": s.Params.ChainID,
+			"outstanding_debt": debt,
+			"height":           s.Height, "time": s.Time, "chain_id": s.Params.ChainID,
 			"state_root": hex.EncodeToString(root[:]), "app_hash": hex.EncodeToString(c.AppHash()),
 			"validators": len(c.Validators), "valset_seq": c.ValsetSeq, "custody_seq": s.CustodySeq, "oracles": names, "accounts": len(s.Accounts),
 			"tickers": s.Params.Tickers,

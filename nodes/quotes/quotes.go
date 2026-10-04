@@ -96,20 +96,8 @@ func Verify(raw []byte, sources []Source, quorum int, listed func(string) bool, 
 	}
 	perTicker := map[string]map[string]int64{} // ticker → source → price
 	for _, q := range b.Quotes {
-		key, ok := byName[q.Source]
-		switch {
-		case !ok:
-			return nil, fmt.Errorf("quote from unknown source %q", q.Source)
-		case !listed(q.Ticker):
-			return nil, fmt.Errorf("quote for unlisted ticker %q", q.Ticker)
-		case q.Price <= 0:
-			return nil, fmt.Errorf("non-positive price from %s for %s", q.Source, q.Ticker)
-		case q.Time < blockTime-MaxAge:
-			return nil, fmt.Errorf("stale quote from %s for %s", q.Source, q.Ticker)
-		case q.Time > blockTime+MaxFuture:
-			return nil, fmt.Errorf("quote from %s for %s is in the future", q.Source, q.Ticker)
-		case !ed25519.Verify(key, q.Message(), q.Sig):
-			return nil, fmt.Errorf("signature of %s's quote for %s does not verify", q.Source, q.Ticker)
+		if err := checkQuote(q, byName, listed, blockTime); err != nil {
+			return nil, err
 		}
 		if perTicker[q.Ticker] == nil {
 			perTicker[q.Ticker] = map[string]int64{}
@@ -136,6 +124,43 @@ func Verify(raw []byte, sources []Source, quorum int, listed func(string) bool, 
 		}
 	}
 	return medians, nil
+}
+
+// checkQuote is everything that makes one quote unacceptable.
+func checkQuote(q Quote, byName map[string]ed25519.PublicKey, listed func(string) bool, blockTime int64) error {
+	key, ok := byName[q.Source]
+	switch {
+	case !ok:
+		return fmt.Errorf("quote from unknown source %q", q.Source)
+	case !listed(q.Ticker):
+		return fmt.Errorf("quote for unlisted ticker %q", q.Ticker)
+	case q.Price <= 0:
+		return fmt.Errorf("non-positive price from %s for %s", q.Source, q.Ticker)
+	case q.Time < blockTime-MaxAge:
+		return fmt.Errorf("stale quote from %s for %s", q.Source, q.Ticker)
+	case q.Time > blockTime+MaxFuture:
+		return fmt.Errorf("quote from %s for %s is in the future", q.Source, q.Ticker)
+	case len(q.Sig) != ed25519.SignatureSize || !ed25519.Verify(key, q.Message(), q.Sig):
+		return fmt.Errorf("signature of %s's quote for %s does not verify", q.Source, q.Ticker)
+	}
+	return nil
+}
+
+// Valid keeps the quotes that would pass Verify, so that one faulty source
+// (a skewed clock, a wrong name, a bad price) cannot make the proposer's
+// whole bundle invalid: its quotes are simply left out of the block.
+func Valid(qs []Quote, sources []Source, listed func(string) bool, blockTime int64) []Quote {
+	byName := map[string]ed25519.PublicKey{}
+	for _, s := range sources {
+		byName[s.Name] = s.PubKey
+	}
+	var out []Quote
+	for _, q := range qs {
+		if checkQuote(q, byName, listed, blockTime) == nil {
+			out = append(out, q)
+		}
+	}
+	return out
 }
 
 // Median is the lower median: the middle quote of an odd number, the lower

@@ -211,3 +211,17 @@ func TestOptionEdgeCases(t *testing.T) {
 		t.Fatalf("exercise after expiry: %+v, then %+v", exer, exp)
 	}
 }
+
+// An option position is closed or exercised in full: the signed quantity
+// must be its number of contracts.
+func TestOptionClosesInFull(t *testing.T) {
+	s, u, acc := setup(t)
+	mustOK(t, block(s, t0, p(10000), u.order(t, OrderMsg{Kind: "OPTION", Side: "BUY", Ticker: "AAPL", Qty: "5", OptionType: "CALL", Strike: "90", Expiry: "2026-10-16"})))
+	o := acc.Options[0]
+	mustOK(t, block(s, t0, p(10000), u.order(t, OrderMsg{Kind: "OPT_CLOSE", Side: "SELL", Ticker: "AAPL", Qty: "1", Position: itoa(o.ID)})))
+	rejected(t, acc, "closed in full: 5 contracts")
+	mustOK(t, block(s, t0, p(10000), u.order(t, OrderMsg{Kind: "OPT_CLOSE", Side: "SELL", Ticker: "AAPL", Qty: "5", Position: itoa(o.ID)})))
+	if o.Status != "CLOSED" {
+		t.Fatalf("%+v", o)
+	}
+}

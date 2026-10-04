@@ -45,7 +45,9 @@ func TestDepositsNeedTheCustodian(t *testing.T) {
 		"zero amount":               deposit(t, key, "1", u.addr, "0"),
 		"negative amount":           []byte(`{"deposit":{"chain":"` + chain + `","seq":"1","to":"` + u.addr + `","amount":"-5"},"sig":"AAAA"}`),
 		"above the per-tx cap":      deposit(t, key, "1", u.addr, "1000000.01"),
-		"non-canonical sequence":    deposit(t, key, "01", u.addr, "5"),
+		"non-canonical sequence":    deposit(t, key, "01", u.addr, "5.00"),
+		"non-canonical amount":      []byte(strings.Replace(string(deposit(t, key, "1", u.addr, "500")), `"500.00"`, `"500"`, 1)),
+		"upper-case address":        deposit(t, key, "1", strings.ToUpper(u.addr), "5.00"),
 		"amount changed in transit": []byte(strings.Replace(string(deposit(t, key, "1", u.addr, "5.00")), `"5.00"`, `"5000.00"`, 1)),
 	}
 	for name, raw := range cases {
@@ -69,7 +71,7 @@ func TestDepositsNeedTheCustodian(t *testing.T) {
 
 	// without a custodian in genesis, deposits are disabled
 	s2, u2, _ := setup(t)
-	if _, _, err := s2.CheckTx(deposit(t, key, "0", u2.addr, "5"), noPending); err == nil {
+	if _, _, err := s2.CheckTx(deposit(t, key, "0", u2.addr, "5.00"), noPending); err == nil {
 		t.Fatal("deposit accepted on a network with no custodian")
 	}
 }
@@ -98,7 +100,8 @@ func TestRegistrationGrantsAreCapped(t *testing.T) {
 func TestGapShortfallIsADebt(t *testing.T) {
 	for _, closeWinnerFirst := range []bool{false, true} {
 		s, u, acc := setup(t)
-		start := acc.Cash // $10,000
+		s.Params.MaxLeverage = 100 // the scenario as asked (the genesis default is 20)
+		start := acc.Cash          // $10,000
 		mustOK(t, block(s, t0, p(10000),
 			u.order(t, OrderMsg{Kind: "CFD", Side: "BUY", Ticker: "AAPL", Qty: "5000", Leverage: "100"}),
 			u.order(t, OrderMsg{Kind: "CFD", Side: "SELL", Ticker: "AAPL", Qty: "5000", Leverage: "100"})))
@@ -137,6 +140,7 @@ func TestGapShortfallIsADebt(t *testing.T) {
 func TestDebtIsRepaidByTheNextCredit(t *testing.T) {
 	s, u, acc := setup(t)
 	key := custody(s)
+	s.Params.MaxLeverage = 100
 	mustOK(t, block(s, t0, p(10000), u.order(t, OrderMsg{Kind: "CFD", Side: "BUY", Ticker: "AAPL", Qty: "10000", Leverage: "100"})))
 	block(s, t0+1, p(9000)) // −10 %: loss $100,000 on a $10,000 margin
 	if acc.Cash != -9_000_000 {
@@ -145,5 +149,57 @@ func TestDebtIsRepaidByTheNextCredit(t *testing.T) {
 	mustOK(t, block(s, t0+2, nil, deposit(t, key, "0", u.addr, "100000.00")))
 	if acc.Cash != 1_000_000 {
 		t.Fatalf("deposit did not repay the debt first: %s", acc.Cash)
+	}
+}
+
+// Every field of the state is committed to by the root: changing any one of
+// them — including the custody sequence, the grants paid and the usernames —
+// changes the root that goes into the block header.
+func TestRootCoversEveryField(t *testing.T) {
+	s, _, acc := setup(t)
+	base := s.Root()
+	for name, change := range map[string]func(){
+		"custody sequence": func() { s.CustodySeq++ },
+		"grants paid":      func() { s.FaucetPaid++ },
+		"usernames":        func() { s.Usernames["mallory"] = acc.Address },
+		"an account":       func() { acc.Cash++ },
+		"next id":          func() { s.NextID++ },
+		"a price":          func() { s.LastPrices["AAPL"]++ },
+	} {
+		c := s.Clone()
+		s2 := s
+		s = c
+		acc = s.Accounts[acc.Address]
+		change()
+		if s.Root() == base {
+			t.Errorf("changing %s does not change the root", name)
+		}
+		s = s2
+		acc = s.Accounts[acc.Address]
+	}
+}
+
+// Two accounts (a long in one, a short in the other) cannot use a gap either
+// at the genesis leverage cap of 20x: liquidation fires at a 4 % move, so
+// even a 5 % gap between two priced blocks leaves no loss past the margin,
+// and the pair ends with no more than it started with.
+func TestTwoAccountGapAtDefaultLeverage(t *testing.T) {
+	s := newLedger()
+	a, b := newUser(t), newUser(t)
+	mustOK(t, block(s, t0, nil, a.register(t, "longside"), b.register(t, "shortside")))
+	start := s.Accounts[a.addr].Cash + s.Accounts[b.addr].Cash
+	mustOK(t, block(s, t0+1, p(10000), b.order(t, OrderMsg{Kind: "CFD", Side: "SELL", Ticker: "AAPL", Qty: "100", Leverage: "100"})))
+	if r := last(s.Accounts[b.addr]); r.Status != "REJECTED" {
+		t.Fatalf("100x accepted under the default genesis: %+v", r)
+	}
+	mustOK(t, block(s, t0+1, p(10000),
+		a.order(t, OrderMsg{Kind: "CFD", Side: "BUY", Ticker: "AAPL", Qty: "2000", Leverage: "20"}),
+		b.order(t, OrderMsg{Kind: "CFD", Side: "SELL", Ticker: "AAPL", Qty: "2000", Leverage: "20"})))
+	block(s, t0+2, p(10500)) // +5 %: the short is liquidated with exactly its margin lost
+	mustOK(t, block(s, t0+3, p(10500), a.order(t, OrderMsg{Kind: "CFD_CLOSE", Side: "SELL", Ticker: "AAPL", Qty: "2000",
+		Position: itoa(s.Accounts[a.addr].CFDs[0].ID)})))
+	end := s.Accounts[a.addr].Cash + s.Accounts[b.addr].Cash
+	if s.Accounts[b.addr].Cash < 0 || end > start {
+		t.Fatalf("two accounts gained from a 5%% gap: %s -> %s (short side %s)", start, end, s.Accounts[b.addr].Cash)
 	}
 }

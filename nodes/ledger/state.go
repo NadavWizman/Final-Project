@@ -58,7 +58,7 @@ func DefaultParams(chainID string, tickers []string) Params {
 		FaucetTotal:         10_000_000_000, // $100,000,000.00: 10,000 grants
 		MaxDeposit:          100_000_000,    // $1,000,000.00
 		MinLeverage:         2,
-		MaxLeverage:         100,
+		MaxLeverage:         20,    // a loss can pass the margin only on a gap > 5 % between priced blocks
 		LiquidationBps:      8_000, // 80 %
 		LimitTTLSeconds:     24 * 3600,
 		OptionVolBps:        3_000, // 30 % a year

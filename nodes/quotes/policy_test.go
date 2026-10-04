@@ -198,3 +198,25 @@ func TestGRPCFetcherDoesNotWaitForTheSlowest(t *testing.T) {
 		t.Fatalf("%v %v (%d quotes)", p, err, len(qs))
 	}
 }
+
+// One faulty source (clock far ahead, unknown name, bad signature, zero
+// price) does not spoil the bundle: Valid drops its quotes and the others
+// still give a price.
+func TestFaultySourceIsDroppedNotFatal(t *testing.T) {
+	ss, src := newSigners(five...)
+	good := []Quote{ss[0].quote("AAPL", 20000, now), ss[1].quote("AAPL", 20010, now), ss[2].quote("AAPL", 19990, now)}
+	bad := []Quote{
+		ss[3].quote("AAPL", 20000, now+MaxFuture+30), // skewed clock
+		ss[4].quote("AAPL", 0, now),                  // sub-cent price rounded to 0
+		{Source: "nobody", Ticker: "AAPL", Price: 1, Time: now},
+		{Source: "google", Ticker: "AAPL", Price: 5, Time: now, Sig: []byte{1, 2, 3}},
+	}
+	if _, err := Verify(Encode(Build(append(good, bad...), 3)), src, 3, listed, now); err == nil {
+		t.Fatal("a bundle with a faulty quote should not verify")
+	}
+	kept := Valid(append(good, bad...), src, listed, now)
+	p, err := Verify(Encode(Build(kept, 3)), src, 3, listed, now)
+	if err != nil || len(kept) != 3 || p["AAPL"] != 20000 {
+		t.Fatalf("kept %d: %v %v", len(kept), p, err)
+	}
+}

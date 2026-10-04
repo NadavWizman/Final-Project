@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 )
 
@@ -39,6 +40,8 @@ type DepositMsg struct {
 
 const depositMarker = `{"deposit"`
 
+var addressRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
 // IsDeposit reports whether a transaction is a custodian deposit.
 func IsDeposit(raw []byte) bool {
 	return len(raw) >= len(depositMarker) && string(raw[:len(depositMarker)]) == depositMarker
@@ -56,6 +59,7 @@ func SignDeposit(key ed25519.PrivateKey, m DepositMsg) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	m.Amount = amount.String() // the canonical form ("250" -> "250.00")
 	tx := DepositTx{Deposit: m, Sig: base64.StdEncoding.EncodeToString(ed25519.Sign(key, m.Message(amount)))}
 	return json.Marshal(tx)
 }
@@ -82,6 +86,9 @@ func (s *State) checkDeposit(raw []byte) (*checkedDeposit, error) {
 	}
 	amount, err := ParseCents(m.Amount)
 	switch {
+	case err == nil && amount.String() != m.Amount, !addressRe.MatchString(m.To):
+		// one deposit, one encoding: "500.00", not "500" or "500.0"
+		return nil, errors.New("deposit amount must be written like 500.00, and the address as 40 lowercase hex digits")
 	case len(s.Params.CustodyKey) != ed25519.PublicKeySize:
 		return nil, errors.New("this network has no custodian: deposits are disabled")
 	case m.Chain != s.Params.ChainID:

@@ -381,6 +381,7 @@ func TestOptionPremiumLongExpiry(t *testing.T) {
 func TestHedgedCFDGapMakesNoMoney(t *testing.T) {
 	s := newLedger()
 	u := newUser(t)
+	s.Params.MaxLeverage = 100 // genesis allows at most 20; the policy must hold at any setting
 	mustOK(t, block(s, 1000, nil, u.register(t, "gap")))
 	start := s.Accounts[u.addr].Cash
 	mustOK(t, block(s, 1001, p(10000),

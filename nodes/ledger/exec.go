@@ -302,6 +302,9 @@ func (s *State) validateOrder(acc *Account, o *OrderMsg) error {
 		if opt == nil || opt.Status != "OPEN" || opt.Ticker != o.Ticker {
 			return fmt.Errorf("no open option position %s on %s", o.Position, o.Ticker)
 		}
+		if q != Qty(opt.Contracts*QtyScale) {
+			return fmt.Errorf("an option position is closed in full: %d contracts", opt.Contracts)
+		}
 		cutoff, _ := s.expiryCutoff(opt.Expiry)
 		if cutoff <= s.Time {
 			return fmt.Errorf("this option has expired")

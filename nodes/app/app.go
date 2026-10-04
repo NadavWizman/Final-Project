@@ -16,6 +16,7 @@ package app
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -137,9 +138,11 @@ func (a *App) InitChain(_ context.Context, req *abci.RequestInitChain) (*abci.Re
 	if err := json.Unmarshal(req.AppStateBytes, &g); err != nil {
 		return nil, fmt.Errorf("invalid app_state in genesis: %w", err)
 	}
-	if q := g.Params.OracleQuorum; q < quotes.MinQuorum || q > len(g.Oracles) {
-		return nil, fmt.Errorf("oracle_quorum must be between %d and the number of sources (%d), got %d",
-			quotes.MinQuorum, len(g.Oracles), q)
+	if err := checkOracles(g.Oracles, g.Params.OracleQuorum); err != nil {
+		return nil, fmt.Errorf("invalid genesis: %w", err)
+	}
+	if len(g.Params.CustodyKey) != 0 && len(g.Params.CustodyKey) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid genesis: custody_key must be a 32-byte Ed25519 key")
 	}
 	g.Params.ChainID = req.ChainId
 	c := &Chain{Ledger: ledger.NewState(g.Params), Oracles: g.Oracles}
@@ -149,6 +152,29 @@ func (a *App) InitChain(_ context.Context, req *abci.RequestInitChain) (*abci.Re
 	sortValidators(c.Validators)
 	a.chain = c
 	return &abci.ResponseInitChain{}, nil
+}
+
+// checkOracles refuses a source list that would weaken the quorum: every
+// source needs its own name and its own 32-byte key (one key under two names
+// would count twice), and the quorum must be reachable.
+func checkOracles(sources []quotes.Source, quorum int) error {
+	names, keys := map[string]bool{}, map[string]bool{}
+	for _, o := range sources {
+		switch {
+		case o.Name == "" || names[o.Name]:
+			return fmt.Errorf("oracle names must be unique and non-empty (%q)", o.Name)
+		case len(o.PubKey) != ed25519.PublicKeySize:
+			return fmt.Errorf("oracle %s: key must be a 32-byte Ed25519 key", o.Name)
+		case keys[string(o.PubKey)]:
+			return fmt.Errorf("oracle %s: key used by another source", o.Name)
+		}
+		names[o.Name], keys[string(o.PubKey)] = true, true
+	}
+	if quorum < quotes.MinQuorum || quorum > len(sources) {
+		return fmt.Errorf("oracle_quorum must be between %d and the number of sources (%d), got %d",
+			quotes.MinQuorum, len(sources), quorum)
+	}
+	return nil
 }
 
 // --------------------------------------------------------------- mempool
@@ -193,7 +219,8 @@ func (a *App) PrepareProposal(ctx context.Context, req *abci.RequestPreparePropo
 
 	var bundle []byte
 	if tickers := neededTickers(base.Ledger, user, at); len(tickers) > 0 && a.fetcher != nil {
-		b := quotes.Build(a.fetcher.Fetch(ctx, tickers), base.Ledger.Params.OracleQuorum)
+		fetched := quotes.Valid(a.fetcher.Fetch(ctx, tickers), base.Oracles, base.Ledger.Listed, at)
+		b := quotes.Build(fetched, base.Ledger.Params.OracleQuorum)
 		if len(b.Quotes) > 0 {
 			bundle = quotes.Encode(b)
 		}
@@ -206,8 +233,9 @@ func (a *App) PrepareProposal(ctx context.Context, req *abci.RequestPreparePropo
 	var txs [][]byte
 	var prices map[string]ledger.Cents
 	if bundle != nil {
-		txs = append(txs, bundle)
+		// never propose a bundle the validators would reject
 		if medians, err := quotes.Verify(bundle, base.Oracles, base.Ledger.Params.OracleQuorum, base.Ledger.Listed, at); err == nil {
+			txs = append(txs, bundle)
 			prices = toCents(medians)
 		}
 	}

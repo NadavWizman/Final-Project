@@ -207,6 +207,23 @@ func checkShape(m *Msg) error {
 	if !msgTypes[m.Type] {
 		return fmt.Errorf("unknown transaction type")
 	}
+	// each type carries its own fields only, so a wallet that shows the
+	// fields of the type shows everything the transaction does
+	if (m.Username != "") != (m.Type == "register") || (m.Order != nil) != (m.Type == "order") ||
+		(m.Level != nil) != (m.Type == "level_add") || (m.LevelID != "") != (m.Type == "level_cancel") {
+		return fmt.Errorf("fields do not match the transaction type %q", m.Type)
+	}
+	if o := m.Order; o != nil {
+		closing := o.Kind == "CFD_CLOSE" || o.Kind == "OPT_CLOSE" || o.Kind == "OPT_EXER"
+		switch {
+		case o.Leverage != "" && o.Kind != "CFD":
+			return errors.New("leverage applies to CFD orders only")
+		case (o.Position != "") != closing:
+			return errors.New("a position id is given exactly when closing or exercising")
+		case (o.OptionType != "" || o.Strike != "" || o.Expiry != "") != (o.Kind == "OPTION"):
+			return errors.New("option type, strike and expiry are given exactly for an OPTION order")
+		}
+	}
 	if o := m.Order; o != nil {
 		switch {
 		case !orderKinds[o.Kind]:
