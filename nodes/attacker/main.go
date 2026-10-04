@@ -131,6 +131,14 @@ func main() {
 	vtx, _ := json.Marshal(app.ValsetTx{Valset: ch, Sigs: []app.ValsetApproval{app.SignValset(priv, ch)}})
 	try("add a validator without 3 of 4 approvals", vtx)
 
+	// 6. mint money: the victim credits himself (deposits are not a user transaction)
+	try("a user-signed deposit to oneself", victim.tx(ledger.Msg{Type: "deposit"}))
+
+	// 7. mint money: a deposit signed by a key that is not the custodian's
+	_, notCustody, _ := ed25519.GenerateKey(nil)
+	dep, _ := ledger.SignDeposit(notCustody, ledger.DepositMsg{Chain: chain, Seq: "0", To: victim.addr, Amount: "1000000.00"})
+	try("a deposit not signed by the custodian", dep)
+
 	fmt.Printf("\n%s\n", line)
 	if accepted > 0 {
 		fmt.Printf("  RESULT: %d attack(s) accepted — VULNERABILITY\n%s\n\n", accepted, line)
