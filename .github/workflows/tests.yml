@@ -37,9 +37,9 @@ jobs:
       - name: Unit tests (race detector) and coverage
         working-directory: nodes
         run: go test -race -cover $(go list ./... | grep -v /e2e)
-      - name: Acceptance tests — scenarios 1-12 and 14 on a 4-validator network
+      - name: Acceptance tests — scenarios 1-12, 14 and 15 on a 4-validator network
         working-directory: nodes
-        run: go test -v -timeout 20m ./e2e
+        run: go test -v -timeout 25m ./e2e
 
   oracle:
     name: Oracle service
