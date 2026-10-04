@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeDesk Wallet — approve</title>
+<link rel="stylesheet" href="wallet.css">
+</head>
+<body>
+  <header><span class="logo">◆</span> TradeDesk Wallet</header>
+  <p class="who">Request from <b id="origin"></b></p>
+  <div id="body">
+    <h1 id="title"></h1>
+    <table id="rows"></table>
+    <p class="meta">Signing account: <b id="account"></b><br><span id="meta"></span></p>
+    <p class="note">These details are read by the wallet from the exact bytes it will sign.
+      If they are not what you entered on the site, reject.</p>
+  </div>
+  <details><summary>Exact text to be signed</summary><pre id="raw"></pre></details>
+  <div class="actions">
+    <button id="reject" class="secondary">Reject</button>
+    <button id="approve" disabled>Approve and sign</button>
+  </div>
+  <script type="module" src="approve.js"></script>
+</body>
+</html>

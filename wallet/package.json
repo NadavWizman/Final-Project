@@ -1,0 +1,11 @@
+{
+  "type": "module",
+  "private": true,
+  "name": "tradedesk-wallet",
+  "scripts": {
+    "test": "node --test core.test.mjs && node test/scenario13.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

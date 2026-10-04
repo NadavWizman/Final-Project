@@ -36,3 +36,7 @@ logs/
 # local network and node binary (bash setup.sh)
 testnet/
 nodes/tradedesk-node
+
+# wallet test dependencies
+wallet/node_modules/
+wallet/package-lock.json

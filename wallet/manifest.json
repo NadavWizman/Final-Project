@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "TradeDesk Wallet",
+  "version": "1.0.0",
+  "description": "Holds your TradeDesk signing keys (non-extractable) and signs a transaction only after you approve its details.",
+  "action": { "default_popup": "popup.html", "default_title": "TradeDesk Wallet" },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": ["storage"],
+  "content_scripts": [{
+    "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+    "js": ["content.js"],
+    "run_at": "document_start"
+  }],
+  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'" }
+}

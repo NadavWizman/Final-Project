@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TradeDesk Wallet</title>
+<link rel="stylesheet" href="wallet.css">
+</head>
+<body>
+  <header><span class="logo">◆</span> TradeDesk Wallet</header>
+
+  <section id="list-view">
+    <div id="accounts"></div>
+    <div class="actions" style="margin-top:14px">
+      <button id="new">New account</button>
+      <button id="restore" class="secondary">Restore</button>
+    </div>
+    <p class="note" style="margin-top:14px">Your signing keys live only in this wallet and cannot be
+      exported. A TradeDesk site can ask for a signature; you approve each one here.</p>
+  </section>
+
+  <section id="new-view" class="hidden">
+    <h2>Your recovery code</h2>
+    <p class="code" id="code"></p>
+    <p class="note">Write it down and keep it private. It is the only way to restore this account in
+      another browser — the wallet will not show it again.</p>
+    <input id="new-label" placeholder="Label (e.g. my trading account)">
+    <div class="actions">
+      <button id="new-cancel" class="secondary">Cancel</button>
+      <button id="new-save">I wrote it down</button>
+    </div>
+  </section>
+
+  <section id="restore-view" class="hidden">
+    <h2>Restore an account</h2>
+    <textarea id="restore-code" rows="2" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"></textarea>
+    <input id="restore-label" placeholder="Label">
+    <p class="err hidden" id="restore-error"></p>
+    <div class="actions">
+      <button id="restore-cancel" class="secondary">Cancel</button>
+      <button id="restore-save">Restore</button>
+    </div>
+  </section>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+:root { --fg: #1f2933; --muted: #5b6472; --line: #d7dce3; --teal: #0f766e; --bg: #ffffff; --soft: #f2faf8; --red: #c0392b; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #e8ecf1; --muted: #a3acb9; --line: #3a4350; --teal: #2dd4bf; --bg: #15191f; --soft: #1b2a28; --red: #ff6b5a; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; width: 380px; min-height: 200px; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Arial, sans-serif; color: var(--fg); background: var(--bg); }
+header { font-weight: 700; font-size: 15px; margin-bottom: 12px; }
+.logo { color: var(--teal); }
+h1 { font-size: 20px; margin: 8px 0 12px; }
+h2 { font-size: 15px; margin: 18px 0 8px; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; width: 40%; }
+td { font-weight: 600; word-break: break-word; }
+.who, .meta, .note { color: var(--muted); font-size: 13px; }
+.note { background: var(--soft); border-radius: 8px; padding: 8px 10px; }
+.err { color: var(--red); font-weight: 600; }
+pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; background: var(--soft); padding: 8px; border-radius: 6px; }
+details { margin: 8px 0 14px; color: var(--muted); }
+.actions { display: flex; gap: 10px; }
+button { flex: 1; padding: 10px; border: 0; border-radius: 8px; background: var(--teal); color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; }
+button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+button:disabled { opacity: .45; cursor: default; }
+input, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: var(--bg); color: var(--fg); margin-bottom: 8px; }
+.code { font: 600 16px/1.6 ui-monospace, Menlo, monospace; letter-spacing: 1px; background: var(--soft); border-radius: 8px; padding: 10px; text-align: center; word-spacing: 6px; }
+.account { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.account small { color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+.account button { flex: 0 0 auto; padding: 4px 10px; font-size: 12px; }
+.hidden { display: none; }
