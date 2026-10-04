@@ -34,10 +34,10 @@ jobs:
       - name: Check formatting
         working-directory: nodes
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
-      - name: Unit tests (race detector)
+      - name: Unit tests (race detector) and coverage
         working-directory: nodes
-        run: go test -race $(go list ./... | grep -v /e2e)
-      - name: Acceptance tests — 12 attack scenarios on a 4-validator network
+        run: go test -race -cover $(go list ./... | grep -v /e2e)
+      - name: Acceptance tests — scenarios 1-12 and 14 on a 4-validator network
         working-directory: nodes
         run: go test -v -timeout 20m ./e2e
 
@@ -72,3 +72,21 @@ jobs:
           open('/tmp/app.js', 'w').write('\n'.join(scripts))
           PY
           node --check /tmp/app.js
+
+  wallet:
+    name: Wallet extension (scenario 13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: Install the test browser
+        working-directory: wallet
+        run: npm install --no-audit --no-fund && npx playwright-core install --with-deps chromium
+      - name: Wallet core unit tests
+        working-directory: wallet
+        run: node --test core.test.mjs
+      - name: Acceptance scenario 13 — a compromised gateway asks to sign a different quantity
+        working-directory: wallet
+        run: node test/scenario13.mjs
