@@ -388,3 +388,48 @@ func TestPriceSourcesDown(t *testing.T) {
 	}
 	t.Fatal("the waiting order did not execute after a source came back")
 }
+
+// The whole network stops for longer than a quote may be ahead of the block
+// time (MaxFuture). The next block's time is the last commit's — before the
+// stop — so every fresh quote looks like it comes from the future. The
+// proposer must drop those quotes rather than propose a bundle that every
+// validator rejects: the block closes without prices, the one after it has
+// a current time, and trading resumes by itself.
+func TestNetworkRecoversAfterDowntime(t *testing.T) {
+	c := newCluster(t, 4)
+	c.setPrice("AAPL", 20000)
+	w := registered(t, c, "alice")
+	watchAAPL(c, w) // every block now asks for AAPL quotes
+	before := c.height()
+
+	c.stopAll()
+	time.Sleep(time.Duration(quotes.MaxFuture+10) * time.Second)
+	for i := range c.nodes {
+		// see TestEditedStateFileIsDetectedAndRebuilt: an in-process restart
+		// cannot reopen the transaction index, so run without it
+		conf, err := chainnode.LoadConfig(c.net.NodeHome(i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		conf.TxIndex.Indexer = "null"
+		cmtcfg.WriteConfigFile(filepath.Join(c.net.NodeHome(i), "config", "config.toml"), conf)
+		c.start(i)
+	}
+	c.waitHeight(before+3, 60*time.Second)
+	if code, log := c.broadcastRaw(0, w.buy("AAPL", "1")); code != 0 {
+		t.Fatalf("refused after the downtime: %s", log)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if a := c.account(0, w.addr); a.Holdings["AAPL"] == ledger.QtyScale {
+			if r := lastRecord(a); r.Status != "CONFIRMED" || r.Price != 20000 {
+				t.Fatalf("after the downtime: %+v", r)
+			}
+			c.waitHeight(c.height()+1, 10*time.Second)
+			c.sameStateEverywhere()
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("no trade settled after the downtime (height %d)", c.height())
+}
