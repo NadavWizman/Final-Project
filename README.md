@@ -225,7 +225,7 @@ cd backend && python3 manage.py test gateway                # gateway
 cd oracle_service && python3 -m unittest -v                 # price signers
 ```
 
-Coverage: `nodes/ledger` 85 %, `nodes/quotes` 95 %.
+Coverage: `nodes/ledger` 86 %, `nodes/quotes` 98 %, `nodes/app` 81 % (with the acceptance tests).
 
 ---
 
