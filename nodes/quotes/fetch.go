@@ -20,6 +20,11 @@ type Fetcher interface {
 type GRPCFetcher struct {
 	Addrs   []string // oracle signer addresses
 	Timeout time.Duration
+	// MinQuotes is the quorum: once every ticker has this many quotes, the
+	// fetch waits only Grace more for the slower sources, instead of
+	// letting the slowest source set the block time. 0 waits for all.
+	MinQuotes int
+	Grace     time.Duration
 
 	once  sync.Once
 	conns []*grpc.ClientConn
@@ -34,36 +39,65 @@ func (f *GRPCFetcher) dial() {
 	}
 }
 
-// Fetch returns whatever quotes arrive within the timeout; a source that
-// fails or is slow simply contributes nothing this block.
+// Fetch returns the quotes that arrive in time: all of them, or — once every
+// ticker has MinQuotes — those that arrive within the grace period after
+// that. A source that fails or is slow contributes nothing this block.
 func (f *GRPCFetcher) Fetch(ctx context.Context, tickers []string) []Quote {
 	f.once.Do(f.dial)
-	timeout := f.Timeout
+	timeout, grace := f.Timeout, f.Grace
 	if timeout == 0 {
 		timeout = 3 * time.Second
+	}
+	if grace == 0 {
+		grace = 150 * time.Millisecond
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var mu sync.Mutex
-	var out []Quote
-	var wg sync.WaitGroup
+	total := len(f.conns) * len(tickers)
+	results := make(chan *Quote, total) // buffered: late answers never block
 	for _, conn := range f.conns {
 		client := pb.NewOracleServiceClient(conn)
 		for _, t := range tickers {
-			wg.Add(1)
 			go func(t string) {
-				defer wg.Done()
 				r, err := client.SignQuote(ctx, &pb.PriceRequest{Ticker: t})
 				if err != nil {
+					results <- nil
 					return
 				}
-				mu.Lock()
-				out = append(out, Quote{Source: r.Source, Ticker: r.Ticker, Price: r.PriceCents, Time: r.Timestamp, Sig: r.Signature})
-				mu.Unlock()
+				results <- &Quote{Source: r.Source, Ticker: r.Ticker, Price: r.PriceCents, Time: r.Timestamp, Sig: r.Signature}
 			}(t)
 		}
 	}
-	wg.Wait()
+
+	var out []Quote
+	perTicker := map[string]int{}
+	var graceC <-chan time.Time
+	for answered := 0; answered < total; answered++ {
+		select {
+		case q := <-results:
+			if q == nil {
+				continue
+			}
+			out = append(out, *q)
+			perTicker[q.Ticker]++
+			if graceC == nil && f.MinQuotes > 0 && enough(perTicker, tickers, f.MinQuotes) {
+				graceC = time.After(grace)
+			}
+		case <-graceC:
+			return out
+		case <-ctx.Done():
+			return out
+		}
+	}
 	return out
+}
+
+func enough(perTicker map[string]int, tickers []string, min int) bool {
+	for _, t := range tickers {
+		if perTicker[t] < min {
+			return false
+		}
+	}
+	return true
 }

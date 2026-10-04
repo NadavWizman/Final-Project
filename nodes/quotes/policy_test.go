@@ -130,12 +130,14 @@ type oracleServer struct {
 	s     signer
 	price int64
 	fail  bool
+	delay time.Duration
 }
 
 func (o *oracleServer) SignQuote(_ context.Context, r *pb.PriceRequest) (*pb.SignedQuote, error) {
 	if o.fail {
 		return nil, errors.New("source down")
 	}
+	time.Sleep(o.delay)
 	q := o.s.quote(r.Ticker, o.price, time.Now().Unix())
 	return &pb.SignedQuote{Source: q.Source, Ticker: q.Ticker, PriceCents: q.Price, Timestamp: q.Time, Signature: q.Sig}, nil
 }
@@ -165,5 +167,34 @@ func TestGRPCFetcher(t *testing.T) {
 	p, err := Verify(Encode(Build(qs, 3)), src, 3, listed, time.Now().Unix())
 	if err != nil || p["AAPL"] != 20001 {
 		t.Fatalf("%v %v", p, err)
+	}
+}
+
+// With a quorum, a slow source does not set the block time: the fetch ends
+// shortly after every ticker has enough quotes.
+func TestGRPCFetcherDoesNotWaitForTheSlowest(t *testing.T) {
+	ss, src := newSigners(five...)
+	var addrs []string
+	for i, s := range ss {
+		lis, _ := net.Listen("tcp", "127.0.0.1:0")
+		g := grpc.NewServer()
+		var d time.Duration
+		if i == 4 {
+			d = 2 * time.Second // the slow one
+		}
+		pb.RegisterOracleServiceServer(g, &oracleServer{s: s, price: 20000 + int64(i), delay: d})
+		go func() { _ = g.Serve(lis) }()
+		t.Cleanup(g.Stop)
+		addrs = append(addrs, lis.Addr().String())
+	}
+	f := &GRPCFetcher{Addrs: addrs, MinQuotes: 3}
+	f.Fetch(context.Background(), []string{"AAPL"}) // connect
+	start := time.Now()
+	qs := f.Fetch(context.Background(), []string{"AAPL", "MSFT"})
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("waited %v for the slow source", took)
+	}
+	if p, err := Verify(Encode(Build(qs, 3)), src, 3, listed, time.Now().Unix()); err != nil || len(p) != 2 {
+		t.Fatalf("%v %v (%d quotes)", p, err, len(qs))
 	}
 }

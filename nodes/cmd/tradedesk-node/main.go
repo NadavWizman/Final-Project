@@ -119,7 +119,7 @@ func startCmd(args []string) {
 		logger = cmtlog.NewFilter(logger, cmtlog.AllowError(),
 			cmtlog.AllowInfoWith("module", "tradedesk"), cmtlog.AllowInfoWith("module", "state"))
 	}
-	n, err := chainnode.Start(*home, &quotes.GRPCFetcher{Addrs: addrs}, logger)
+	n, err := chainnode.Start(*home, &quotes.GRPCFetcher{Addrs: addrs, MinQuotes: quorumOf(*home)}, logger)
 	if err != nil {
 		fail(err)
 	}
@@ -247,6 +247,23 @@ func depositCmd(args []string) {
 		fail(fmt.Errorf("refused: %s", res.CheckTx.Log))
 	}
 	fmt.Printf("deposit #%d of %s to %s committed at height %d\n", st.CustodySeq, *amount, addr, res.Height)
+}
+
+// quorumOf reads the price quorum from this node's genesis file.
+func quorumOf(home string) int {
+	c, err := chainnode.LoadConfig(home)
+	if err != nil {
+		return 0
+	}
+	gen, err := types.GenesisDocFromFile(c.GenesisFile())
+	if err != nil {
+		return 0
+	}
+	var g app.GenesisState
+	if json.Unmarshal(gen.AppState, &g) != nil {
+		return 0
+	}
+	return g.Params.OracleQuorum
 }
 
 func fail(err error) {
