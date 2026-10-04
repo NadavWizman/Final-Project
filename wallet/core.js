@@ -101,25 +101,26 @@ function unbase32(text, nBytes) {
 }
 
 // ── recovery codes ────────────────────────────────────────────────────
-// 16 random bytes + 1 checksum byte (first byte of SHA-256) = 28 characters,
-// written in 7 groups of 4.
+// 16 random bytes + a 4-byte checksum (the start of SHA-256) = 160 bits =
+// exactly 32 characters, written in 8 groups of 4. A typo is caught with
+// probability 1 − 2⁻³², and there are no spare bits, so every seed has one code.
 export async function newRecoveryCode() {
   return recoveryCode(crypto.getRandomValues(new Uint8Array(16)));
 }
 
 export async function recoveryCode(seed) {
   const sum = new Uint8Array(await crypto.subtle.digest('SHA-256', seed));
-  return base32([...seed, sum[0]]).match(/.{1,4}/g).join('-');
+  return base32([...seed, ...sum.slice(0, 4)]).match(/.{4}/g).join('-');
 }
 
 export async function seedFromCode(code) {
   const clean = String(code).toUpperCase().replace(/[\s-]/g, '')
     .replace(/O/g, '0').replace(/[IL]/g, '1');
-  if (clean.length !== 28) throw new Error('a recovery code has 28 characters (7 groups of 4)');
-  const raw = unbase32(clean, 17);
+  if (clean.length !== 32) throw new Error('a recovery code has 32 characters (8 groups of 4)');
+  const raw = unbase32(clean, 20);
   const seed = raw.slice(0, 16);
   const sum = new Uint8Array(await crypto.subtle.digest('SHA-256', seed));
-  if (sum[0] !== raw[16]) throw new Error('the recovery code has a typo (checksum does not match)');
+  if (sum.slice(0, 4).some((b, i) => b !== raw[16 + i])) throw new Error('the recovery code has a typo (checksum does not match)');
   return seed;
 }
 
@@ -159,9 +160,18 @@ export async function signText(privateKey, text) {
 // fields with string values. Anything else is refused, so the details shown
 // to the user are the only reading of the signed bytes.
 const FIELDS = {
-  msg: ['type', 'chain', 'from', 'nonce', 'username', 'order', 'level', 'level_id'],
-  order: ['kind', 'side', 'ticker', 'qty', 'limit', 'leverage', 'position', 'option_type', 'strike', 'expiry', 'sl', 'sl_qty', 'tp', 'tp_qty'],
+  msg: { register: ['username'], order: ['order'], level_add: ['level'], level_cancel: ['level_id'] },
   level: ['kind', 'ticker', 'cfd', 'price', 'qty'],
+};
+// The fields each order kind may carry — the same rules the chain enforces,
+// so every field of a signable order is shown and acted on.
+const ORDER_FIELDS = {
+  STOCK: ['kind', 'side', 'ticker', 'qty', 'limit', 'sl', 'sl_qty', 'tp', 'tp_qty'],
+  CFD: ['kind', 'side', 'ticker', 'qty', 'limit', 'leverage', 'sl', 'sl_qty', 'tp', 'tp_qty'],
+  CFD_CLOSE: ['kind', 'side', 'ticker', 'qty', 'position'],
+  OPTION: ['kind', 'side', 'ticker', 'qty', 'option_type', 'strike', 'expiry'],
+  OPT_CLOSE: ['kind', 'side', 'ticker', 'qty', 'position'],
+  OPT_EXER: ['kind', 'side', 'ticker', 'qty', 'position'],
 };
 const KIND_LABEL = {
   STOCK: 'Stock', CFD: 'CFD (leveraged)', CFD_CLOSE: 'Close CFD position',
@@ -182,30 +192,40 @@ export function describe(text) {
   let m;
   try { m = JSON.parse(text); } catch { throw new Error('not a TradeDesk transaction (not JSON)'); }
   if (JSON.stringify(m) !== text) throw new Error('not in canonical form (duplicate keys or extra characters)');
-  checkObject(m, FIELDS.msg, 'the transaction');
-  for (const k of ['type', 'chain', 'from', 'nonce']) {
-    if (typeof m[k] !== 'string' || !m[k]) throw new Error(`missing "${k}"`);
+  if (typeof m !== 'object' || m === null || !FIELDS.msg[m.type]) throw new Error(`unknown transaction type "${m && m.type}"`);
+  checkObject(m, ['type', 'chain', 'from', 'nonce', ...FIELDS.msg[m.type]], 'the transaction');
+  for (const k of ['type', 'chain', 'from', 'nonce', ...FIELDS.msg[m.type]]) {
+    if (m[k] === undefined || m[k] === '') throw new Error(`missing "${k}"`);
   }
   const rows = [];
   let title;
   switch (m.type) {
     case 'register':
-      if (!m.username) throw new Error('missing username');
       title = 'Create account';
       rows.push(['Username', m.username]);
       break;
     case 'order': {
       const o = m.order;
-      checkObject(o, FIELDS.order, 'the order');
-      if (!KIND_LABEL[o.kind]) throw new Error(`unknown order kind "${o.kind}"`);
+      if (!o || !ORDER_FIELDS[o.kind]) throw new Error(`unknown order kind "${o && o.kind}"`);
+      checkObject(o, ORDER_FIELDS[o.kind], `a ${o.kind} order`);
       if (o.side !== 'BUY' && o.side !== 'SELL') throw new Error('side must be BUY or SELL');
+      const closing = ['CFD_CLOSE', 'OPT_CLOSE', 'OPT_EXER'].includes(o.kind);
+      const required = ['ticker', 'qty', ...(closing ? ['position'] : []), ...(o.kind === 'CFD' ? ['leverage'] : []),
+        ...(o.kind === 'OPTION' ? ['option_type', 'strike', 'expiry'] : [])];
+      for (const k of required) if (!o[k]) throw new Error(`missing "${k}" in a ${o.kind} order`);
+      if (closing) {
+        title = KIND_LABEL[o.kind];
+        rows.push(['Ticker', o.ticker], ['Position', '#' + o.position]);
+        rows.push(o.kind === 'CFD_CLOSE' ? ['Quantity', o.qty] : ['Contracts', o.qty + ' (the whole position)']);
+        rows.push(['Price', 'market (median of the signed quotes)']);
+        break;
+      }
       title = `${o.side === 'BUY' ? 'Buy' : 'Sell'} · ${KIND_LABEL[o.kind]}`;
-      rows.push(['Ticker', o.ticker], ['Side', o.side], ['Quantity', o.qty]);
+      rows.push(['Ticker', o.ticker], ['Side', o.side], [o.kind === 'OPTION' ? 'Contracts' : 'Quantity', o.qty]);
       if (o.limit) rows.push(['Limit price', '$' + o.limit]);
-      else if (o.kind === 'STOCK' || o.kind === 'CFD') rows.push(['Price', 'market (median of the signed quotes)']);
+      else if (o.kind !== 'OPTION') rows.push(['Price', 'market (median of the signed quotes)']);
       if (o.leverage) rows.push(['Leverage', o.leverage + '×']);
-      if (o.position) rows.push(['Position', '#' + o.position]);
-      if (o.option_type) rows.push(['Option', `${o.option_type} strike $${o.strike} expiring ${o.expiry}`]);
+      if (o.kind === 'OPTION') rows.push(['Option', `${o.option_type} strike $${o.strike} expiring ${o.expiry}`]);
       if (o.sl) rows.push(['Stop-loss', `$${o.sl}` + (o.sl_qty ? ` for ${o.sl_qty}` : '')]);
       if (o.tp) rows.push(['Take-profit', `$${o.tp}` + (o.tp_qty ? ` for ${o.tp_qty}` : '')]);
       break;
@@ -222,10 +242,6 @@ export function describe(text) {
       title = 'Cancel a stop-loss / take-profit';
       rows.push(['Level', '#' + m.level_id]);
       break;
-    default:
-      throw new Error(`unknown transaction type "${m.type}"`);
   }
-  if (m.type !== 'order' && m.order) throw new Error('unexpected order field');
-  if (m.type !== 'level_add' && m.level) throw new Error('unexpected level field');
   return { type: m.type, from: m.from, chain: m.chain, nonce: m.nonce, title, rows };
 }

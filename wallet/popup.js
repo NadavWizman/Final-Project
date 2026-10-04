@@ -18,11 +18,25 @@ async function render() {
   document.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
     if (confirm('Remove this account from the wallet? Without its recovery code it cannot be restored.')) {
       await removeAccount(b.dataset.remove);
-      render();
+      showList();
     }
   });
-  view('list');
+  const { allowed = {} } = await chrome.storage.local.get('allowed');
+  const sites = Object.keys(allowed);
+  $('#sites').innerHTML = sites.length
+    ? sites.map(o => `<div class="account"><small>${esc(o)}</small><button class="secondary" data-site="${esc(o)}">Disconnect</button></div>`).join('')
+    : '<p class="note">None.</p>';
+  document.querySelectorAll('[data-site]').forEach(b => b.onclick = async () => {
+    const { allowed = {} } = await chrome.storage.local.get('allowed');
+    delete allowed[b.dataset.site];
+    await chrome.storage.local.set({ allowed });
+    render();
+  });
 }
+
+// back to the account list after an action (the first load only fills the
+// lists, so a quick click is never undone by it)
+const showList = async () => { await render(); view('list'); };
 
 async function save(seed, label) {
   const k = await keyFromSeed(seed);
@@ -35,18 +49,18 @@ $('#new').onclick = async () => {
   $('#new-label').value = '';
   view('new');
 };
-$('#new-cancel').onclick = () => { code = null; render(); };
+$('#new-cancel').onclick = () => { code = null; showList(); };
 $('#new-save').onclick = async () => {
   await save(await seedFromCode(code), $('#new-label').value.trim());
   code = null;
-  render();
+  showList();
 };
 $('#restore').onclick = () => { $('#restore-code').value = ''; $('#restore-error').classList.add('hidden'); view('restore'); };
-$('#restore-cancel').onclick = render;
+$('#restore-cancel').onclick = showList;
 $('#restore-save').onclick = async () => {
   try {
     await save(await seedFromCode($('#restore-code').value), $('#restore-label').value.trim());
-    render();
+    showList();
   } catch (e) {
     $('#restore-error').textContent = e.message;
     $('#restore-error').classList.remove('hidden');

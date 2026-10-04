@@ -12,10 +12,10 @@
     <h1 id="title"></h1>
     <table id="rows"></table>
     <p class="meta">Signing account: <b id="account"></b><br><span id="meta"></span></p>
-    <p class="note">These details are read by the wallet from the exact bytes it will sign.
+    <p class="note" id="note">These details are read by the wallet from the exact bytes it will sign.
       If they are not what you entered on the site, reject.</p>
   </div>
-  <details><summary>Exact text to be signed</summary><pre id="raw"></pre></details>
+  <details id="raw-box"><summary>Exact text to be signed</summary><pre id="raw"></pre></details>
   <div class="actions">
     <button id="reject" class="secondary">Reject</button>
     <button id="approve" disabled>Approve and sign</button>

@@ -977,12 +977,29 @@ async function renderSavedAccounts() {
     return;
   }
   let list = [];
-  try { list = await walletCall('accounts'); } catch (e) { el.innerHTML = `<p class="error-msg">${esc(e.message)}</p>`; return; }
+  try { list = await walletCall('accounts'); } catch (e) {
+    if (e.message === 'not connected') {
+      el.innerHTML = `<button class="btn-primary" onclick="connectWallet()">Connect the TradeDesk Wallet</button>
+        <p class="wallet-note">The wallet asks you once whether this site may see your accounts.</p>`;
+      if (sel) sel.innerHTML = '';
+      return;
+    }
+    el.innerHTML = `<p class="error-msg">${esc(e.message)}</p>`;
+    return;
+  }
   el.innerHTML = list.length
     ? list.map(a => `<button class="wallet-account" onclick="doLogin('${esc(a.address)}')">
         <span>${esc(a.label)}</span><small>${esc(a.address.slice(0, 10))}…</small></button>`).join('')
     : `<p class="wallet-note">The wallet has no account yet — open it from the toolbar and create one.</p>`;
   if (sel) sel.innerHTML = list.map(a => `<option value="${esc(a.address)}">${esc(a.label)} · ${esc(a.address.slice(0, 10))}…</option>`).join('');
+}
+
+async function connectWallet() {
+  const errEl = document.getElementById('login-error');
+  errEl.style.display = 'none';
+  try { await walletCall('connect', {}, 10 * 60 * 1000); }
+  catch (e) { showErr(errEl, e.message === 'rejected in the wallet' ? 'Connection declined in the wallet.' : e.message); }
+  renderSavedAccounts();
 }
 
 async function doLogin(address) {
@@ -2703,7 +2720,7 @@ function renderCFD() {
                oninput="S.cfdQty=this.value;updateCFDPriceCard()">
         <div class="field-label">Leverage</div>
         <div class="leverage-picker">
-          ${[2,5,10,20,50].map(l =>
+          ${[2,5,10,20].map(l =>
             `<button class="lev-btn ${S.cfdLeverage===l?'active':''}" onclick="setCFDLeverage(${l})">${l}x</button>`
           ).join('')}
         </div>

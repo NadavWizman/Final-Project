@@ -55,7 +55,7 @@ try {
   await popup.click('#new-save');
   await popup.waitForSelector('.account small');
   const address = await popup.textContent('.account small');
-  check('Account created in the wallet, recovery code shown once', /^([0-9A-Z]{4}-){6}[0-9A-Z]{4}$/.test(code), address);
+  check('Account created in the wallet, recovery code shown once', /^([0-9A-Z]{4}-){7}[0-9A-Z]{4}$/.test(code), address);
 
   // the key is non-extractable: not even the wallet's own pages can export it
   const exported = await popup.evaluate(async () => {
@@ -67,12 +67,34 @@ try {
 
   const page = await ctx.newPage();
   await page.goto(site);
+  const call = (id, method, text) => page.evaluate(([i, m, t]) => window.askWallet(i, m, t), [id, method, text]);
+  const waitResult = id => page.waitForFunction(i => window.results[i], id).then(() => page.evaluate(i => window.results[i], id));
+
+  // 1b. a site that is not connected sees nothing and cannot ask for a signature
+  await call('acc0', 'accounts');
+  const acc0 = await waitResult('acc0');
+  await call('sig0', 'sign', '{}');
+  const sig0 = await waitResult('sig0');
+  check('Unconnected site gets no accounts and cannot ask to sign',
+    acc0.error === 'not connected' && /not connected/.test(sig0.error), `${acc0.error} / ${sig0.error}`);
+
+  // 1c. connecting needs the user's approval in the wallet
+  const [cwin] = await Promise.all([ctx.waitForEvent('page'), call('conn', 'connect')]);
+  await cwin.waitForLoadState();
+  await cwin.waitForFunction(() => document.querySelector('#title')?.textContent);
+  const armedAtOnce = !(await cwin.isDisabled('#approve'));
+  await cwin.waitForFunction(() => !document.querySelector('#approve').disabled);
+  await cwin.click('#approve');
+  const conn = await waitResult('conn');
+  check('Connecting the site needs approval; Approve is not clickable at once',
+    !armedAtOnce && conn.result?.[0]?.address === address, JSON.stringify(conn.result));
   const order = qty => JSON.stringify({ type: 'order', order: { kind: 'STOCK', side: 'BUY', ticker: 'AAPL', qty },
     chain: 'tradedesk-local', from: address, nonce: '1' });
   const approvalFor = async (id, text) => {
     const [win] = await Promise.all([ctx.waitForEvent('page'), page.evaluate(([i, t]) => window.askWallet(i, 'sign', t), [id, text])]);
     await win.waitForLoadState();
     await win.waitForFunction(() => document.querySelector('.err') || document.querySelector('#title')?.textContent);
+    await win.waitForFunction(() => !document.querySelector('#approve').disabled || document.querySelector('.err'));
     return win;
   };
   const result = id => page.evaluate(i => window.results[i] || null, id);
@@ -89,6 +111,21 @@ try {
   await page.waitForFunction(() => window.results.attack);
   const rejected = await result('attack');
   check('Rejecting gives the page no signature', !rejected.result && /rejected/.test(rejected.error), rejected.error);
+
+  // 2b. requests fired together open one window; the others are refused
+  const opened = [];
+  const onPage = p => opened.push(p);
+  ctx.on('page', onPage);
+  await page.evaluate(t => { for (const i of ['c1', 'c2', 'c3']) window.askWallet(i, 'sign', t); }, order('50'));
+  await page.waitForFunction(() => window.results.c2 && window.results.c3);
+  await page.waitForTimeout(500);
+  ctx.off('page', onPage);
+  const refused = await page.evaluate(() => [window.results.c2.error, window.results.c3.error]);
+  check('Concurrent requests open a single approval window', opened.length === 1 && refused.every(e => /waiting/.test(e)),
+    `${opened.length} window(s): ${refused.join(' / ')}`);
+  await opened[0].waitForLoadState();
+  await opened[0].click('#reject');
+  await waitResult('c1');
 
   // 3. closing the window is a rejection too
   const win2 = await approvalFor('closed', order('50'));

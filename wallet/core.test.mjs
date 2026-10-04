@@ -17,13 +17,13 @@ test('point multiplication agrees with WebCrypto', async () => {
 
 test('recovery code: round trip, readable variants, typos caught', async () => {
   const code = await newRecoveryCode();
-  assert.match(code, /^([0-9A-HJKMNP-TV-Z]{4}-){6}[0-9A-HJKMNP-TV-Z]{4}$/);
+  assert.match(code, /^([0-9A-HJKMNP-TV-Z]{4}-){7}[0-9A-HJKMNP-TV-Z]{4}$/);
   const seed = await seedFromCode(code);
   assert.equal(await recoveryCode(seed), code);
   assert.deepEqual(await seedFromCode(code.toLowerCase().replace(/-/g, ' ')), seed);
   const typo = (code[0] === '0' ? '1' : '0') + code.slice(1);
   await assert.rejects(seedFromCode(typo), /typo/);
-  await assert.rejects(seedFromCode(code.slice(0, 20)), /28 characters/);
+  await assert.rejects(seedFromCode(code.slice(0, 20)), /32 characters/);
 });
 
 test('the same code gives the same account, and the key cannot be exported', async () => {
@@ -59,6 +59,8 @@ test('describe shows the details read from the signed bytes', () => {
   });
   assert.equal(describe(JSON.stringify({ type: 'register', username: 'alice', ...base })).rows[0][1], 'alice');
   assert.equal(describe(JSON.stringify({ type: 'level_cancel', level_id: '12', ...base })).rows[0][1], '#12');
+  const close = Object.fromEntries(describe(order({ kind: 'OPT_CLOSE', side: 'SELL', ticker: 'AAPL', qty: '5', position: '9' })).rows);
+  assert.equal(close.Contracts, '5 (the whole position)');
 });
 
 test('the wallet refuses what it cannot read unambiguously', () => {
@@ -73,6 +75,10 @@ test('the wallet refuses what it cannot read unambiguously', () => {
     'unknown type': JSON.stringify({ type: 'deposit', ...base }),
     'missing nonce': JSON.stringify({ type: 'order', order: { kind: 'STOCK', side: 'BUY', ticker: 'AAPL', qty: '1' }, chain: 'x', from: 'y' }),
     'not JSON': 'sign me',
+    'leverage on a stock order': order({ kind: 'STOCK', side: 'BUY', ticker: 'AAPL', qty: '1', leverage: '50' }),
+    'close without a position': order({ kind: 'CFD_CLOSE', side: 'SELL', ticker: 'AAPL', qty: '1' }),
+    'CFD without leverage': order({ kind: 'CFD', side: 'BUY', ticker: 'AAPL', qty: '1' }),
+    'username on an order': JSON.stringify({ type: 'order', username: 'x', order: { kind: 'STOCK', side: 'BUY', ticker: 'AAPL', qty: '1' }, ...base }),
   };
   for (const [name, text] of Object.entries(bad)) {
     assert.throws(() => describe(text), undefined, name);
