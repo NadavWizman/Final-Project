@@ -85,7 +85,7 @@ def yahoo(ticker):
 
 
 def nasdaq(ticker):
-    url = f'https://api.nasdaq.com/api/quote/{urllib.parse.quote(ticker)}/info?assetclass=stocks'
+    url = f'https://api.nasdaq.com/api/quote/{urllib.parse.quote(ticker, safe='')}/info?assetclass=stocks'
     d = _get_json(url)
     price = _money(((d.get('data') or {}).get('primaryData') or {}).get('lastSalePrice'))
     if price is None:
@@ -95,7 +95,7 @@ def nasdaq(ticker):
 
 def cnbc(ticker):
     url = ('https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol?symbols='
-           + urllib.parse.quote(ticker) + '&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json')
+           + urllib.parse.quote(ticker, safe='') + '&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=1&output=json')
     q = _get_json(url)['FormattedQuoteResult']['FormattedQuote'][0]
     price = _money(q.get('last'))
     if price is None:
@@ -104,6 +104,7 @@ def cnbc(ticker):
 
 
 EXCHANGES = ('NASDAQ', 'NYSE', 'AMEX')
+TICKER_RE = re.compile(r'[A-Z][A-Z.]{0,9}')
 
 
 def tradingview(ticker):
@@ -121,7 +122,7 @@ def google(ticker):
     """Google Finance's quote page, which embeds the last price next to the
     symbol: ["AAPL","NASDAQ"],"Apple Inc",0,"USD",[333.69, …"""
     for ex in EXCHANGES[:2]:
-        page = _get_text(f'https://www.google.com/finance/quote/{urllib.parse.quote(ticker)}:{ex}')
+        page = _get_text(f'https://www.google.com/finance/quote/{urllib.parse.quote(ticker, safe='')}:{ex}')
         m = re.search(r'\["' + re.escape(ticker) + r'","' + ex + r'"\],"[^"]*",\d+,"USD",\[([0-9.]+)', page)
         if m and _money(m.group(1)) is not None:
             return _money(m.group(1)), ''
@@ -158,6 +159,8 @@ class OracleServicer(oracle_pb2_grpc.OracleServiceServicer):
 
     def _price_or_abort(self, request, context):
         ticker = request.ticker.upper()
+        if not TICKER_RE.fullmatch(ticker):   # never put arbitrary text into a provider's URL
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, f'{self.name}: malformed ticker')
         try:
             return ticker, self._quote(ticker)
         except Exception as e:

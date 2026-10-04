@@ -94,6 +94,14 @@ class SourceParsingTests(unittest.TestCase):
             with self.assertRaises(LookupError):
                 o.google('AAPL')
 
+    def test_malformed_ticker_is_refused_before_any_request(self):
+        servicer, _ = _signer(MagicMock(side_effect=AssertionError('fetched')))
+        ctx = MagicMock()
+        ctx.abort.side_effect = RuntimeError('aborted')
+        with self.assertRaises(RuntimeError):
+            servicer.SignQuote(MagicMock(ticker='../../admin'), ctx)
+        self.assertEqual(ctx.abort.call_args.args[0], o.grpc.StatusCode.INVALID_ARGUMENT)
+
 
 if __name__ == '__main__':
     unittest.main()
