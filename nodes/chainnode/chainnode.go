@@ -63,6 +63,18 @@ func (t Testnet) OracleKeyFile(name string) string {
 	return filepath.Join(t.Dir, "oracles", name+".key")
 }
 
+// CustodyKeyFile is where the custodian's signing key is written. Whoever
+// holds it can credit deposits (in a real system: the bank or clearing firm).
+func (t Testnet) CustodyKeyFile() string { return filepath.Join(t.Dir, "custody.key") }
+
+// writeKey stores an Ed25519 key as its hex seed, readable by its owner only.
+func writeKey(f string, priv ed25519.PrivateKey) error {
+	if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(f, []byte(hex.EncodeToString(priv.Seed())+"\n"), 0o600)
+}
+
 // NodeSettings are TradeDesk settings of one node, next to CometBFT's config.
 type NodeSettings struct {
 	Oracles []string `json:"oracles"` // oracle signer addresses (used when proposing)
@@ -86,19 +98,24 @@ func Init(t Testnet) (*types.GenesisDoc, error) {
 		if err != nil {
 			return nil, err
 		}
-		f := t.OracleKeyFile(name)
-		if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(f, []byte(hex.EncodeToString(priv.Seed())+"\n"), 0o600); err != nil {
+		if err := writeKey(t.OracleKeyFile(name), priv); err != nil {
 			return nil, err
 		}
 		sources = append(sources, quotes.Source{Name: name, PubKey: pub})
 		oracleAddrs = append(oracleAddrs, fmt.Sprintf("127.0.0.1:%d", t.OracleBase+i))
 	}
 
+	custodyPub, custodyPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeKey(t.CustodyKeyFile(), custodyPriv); err != nil {
+		return nil, err
+	}
+	params := ledger.DefaultParams(t.ChainID, Tickers)
+	params.CustodyKey = custodyPub
 	appState, _ := json.Marshal(app.GenesisState{
-		Params:  ledger.DefaultParams(t.ChainID, Tickers),
+		Params:  params,
 		Oracles: sources,
 	})
 	gen := &types.GenesisDoc{

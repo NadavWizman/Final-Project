@@ -30,12 +30,11 @@ type Envelope struct {
 
 // Msg is the content the user signs.
 type Msg struct {
-	Type     string    `json:"type"`  // register, deposit, order, level_add, level_cancel
+	Type     string    `json:"type"`  // register, order, level_add, level_cancel
 	Chain    string    `json:"chain"` // must equal the chain id (no replay on another chain)
 	From     string    `json:"from"`  // the sender's address
 	Nonce    string    `json:"nonce"` // the account's next transaction number, as a decimal string
 	Username string    `json:"username,omitempty"`
-	Amount   string    `json:"amount,omitempty"`
 	Order    *OrderMsg `json:"order,omitempty"`
 	Level    *LevelMsg `json:"level,omitempty"`
 	LevelID  string    `json:"level_id,omitempty"`
@@ -197,7 +196,7 @@ var (
 	idRe     = regexp.MustCompile(`^[0-9]{1,19}$`)
 	keyRe    = regexp.MustCompile(`^[a-z_]+$`)
 
-	msgTypes   = map[string]bool{"register": true, "deposit": true, "order": true, "level_add": true, "level_cancel": true}
+	msgTypes   = map[string]bool{"register": true, "order": true, "level_add": true, "level_cancel": true}
 	orderKinds = map[string]bool{"STOCK": true, "CFD": true, "CFD_CLOSE": true, "OPTION": true, "OPT_CLOSE": true, "OPT_EXER": true}
 )
 

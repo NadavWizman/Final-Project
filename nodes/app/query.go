@@ -45,7 +45,7 @@ func (a *App) Query(_ context.Context, req *abci.RequestQuery) (*abci.ResponseQu
 		return reply(map[string]any{
 			"height": s.Height, "time": s.Time, "chain_id": s.Params.ChainID,
 			"state_root": hex.EncodeToString(root[:]), "app_hash": hex.EncodeToString(c.AppHash()),
-			"validators": len(c.Validators), "valset_seq": c.ValsetSeq, "oracles": names, "accounts": len(s.Accounts),
+			"validators": len(c.Validators), "valset_seq": c.ValsetSeq, "custody_seq": s.CustodySeq, "oracles": names, "accounts": len(s.Accounts),
 			"tickers": s.Params.Tickers,
 		})
 

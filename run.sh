@@ -5,6 +5,9 @@
 #   ./run.sh stop      stop everything started by this script
 #   ./run.sh status    show which services are running
 #   ./run.sh logs [s]  follow logs (s = yahoo | nasdaq | cnbc | node0..node3 | gateway)
+#   ./run.sh deposit <username> <amount>
+#                      credit an account as the custodian (the only signer of
+#                      deposits; its key is testnet/custody.key)
 #
 # Options (environment variables):
 #   DJANGO_PORT=8000          port of the web app / gateway
@@ -133,10 +136,16 @@ logs() {
     if [ $# -gt 0 ]; then tail -n 50 -f "$LOGS/$1.log"; else tail -n 20 -f "$LOGS"/*.log; fi
 }
 
+deposit() {
+    [ $# -eq 2 ] || fail "usage: ./run.sh deposit <username|address> <amount>"
+    "$ROOT/nodes/tradedesk-node" deposit -key "$NET/custody.key" -to "$1" -amount "$2"
+}
+
 case "${1:-}" in
     start)  start ;;
+    deposit) shift; deposit "$@" ;;
     stop)   stop ;;
     status) status ;;
     logs)   shift; logs "$@" ;;
-    *)      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    *)      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

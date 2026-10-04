@@ -5,6 +5,7 @@
 //	tradedesk-node start -home testnet/node0
 //	tradedesk-node valset-sign   -home testnet/node0 -pubkey <base64> -power 10 -seq 0
 //	tradedesk-node valset-submit -rpc http://127.0.0.1:26657 -pubkey <base64> -power 10 -seq 0 approval.json...
+//	tradedesk-node deposit -key testnet/custody.key -to <username|address> -amount 500.00
 package main
 
 import (
@@ -27,6 +28,7 @@ import (
 
 	"nodes/app"
 	"nodes/chainnode"
+	"nodes/ledger"
 	"nodes/quotes"
 )
 
@@ -43,6 +45,8 @@ func main() {
 		valsetSignCmd(os.Args[2:])
 	case "valset-submit":
 		valsetSubmitCmd(os.Args[2:])
+	case "deposit":
+		depositCmd(os.Args[2:])
 	default:
 		usage()
 	}
@@ -55,7 +59,9 @@ func usage() {
   tradedesk-node start -home testnet/node0 [-oracles host:port,...] [-v]
   tradedesk-node valset-sign   -home testnet/node0 -pubkey <base64> -power <n> -seq <n>
   tradedesk-node valset-submit -rpc <url> -pubkey <base64> -power <n> -seq <n> approval.json...
-    A validator-set change needs approvals from more than 2/3 of the voting power.`)
+    A validator-set change needs approvals from more than 2/3 of the voting power.
+  tradedesk-node deposit -key testnet/custody.key -to <username|address> -amount <dollars> [-rpc <url>]
+    Credits an account. Only the custodian's key (registered in genesis) can sign deposits.`)
 	os.Exit(2)
 }
 
@@ -186,6 +192,61 @@ func valsetSubmitCmd(args []string) {
 		fail(fmt.Errorf("refused: %s", res.CheckTx.Log))
 	}
 	fmt.Printf("validator set updated at height %d: %s\n", res.Height, res.TxResult.Log)
+}
+
+func depositCmd(args []string) {
+	fs := flag.NewFlagSet("deposit", flag.ExitOnError)
+	keyFile := fs.String("key", "testnet/custody.key", "the custodian's signing key")
+	rpc := fs.String("rpc", "http://127.0.0.1:26657", "a node's RPC address")
+	to := fs.String("to", "", "username or address to credit")
+	amount := fs.String("amount", "", "amount in dollars, e.g. 500.00")
+	_ = fs.Parse(args)
+	key, err := quotes.LoadKey(*keyFile)
+	if err != nil {
+		fail(fmt.Errorf("cannot read the custodian key: %v", err))
+	}
+	client, err := rpchttp.New(*rpc, "/websocket")
+	if err != nil {
+		fail(err)
+	}
+	ctx := context.Background()
+	query := func(path, data string, v any) error {
+		res, err := client.ABCIQuery(ctx, path, []byte(data))
+		if err != nil {
+			return err
+		}
+		if res.Response.Code != 0 {
+			return fmt.Errorf("%s", res.Response.Log)
+		}
+		return json.Unmarshal(res.Response.Value, v)
+	}
+	var st struct {
+		ChainID    string `json:"chain_id"`
+		CustodySeq uint64 `json:"custody_seq"`
+	}
+	if err := query("/status", "", &st); err != nil {
+		fail(err)
+	}
+	addr := *to
+	if len(addr) != 40 {
+		var u struct{ Address string }
+		if err := query("/username", addr, &u); err != nil {
+			fail(fmt.Errorf("no account %q", addr))
+		}
+		addr = u.Address
+	}
+	raw, err := ledger.SignDeposit(key, ledger.DepositMsg{Chain: st.ChainID, Seq: fmt.Sprint(st.CustodySeq), To: addr, Amount: *amount})
+	if err != nil {
+		fail(err)
+	}
+	res, err := client.BroadcastTxCommit(ctx, raw)
+	if err != nil {
+		fail(err)
+	}
+	if res.CheckTx.Code != 0 {
+		fail(fmt.Errorf("refused: %s", res.CheckTx.Log))
+	}
+	fmt.Printf("deposit #%d of %s to %s committed at height %d\n", st.CustodySeq, *amount, addr, res.Height)
 }
 
 func fail(err error) {

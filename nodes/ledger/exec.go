@@ -51,6 +51,9 @@ func (s *State) Simulate(height, blockTime int64, prices map[string]Cents, tx []
 // sender (it may be ahead of the committed one while earlier transactions of
 // the same sender wait in the mempool).
 func (s *State) CheckTx(raw []byte, pendingNonce func(addr string) (uint64, bool)) (string, uint64, error) {
+	if IsDeposit(raw) {
+		return s.checkDepositTx(raw, pendingNonce)
+	}
 	d, err := s.decode(raw)
 	if err != nil {
 		return "", 0, err
@@ -73,6 +76,9 @@ func (s *State) CheckTx(raw []byte, pendingNonce func(addr string) (uint64, bool
 }
 
 func (s *State) applyTx(raw []byte, prices map[string]Cents) TxResult {
+	if IsDeposit(raw) {
+		return s.applyDeposit(raw)
+	}
 	d, err := s.decode(raw)
 	if err != nil {
 		return TxResult{Code: CodeInvalid, Log: err.Error()}
@@ -103,8 +109,6 @@ func (s *State) applyTx(raw []byte, prices map[string]Cents) TxResult {
 	acc.Nonce++
 
 	switch m.Type {
-	case "deposit":
-		return s.deposit(acc, m.Amount)
 	case "order":
 		if m.Order == nil {
 			return TxResult{Code: CodeOK, Log: "rejected: order missing"}
@@ -154,29 +158,22 @@ func (s *State) register(d *decoded) TxResult {
 	if err := s.checkRegister(d); err != nil {
 		return TxResult{Code: CodeInvalid, Log: err.Error()}
 	}
+	// The registration grant is the demo's only money that does not come
+	// through the custodian, so all grants together are capped in genesis.
+	grant := min(s.Params.Faucet, max(s.Params.FaucetTotal-s.FaucetPaid, 0))
+	s.FaucetPaid += grant
 	acc := &Account{
 		Address: m.From, Username: m.Username, PubKey: d.pubKey, Nonce: 1,
-		Cash: s.Params.Faucet, Holdings: map[string]Qty{},
+		Cash: grant, Holdings: map[string]Qty{},
 	}
 	s.Accounts[m.From] = acc
 	s.Usernames[usernameKey(m.Username)] = m.From
-	acc.record(s, &Record{ID: s.nextID(), Kind: "DEPOSIT", Status: "CONFIRMED",
-		Amount: s.Params.Faucet, Reason: "registration grant (faucet)"})
+	reason := "registration grant (faucet)"
+	if grant < s.Params.Faucet {
+		reason = "registration grant (faucet): the genesis cap on grants is used up"
+	}
+	acc.record(s, &Record{ID: s.nextID(), Kind: "DEPOSIT", Status: "CONFIRMED", Amount: grant, Reason: reason})
 	return TxResult{Code: CodeOK, Log: "registered"}
-}
-
-func (s *State) deposit(acc *Account, amount string) TxResult {
-	v, err := ParseCents(amount)
-	if err != nil || v <= 0 || v > s.Params.MaxDeposit {
-		return s.reject(acc, &Record{Kind: "DEPOSIT"}, fmt.Sprintf("deposit must be between 0.01 and %s", s.Params.MaxDeposit))
-	}
-	cash, err := addCents(acc.Cash, v)
-	if err != nil {
-		return s.reject(acc, &Record{Kind: "DEPOSIT"}, err.Error())
-	}
-	acc.Cash = cash
-	acc.record(s, &Record{ID: s.nextID(), Kind: "DEPOSIT", Status: "CONFIRMED", Amount: v, Reason: "demo faucet"})
-	return TxResult{Code: CodeOK, Log: "CONFIRMED"}
 }
 
 func (s *State) reject(acc *Account, r *Record, reason string) TxResult {
@@ -436,14 +433,12 @@ func (s *State) closeCFD(acc *Account, c *CFD, qty Qty, px Cents) Cents {
 	}
 	pnl := cfdPnL(c, qty, px)
 	back := share + pnl
-	if back < 0 {
-		// The price gapped past the liquidation level (e.g. at the market
-		// open): the loss beyond the margin is charged to the account's cash,
-		// as far as it goes. Forgiving it let a hedged long+short pair turn
-		// a gap into free money.
-		acc.Cash -= min(-back, acc.Cash)
-		back = 0
-	}
+	// back < 0 when the price gapped past the liquidation level (e.g. at the
+	// market open): the loss beyond the margin is charged in full, and the
+	// balance may go negative. That is a debt to the house: every later
+	// credit (closing another position, a deposit) repays it first, and with
+	// a negative balance nothing new can be bought or opened. Nothing is
+	// ever forgiven, so a gap cannot create money (see TestGapShortfallIsADebt).
 	acc.Cash += back
 	c.Qty -= qty
 	c.Margin -= share

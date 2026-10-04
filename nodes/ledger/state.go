@@ -24,6 +24,9 @@ type State struct {
 	LastPrices map[string]Cents `json:"last_prices"`
 
 	NextID uint64 `json:"next_id"` // ids for orders, positions and levels
+
+	CustodySeq uint64 `json:"custody_seq"` // deposits applied so far (each carries the next number)
+	FaucetPaid Cents  `json:"faucet_paid"` // registration grants paid so far, capped by Params.FaucetTotal
 }
 
 // Params are fixed in the genesis file and identical on every node.
@@ -31,7 +34,9 @@ type Params struct {
 	ChainID             string   `json:"chain_id"`               // signed into every transaction
 	Tickers             []string `json:"tickers"`                // tradable symbols, sorted
 	Faucet              Cents    `json:"faucet"`                 // granted at registration
-	MaxDeposit          Cents    `json:"max_deposit"`            // per demo deposit
+	FaucetTotal         Cents    `json:"faucet_total"`           // all registration grants together never exceed this
+	CustodyKey          []byte   `json:"custody_key"`            // Ed25519 key of the custodian; the only signer of deposits
+	MaxDeposit          Cents    `json:"max_deposit"`            // per deposit
 	MinLeverage         int64    `json:"min_leverage"`           // CFD
 	MaxLeverage         int64    `json:"max_leverage"`           // CFD
 	LiquidationBps      int64    `json:"liquidation_bps"`        // CFD loss / margin that forces a close
@@ -48,8 +53,9 @@ func DefaultParams(chainID string, tickers []string) Params {
 	return Params{
 		ChainID:             chainID,
 		Tickers:             t,
-		Faucet:              1_000_000,   // $10,000.00
-		MaxDeposit:          100_000_000, // $1,000,000.00
+		Faucet:              1_000_000,      // $10,000.00
+		FaucetTotal:         10_000_000_000, // $100,000,000.00: 10,000 grants
+		MaxDeposit:          100_000_000,    // $1,000,000.00
 		MinLeverage:         2,
 		MaxLeverage:         100,
 		LiquidationBps:      8_000, // 80 %
