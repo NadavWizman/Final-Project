@@ -1,10 +1,10 @@
 """Security headers for every response.
 
-The page holds the user's signing keys, so its Content-Security-Policy
-limits where a script may send data: only back to this origin. Even if text
-from the chain or the news were ever rendered as HTML, an injected script
-could not upload a key to another site (connect-src, img-src, form-action).
-The single inline script and the inline handlers need 'unsafe-inline'.
+The signing keys are not in this page — they live in the TradeDesk Wallet
+extension, which shows and signs each transaction itself. The policy below is
+defence in depth: page scripts may talk only to this origin (connect-src,
+img-src, form-action), no plug-ins, no framing. The single inline script and
+the inline handlers need 'unsafe-inline'.
 """
 
 CSP = '; '.join([
