@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	mrand "math/rand"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ type cluster struct {
 
 func newCluster(t *testing.T, validators int) *cluster {
 	t.Helper()
-	base := 30000 + mrand.Intn(20000)
+	base := freeBase(t, validators)
 	c := &cluster{t: t, prices: map[string]map[string]int64{}, down: map[string]bool{}}
 	c.net = chainnode.Testnet{
 		Dir: t.TempDir(), Validators: validators, ChainID: "tradedesk-e2e",
@@ -68,6 +69,32 @@ func newCluster(t *testing.T, validators int) *cluster {
 	t.Cleanup(c.stopAll)
 	c.waitHeight(2, 30*time.Second)
 	return c
+}
+
+// freeBase picks ports for the nodes' P2P and RPC listeners below the
+// ephemeral range (Linux hands out 32768+ for outgoing connections, which
+// earlier tests leave in TIME_WAIT) and checks that every one is free.
+func freeBase(t *testing.T, validators int) int {
+	t.Helper()
+	for try := 0; try < 50; try++ {
+		base := 20000 + 10*mrand.Intn(1200)
+		free := true
+		for i := 0; i < validators && free; i++ {
+			for _, port := range []int{base + 10*i, base + 10*i + 1} {
+				l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+				if err != nil {
+					free = false
+					break
+				}
+				l.Close()
+			}
+		}
+		if free {
+			return base
+		}
+	}
+	t.Fatal("no free port range for the cluster")
+	return 0
 }
 
 func (c *cluster) start(i int) {
