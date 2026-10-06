@@ -8,7 +8,11 @@
 
 import { listAccounts } from './store.js';
 
-const busy = new Map(); // tabId → true while an approval window is open for it
+const busy = new Map(); // tabId → id of the request waiting in an approval window
+
+// Frees the tab only for the request that holds it, so a late event of an old
+// request cannot release a newer one.
+const release = (tabId, id) => { if (busy.get(tabId) === id) busy.delete(tabId); };
 
 async function connected(origin) {
   const { allowed = {} } = await chrome.storage.local.get('allowed');
@@ -30,17 +34,17 @@ function deliver(pending, body) {
 // cannot slip past the check.
 async function openApproval(kind, text, req, sender) {
   const tabId = sender.tab.id;
-  if (busy.get(tabId)) return { error: 'another request from this tab is waiting in the wallet' };
-  busy.set(tabId, true);
+  if (busy.has(tabId)) return { error: 'another request from this tab is waiting in the wallet' };
+  const id = crypto.randomUUID();
+  busy.set(tabId, id);
   try {
-    const id = crypto.randomUUID();
     const pending = { id, kind, text, origin: sender.origin, tabId, documentId: sender.documentId, requestId: req.requestId };
     await chrome.storage.session.set({ ['req:' + id]: pending });
     const win = await chrome.windows.create({ url: `approve.html?id=${id}`, type: 'popup', width: 420, height: 640 });
     await chrome.storage.session.set({ ['win:' + win.id]: id });
     return { opened: true };
   } catch (e) {
-    busy.delete(tabId);
+    release(tabId, id);
     throw e;
   }
 }
@@ -81,6 +85,7 @@ async function answered(msg) {
   if (!pending || pending.answered) return;
   pending.answered = true;
   await chrome.storage.session.set({ ['req:' + msg.id]: pending });
+  release(pending.tabId, pending.id);   // answered: the page may ask again right away
   if (pending.kind === 'connect' && msg.approved) {
     const { allowed = {} } = await chrome.storage.local.get('allowed');
     allowed[pending.origin] = Date.now();
@@ -91,7 +96,7 @@ async function answered(msg) {
   }
 }
 
-// When the approval window closes — answered or not — the tab is free again;
+// When the approval window closes — answered or not — the request is over;
 // closing it without answering is a rejection.
 chrome.windows.onRemoved.addListener(async windowId => {
   const key = 'win:' + windowId;
@@ -100,7 +105,7 @@ chrome.windows.onRemoved.addListener(async windowId => {
   const pending = (await chrome.storage.session.get('req:' + id))['req:' + id];
   await chrome.storage.session.remove([key, 'req:' + id]);
   if (!pending) return;
-  busy.delete(pending.tabId);
+  release(pending.tabId, pending.id);
   if (!pending.answered) deliver(pending, { error: 'rejected in the wallet' });
 });
 
