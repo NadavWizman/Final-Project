@@ -11,6 +11,7 @@ import (
 	"fmt"
 	mrand "math/rand"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -198,7 +199,13 @@ func (c *cluster) waitHeight(h int64, timeout time.Duration) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	c.t.Fatalf("cluster did not reach height %d (at %d)", h, c.height())
+	var each []string
+	for i, n := range c.nodes {
+		if n != nil && n.IsRunning() {
+			each = append(each, fmt.Sprintf("node%d at %d with %d peers", i, n.BlockStore().Height(), n.Switch().Peers().Size()))
+		}
+	}
+	c.t.Fatalf("cluster did not reach height %d: %s", h, strings.Join(each, ", "))
 }
 
 func (c *cluster) client(i int) *rpclocal.Local { return rpclocal.New(c.nodes[i].Node) }

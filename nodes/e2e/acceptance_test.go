@@ -308,7 +308,8 @@ func TestEditedStateFileIsDetectedAndRebuilt(t *testing.T) {
 	cmtcfg.WriteConfigFile(filepath.Join(c.net.NodeHome(3), "config", "config.toml"), conf)
 
 	c.start(3)
-	c.waitHeight(c.height()+2, 30*time.Second)
+	// node3 replays the chain from genesis to rebuild its state, then catches up
+	c.waitHeight(c.height()+2, 60*time.Second)
 	c.sameStateEverywhere()
 	if a := c.account(3, w.addr); a.Cash != c.account(0, w.addr).Cash {
 		t.Fatal("the edited balance survived")
