@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TradeDesk</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23007AFF'/%3E%3Cpolyline points='19 8 13 14 10 11 5 16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
 /* ── TOKENS ─────────────────────────────────────── */
 :root {
@@ -311,6 +312,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
 /* ── TRADE TAB ──────────────────────────────────── */
 .trade-grid{display:grid;grid-template-columns:1fr 340px;gap:20px;align-items:start}
 @media(max-width:800px){.trade-grid{grid-template-columns:1fr}}
+/* phones: compact header, scrollable tab bar, nothing wider than the screen */
+@media(max-width:600px){
+  .top-bar{padding:0 12px}
+  .top-bar h1,#header-username{display:none}
+  .top-bar-right{gap:6px}
+  .tab-bar{padding:0 8px;overflow-x:auto;scrollbar-width:none}
+  .tab-btn{padding:12px 10px;flex-shrink:0}
+  .content{padding:16px 12px}
+  .trade-grid{grid-template-columns:minmax(0,1fr)}
+  .trade-grid > *{min-width:0}
+  .card{padding:16px}
+}
 .field-label{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;
   color:var(--label2);margin-bottom:6px}
 .input-field{width:100%;padding:11px 14px;border:1.5px solid var(--gray5);
@@ -344,11 +357,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
 .estimate-row{display:flex;justify-content:space-between;align-items:center;
   padding:12px 0;border-top:1px solid var(--sep);font-size:13px;margin-top:8px}
 .estimate-row .e-label{color:var(--label2)} .estimate-row .e-value{font-weight:600;font-size:15px}
-.submit-bar{display:flex;align-items:center;gap:10px;background:rgba(0,122,255,.06);
-  border:1.5px solid rgba(0,122,255,.2);border-radius:var(--r);padding:14px 18px;margin-bottom:20px}
-.submit-bar-text{flex:1;font-size:14px}
-.submit-bar-text strong{display:block;font-weight:600}
-.submit-bar-text span{font-size:12px;color:var(--label2)}
 .btn-small{padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;
   font-family:inherit;border:none;flex-shrink:0;transition:opacity .15s}
 .btn-small:hover{opacity:.85}
@@ -451,7 +459,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
     </div>
     <div id="register-form" style="display:none">
       <div class="form-group"><label>Wallet account</label>
-        <select id="reg-account" class="input-field"></select></div>
+        <select id="reg-account" class="input-field"></select>
+        <p id="reg-wallet-note" class="wallet-note" style="display:none"></p></div>
       <div class="form-group"><label>Username</label>
         <input id="reg-user" type="text" placeholder="Choose a username (3-32 letters, digits, . _ -)"
                onkeydown="if(event.key==='Enter')doRegister()"></div>
@@ -607,7 +616,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
       <div class="qty-warning" id="m-qty-warning"></div>
       <div class="field-label" style="margin-top:2px">Limit Price <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(optional)</span></div>
       <input class="modal-input" id="m-limit" type="number" min="0.01" step="0.01" placeholder="Max price per share">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:2px">
+      <div id="m-sltp" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:2px">
         <div>
           <div class="field-label" style="color:var(--red)">Stop Loss</div>
           <input class="modal-input" id="m-sl" type="number" min="0.01" step="0.01" placeholder="Auto-sell below" style="margin-bottom:0" oninput="updateModalSLTPPreview()">
@@ -715,7 +724,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
         <span class="c-value" id="confirm-total">—</span>
       </div>
     </div>
-    <div style="padding:12px 20px 0;font-size:12px;color:var(--label2)">
+    <div id="confirm-note" style="padding:12px 20px 0;font-size:12px;color:var(--label2)">
       The order will be placed and submitted for consensus immediately.
     </div>
     <div class="confirm-btns">
@@ -815,8 +824,6 @@ const S = {
   portfolio: null, orders: [],
   holdingPrices: {},
   tradePrice: null, tradeType: 'BUY', tradeStock: '', tradeQty: '', tradeLimitPrice: '', tradeStopLoss: '', tradeTakeProfit: '', tradeNonce: genNonce(),
-  pendingDraft: null,
-  pendingCloses: {},
   // chart state (never reset on data refresh)
   tc: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
   cc: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
@@ -831,7 +838,7 @@ const S = {
   // Options state
   optPositions: [], optSubTab: 'chain',
   optTicker: '', optExpiry: '', optExpiries: [], optChain: null,
-  optContractType: 'CALL', optContracts: '1', optSelectedRow: null, optChainLoading: false,
+  optContractType: 'CALL', optContracts: '1', optSelectedRow: null, optQuote: null, optMarks: {}, optChainLoading: false,
   // AI news: keyed by ticker -> { loading, points, error, ts }
   aiNews: {},
   // AI chat: keyed by ticker -> { messages: [{role,text}], loading, inputVal }
@@ -934,10 +941,12 @@ async function waitTx(hash, timeoutMs = 30000) {
 }
 
 // Send, wait for the block, refresh, and tell the user what the chain decided.
-async function submitTx(msg, pendingText) {
+// onSigned runs once the wallet has signed and the node accepted the transaction.
+async function submitTx(msg, pendingText, onSigned) {
   let hash;
   try { hash = await sendTx(msg); }
   catch (e) { showToast('⚠️ ' + e.message); return null; }
+  if (onSigned) onSigned();
   showToast(pendingText || '⚡ Signed and sent — waiting for consensus…');
   const res = await waitTx(hash);
   await loadData();
@@ -949,7 +958,7 @@ async function submitTx(msg, pendingText) {
   else                                 showToast('✅ Confirmed on the chain');
   return res;
 }
-const orderTx = (order, pendingText) => submitTx({type: 'order', order}, pendingText);
+const orderTx = (order, pendingText, onSigned) => submitTx({type: 'order', order}, pendingText, onSigned);
 
 async function getChartData(ticker, period, interval = '1d') {
   const key = `${ticker}-${period}-${interval}`;
@@ -971,9 +980,16 @@ async function renderSavedAccounts() {
   const el = document.getElementById('login-accounts');
   const sel = document.getElementById('reg-account');
   if (!el) return;
+  // the register tab says why there is no account to pick, and only then blocks the button
+  const regNote = (text) => {
+    const n = document.getElementById('reg-wallet-note'), b = document.getElementById('reg-btn');
+    if (n) { n.textContent = text || ''; n.style.display = text ? '' : 'none'; }
+    if (b) b.disabled = !!text;
+    if (sel && text) sel.innerHTML = '';
+  };
   if (!await walletAvailable()) {
     el.innerHTML = `<p class="wallet-note">${esc(WALLET_INSTALL)}</p>`;
-    if (sel) sel.innerHTML = '';
+    regNote(WALLET_INSTALL);
     return;
   }
   let list = [];
@@ -981,18 +997,25 @@ async function renderSavedAccounts() {
     if (e.message === 'not connected') {
       el.innerHTML = `<button class="btn-primary" onclick="connectWallet()">Connect the TradeDesk Wallet</button>
         <p class="wallet-note">The wallet asks you once whether this site may see your accounts.</p>`;
-      if (sel) sel.innerHTML = '';
+      regNote('Connect the wallet first: Sign In tab → Connect the TradeDesk Wallet.');
       return;
     }
     el.innerHTML = `<p class="error-msg">${esc(e.message)}</p>`;
+    regNote(e.message);
     return;
   }
   el.innerHTML = list.length
     ? list.map(a => `<button class="wallet-account" onclick="doLogin('${esc(a.address)}')">
         <span>${esc(a.label)}</span><small>${esc(a.address.slice(0, 10))}…</small></button>`).join('')
     : `<p class="wallet-note">The wallet has no account yet — open it from the toolbar and create one.</p>`;
+  const keep = sel?.value;
   if (sel) sel.innerHTML = list.map(a => `<option value="${esc(a.address)}">${esc(a.label)} · ${esc(a.address.slice(0, 10))}…</option>`).join('');
+  if (sel && list.some(a => a.address === keep)) sel.value = keep;
+  regNote(list.length ? '' : 'The wallet has no account yet — open it from the browser toolbar → New account.');
 }
+
+// An account created in the wallet window shows up when the user comes back to this page.
+window.addEventListener('focus', () => { if (!S.account) renderSavedAccounts(); });
 
 async function connectWallet() {
   const errEl = document.getElementById('login-error');
@@ -1033,7 +1056,7 @@ async function doRegister() {
   if (!address) { showErr(errEl, 'Create an account in the TradeDesk Wallet first.'); return; }
   if (!/^[A-Za-z0-9_.-]{3,32}$/.test(user)) { showErr(errEl, 'Use 3-32 letters, digits, ".", "_" or "-".'); return; }
   const btn = document.getElementById('reg-btn');
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Approve in the wallet…';
   try {
     const taken = await api('GET', `/username/${encodeURIComponent(user)}/`);
     if (taken.ok) throw new Error('That username is taken.');
@@ -1056,7 +1079,7 @@ async function doRegister() {
 function logout() {
   S.account = null; S.nonce = null; S.portfolio = null; S.orders = []; S.holdingPrices = {};
   // clear everything tied to this account so the next user never sees it
-  S.cfdPositions = []; S.optPositions = []; S.pendingDraft = null; S.pendingCloses = {};
+  S.cfdPositions = []; S.optPositions = [];
   S.aiChat = {}; S.aiNews = {};
   clearInterval(S.refreshTimer); clearInterval(S.priceTimer);
   document.getElementById('app-screen').classList.remove('visible');
@@ -1095,38 +1118,20 @@ async function loadData() {
   if (oRes.ok)   { S.orders = oRes.data; }
   if (cfdRes.ok) { S.cfdPositions = cfdRes.data.cfd_positions || []; }
   if (optRes.ok) { S.optPositions = optRes.data || []; }
-  if (S.pendingDraft) {
-    const u = S.orders.find(o => o.id === S.pendingDraft);
-    if (u && u.status === 'CONFIRMED') {
-      if (u.trade_type === 'CFD') {
-        showToast('✅ CFD position opened at ' + fmt$(u.execution_price));
-      } else if (u.trade_type === 'OPTION') {
-        showToast('✅ Option position opened · Premium ' + fmt$(u.execution_price) + '/sh');
-      } else {
-        showToast('✅ Order confirmed at ' + fmt$(u.execution_price));
-      }
-      S.pendingDraft = null;
-    }
-  }
-  for (const [posKey, orderId] of Object.entries(S.pendingCloses)) {
-    const u = S.orders.find(o => o.id === orderId);
-    if (!u) continue;
-    if (u.status === 'CONFIRMED') {
-      if (u.trade_type === 'CFD_CLOSE') {
-        showToast('✅ CFD closed at ' + fmt$(u.execution_price));
-      } else if (u.trade_type === 'OPT_CLOSE') {
-        showToast('✅ Option sold · Premium ' + fmt$(u.execution_price) + '/sh');
-      } else if (u.trade_type === 'OPT_EXER') {
-        showToast('✅ Option exercised at ' + fmt$(u.execution_price));
-      }
-      delete S.pendingCloses[posKey];
-    } else if (u.status === 'REJECTED') {
-      showToast('⚠️ Close order rejected — ' + (u.trade_type === 'OPT_EXER' ? 'option may be out of the money' : 'try again'));
-      delete S.pendingCloses[posKey];
-    }
-  }
-  await refreshHoldingPrices();
+  await Promise.all([refreshHoldingPrices(), refreshFormPrice()]);
   renderActiveTab();
+}
+
+// The price card on the Trade or CFD form follows the market while it is open.
+async function refreshFormPrice() {
+  const cfd = S.tab === 'cfd';
+  if (!cfd && S.tab !== 'trade') return;
+  const t = (cfd ? S.cfdStock : S.tradeStock).trim();
+  if (!t || !(cfd ? S.cfdPrice : S.tradePrice)) return;
+  const r = await api('GET', `/price/${t}/`);
+  if (!r.ok || (cfd ? S.cfdStock : S.tradeStock).trim() !== t) return;
+  if (cfd) { S.cfdPrice = r.data; S.holdingPrices[t] = r.data; updateCFDPriceCard(); }
+  else     { S.tradePrice = r.data; updateTradePriceCard(); }
 }
 
 async function refreshHoldingPrices() {
@@ -1136,8 +1141,17 @@ async function refreshHoldingPrices() {
   S.optPositions?.filter(p => p.status === 'OPEN')?.forEach(p => tickers.add(p.stock));
   if (!tickers.size) return;
   const tickerArr = [...tickers];
-  const results = await Promise.all(tickerArr.map(t => api('GET', `/price/${t}/`)));
+  const openOpts = (S.optPositions || []).filter(p => p.status === 'OPEN');
+  const [results, marks] = await Promise.all([
+    Promise.all(tickerArr.map(t => api('GET', `/price/${t}/`))),
+    // what the chain would pay to close each open option right now
+    Promise.all(openOpts.map(p => api('GET', `/option-quote/?ticker=${p.stock}&type=${p.contract_type}&strike=${p.strike}&expiry=${p.expiry}`))),
+  ]);
   let changed = false;
+  openOpts.forEach((p, i) => {
+    const m = marks[i].ok ? marks[i].data.premium : null;
+    if (S.optMarks[p.id] !== m) { S.optMarks[p.id] = m; changed = true; }
+  });
   tickerArr.forEach((t, i) => {
     if (results[i].ok) {
       const prev = S.holdingPrices[t]?.execution_price;
@@ -1192,7 +1206,10 @@ function renderPortfolio() {
   const el = document.getElementById('tab-portfolio');
   if (!S.portfolio) { el.innerHTML = loadingHtml(); return; }
   const p = S.portfolio;
-  const confirmed = S.orders.filter(o => o.status === 'CONFIRMED').length;
+  // deposits and SL/TP level changes are not trades
+  const confirmed = S.orders.filter(o => o.status === 'CONFIRMED' && !['DEPOSIT', 'LEVEL'].includes(o.trade_type)).length;
+  const positions = p.total_positions + S.cfdPositions.filter(c => c.is_open).length
+                  + S.optPositions.filter(o => o.status === 'OPEN').length;
 
   let holdingsHtml = '';
   if (p.holdings?.length) {
@@ -1230,7 +1247,7 @@ function renderPortfolio() {
     <div class="portfolio-header">
       <div class="lbl">Available Balance</div>
       <div class="amt">${fmt$(p.usd_balance)}</div>
-      <div class="sub">${confirmed} confirmed trade${confirmed!==1?'s':''} · ${p.total_positions} position${p.total_positions!==1?'s':''}</div>
+      <div class="sub">${confirmed} confirmed trade${confirmed!==1?'s':''} · ${positions} open position${positions!==1?'s':''}</div>
     </div>
     <div class="section-title">Holdings</div>
     <div class="holdings-grid">${holdingsHtml}</div>`;
@@ -1241,18 +1258,7 @@ function renderTrade() {
   const el = document.getElementById('tab-trade');
   const _savedChat = document.getElementById('trade-chat-panel')?.innerHTML ?? null;
   const _savedNews = document.getElementById('trade-news-panel')?.innerHTML ?? null;
-  const drafts = S.orders.filter(o => o.status === 'DRAFT');
-  const bars = drafts.map(o => `
-    <div class="submit-bar">
-      <div class="submit-bar-text">
-        <strong>Order #${o.id} ready to submit</strong>
-        <span>${esc(o.order_type)} ${parseFloat(o.quantity)} ${esc(o.stock)} · ${timeAgo(o.created_at)}</span>
-      </div>
-      <button class="btn-small blue" onclick="doSubmit(${o.id})">Submit →</button>
-    </div>`).join('');
-
   el.innerHTML = `
-    ${bars}
     <div class="trade-grid">
       <div class="card">
         <div class="trade-section-title">New Order</div>
@@ -1267,7 +1273,7 @@ function renderTrade() {
         <input id="trade-ticker-input" class="input-field" placeholder="e.g. AAPL, NVDA, MSFT" value="${S.tradeStock}"
                oninput="S.tradeStock=cleanTicker(this.value);this.value=S.tradeStock;onTradeTickerChange()">
         <div style="font-size:11px;color:var(--label2);margin:4px 0 8px">
-          Popular: ${['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','NFLX','AMD','INTC'].map(t=>`<span onclick="S.tradeStock='${t}';const el=document.getElementById('trade-ticker-input');if(el)el.value='${t}';onTradeTickerChange()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join('')}
+          Popular: ${['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','NFLX','AMD','INTC'].map(t=>`<span onclick="S.tradeStock='${t}';const el=document.getElementById('trade-ticker-input');if(el)el.value='${t}';onTradeTickerChange()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join(' ')}
         </div>
         <div class="field-label">Quantity</div>
         <input class="input-field" type="number" min="1" placeholder="Shares" value="${S.tradeQty}"
@@ -1277,7 +1283,7 @@ function renderTrade() {
         <input class="input-field" type="number" min="0.01" step="0.01" placeholder="Max price per share"
                value="${S.tradeLimitPrice}"
                oninput="S.tradeLimitPrice=this.value">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div id="trade-sltp" style="display:${S.tradeType==='BUY'?'grid':'none'};grid-template-columns:1fr 1fr;gap:10px">
           <div>
             <div class="field-label" style="color:var(--red)">Stop Loss <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
             <input class="input-field" type="number" min="0.01" step="0.01" placeholder="Auto-sell below"
@@ -1316,8 +1322,8 @@ function renderTrade() {
   if (_savedChat !== null) { document.getElementById('trade-chat-panel').innerHTML = _savedChat; document.querySelector('#trade-chat-panel > div')?.style.setProperty('animation','none'); }
   if (_savedNews !== null) { document.getElementById('trade-news-panel').innerHTML = _savedNews; document.querySelector('#trade-news-panel > div')?.style.setProperty('animation','none'); }
   updateTradePriceCard();
-  updateNewsPanel('trade-news-panel', S.tradeStock);
-  renderChatPanel('trade-chat-panel', S.tradeStock);
+  updateNewsPanel('trade-news-panel', S.tradePriceError ? '' : S.tradeStock);
+  renderChatPanel('trade-chat-panel', S.tradePriceError ? '' : S.tradeStock);
 }
 
 function setTradeType(type) {
@@ -1326,7 +1332,11 @@ function setTradeType(type) {
   const sell = document.getElementById('trade-type-sell');
   if (buy)  buy.className  = 'segment-btn' + (type === 'BUY'  ? ' active-buy'  : '');
   if (sell) sell.className = 'segment-btn' + (type === 'SELL' ? ' active-sell' : '');
+  // stop-loss / take-profit protect a holding you buy; a sale has none
+  const sltp = document.getElementById('trade-sltp');
+  if (sltp) sltp.style.display = type === 'BUY' ? 'grid' : 'none';
   updateTradePriceCard();
+  checkTradeQty();   // the "you only own N shares" warning applies to SELL only
 }
 
 // update only the right-side price card — doesn't touch the form or lose focus
@@ -1334,7 +1344,9 @@ function updateTradePriceCard() {
   const card = document.getElementById('trade-price-card');
   if (!card) return;
   if (!S.tradePrice) {
-    card.innerHTML = `<div style="color:var(--label2);font-size:14px;padding:20px 0">Enter a ticker to see the live price and chart.</div>`;
+    card.innerHTML = S.tradePriceError
+      ? `<div class="error-msg" style="display:block;margin:12px 0">${esc(S.tradePriceError)}</div>`
+      : `<div style="color:var(--label2);font-size:14px;padding:20px 0">Enter a ticker to see the live price and chart.</div>`;
     return;
   }
   const p = S.tradePrice;
@@ -1433,11 +1445,13 @@ async function loadAiNews(ticker) {
 }
 
 function _refreshAllNewsPanels() {
-  updateNewsPanel('trade-news-panel', S.tradeStock);
-  updateNewsPanel('cfd-news-panel',   S.cfdStock);
+  // no news or chat for a ticker that turned out not to be listed
+  const trade = S.tradePriceError ? '' : S.tradeStock, cfd = S.cfdPriceError ? '' : S.cfdStock;
+  updateNewsPanel('trade-news-panel', trade);
+  updateNewsPanel('cfd-news-panel',   cfd);
   updateNewsPanel('opt-news-panel',   S.optTicker);
-  renderChatPanel('trade-chat-panel', S.tradeStock);
-  renderChatPanel('cfd-chat-panel',   S.cfdStock);
+  renderChatPanel('trade-chat-panel', trade);
+  renderChatPanel('cfd-chat-panel',   cfd);
   renderChatPanel('opt-chat-panel',   S.optTicker);
 }
 
@@ -1534,10 +1548,19 @@ let _tradePriceTimer;
 function onTradeTickerChange() {
   clearTimeout(_tradePriceTimer);
   const t = S.tradeStock.trim();
-  if (!t) { S.tradePrice = null; S.tc.ticker = ''; S.tc.data = null; updateTradePriceCard(); updateNewsPanel('trade-news-panel', ''); return; }
+  S.tradePrice = null; S.tradePriceError = null;      // until the new ticker's price arrives
+  if (!t) { S.tc.ticker = ''; S.tc.data = null; updateTradePriceCard(); updateNewsPanel('trade-news-panel', ''); return; }
   _tradePriceTimer = setTimeout(async () => {
     const r = await api('GET', `/price/${t}/`);
-    if (r.ok) S.tradePrice = r.data;
+    if (S.tradeStock.trim() !== t) return;            // the user typed on meanwhile
+    if (!r.ok) {
+      // never keep showing the previous ticker's price for an unknown one
+      S.tradePrice = null; S.tc.ticker = ''; S.tc.data = null;
+      S.tradePriceError = r.data.error === 'not a listed ticker' ? `${t} is not a listed ticker.` : (r.data.error || 'No price for this ticker.');
+      updateTradePriceCard(); updateNewsPanel('trade-news-panel', ''); renderChatPanel('trade-chat-panel', '');
+      return;
+    }
+    S.tradePrice = r.data; S.tradePriceError = null;
     if (S.tc.ticker !== t) {
       S.tc.ticker = t;
       S.tc.data = await getChartData(t, S.tc.period, S.tc.interval);
@@ -1644,7 +1667,11 @@ async function sendChat(ticker, panelId) {
     answerText = r.data.answer;
   } else {
     const err = r.data?.error || '';
-    answerText = err.includes('RESOURCE_EXHAUSTED') || err.includes('quota')
+    answerText = err.includes('not configured')
+      ? 'The AI assistant is off on this server: GEMINI_API_KEY is not set in backend/.env.'
+      : err === 'Not a listed ticker.'
+      ? `${ticker} is not a listed ticker.`
+      : err.includes('RESOURCE_EXHAUSTED') || err.includes('quota')
       ? 'Gemini API quota exceeded — try again later.'
       : err.includes('busy') || err.includes('UNAVAILABLE')
         ? 'Gemini is busy — try again in a moment.'
@@ -1655,14 +1682,35 @@ async function sendChat(ticker, panelId) {
   renderChatPanel(panelId, ticker);
 }
 
+// Highlights the clicked button among its siblings of the same kind.
+function markActive(btn) {
+  if (!btn || !btn.parentElement) return;
+  const cls = btn.classList.contains('period-btn') ? '.period-btn'
+            : btn.classList.contains('interval-btn') ? '.interval-btn' : '.ctype-btn';
+  btn.parentElement.querySelectorAll(cls).forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+// Loads chart data for state st (period/interval) and paints it — unless the
+// user has picked another period or interval meanwhile, in which case this
+// (late) answer is dropped, so the chart always matches the highlighted button.
+async function loadChart(st, ticker, paint) {
+  const want = st.period + '|' + st.interval;
+  const data = await getChartData(ticker, st.period, st.interval);
+  if (st.period + '|' + st.interval !== want) return;
+  st.data = data;
+  paint();
+}
+
 async function setTradePeriod(period, btn) {
   S.tc.period = period;
-  S.tc.data = await getChartData(S.tradeStock, period, S.tc.interval);
-  paintTradeChart();
+  markActive(btn);
+  await loadChart(S.tc, S.tradeStock, paintTradeChart);
 }
 
 function setTradeChartType(type, btn) {
   S.tc.type = type;
+  markActive(btn);
   const bar = document.getElementById('tc-interval-bar');
   if (bar) bar.classList.toggle('visible', type === 'candle');
   paintTradeChart();
@@ -1670,10 +1718,8 @@ function setTradeChartType(type, btn) {
 
 async function setTradeInterval(interval, btn) {
   S.tc.interval = interval;
-  document.querySelectorAll('#tc-interval-bar .interval-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  S.tc.data = await getChartData(S.tradeStock, S.tc.period, interval);
-  paintTradeChart();
+  markActive(btn);
+  await loadChart(S.tc, S.tradeStock, paintTradeChart);
 }
 
 function paintTradeChart() {
@@ -1727,10 +1773,23 @@ async function openModal(ticker, name, qty) {
     new Promise(r => setTimeout(r, 260)),   // let the open animation settle
   ]);
 
+  if (S.modal.ticker !== ticker) return;              // another stock was opened meanwhile
   if (priceRes.ok) {
     S.modal.price = parseFloat(priceRes.data.execution_price);
     document.getElementById('m-price').textContent = fmt$(S.modal.price);
     if (qty) document.getElementById('m-pos-value').textContent = fmt$(S.modal.price * qty);
+  } else {
+    document.getElementById('m-price').textContent = '—';
+    if (qty) document.getElementById('m-pos-value').textContent = '—';
+  }
+  // change over the period shown in the chart
+  const first = chartData?.[0]?.close, last = S.modal.price || chartData?.at(-1)?.close;
+  if (first && last) {
+    const pct = (last - first) / first * 100, up = pct >= 0;
+    const ch = document.getElementById('m-change');
+    ch.textContent = `${up ? '+' : ''}${pct.toFixed(2)}% · ${S.mc.period}`;
+    ch.style.color = up ? 'var(--green)' : 'var(--red)';
+    ch.style.background = up ? 'rgba(52,199,89,.12)' : 'rgba(255,59,48,.12)';
   }
 
   S.mc.ticker = ticker;
@@ -1740,10 +1799,8 @@ async function openModal(ticker, name, qty) {
 
 async function setModalPeriod(period, btn) {
   S.mc.period = period;
-  document.querySelectorAll('#m-period-bar .period-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  S.mc.data = await getChartData(S.modal.ticker, period, S.mc.interval);
-  paintModalChart();
+  markActive(btn);
+  await loadChart(S.mc, S.modal.ticker, paintModalChart);
 }
 
 function setModalChartType(type, btn) {
@@ -1757,10 +1814,8 @@ function setModalChartType(type, btn) {
 
 async function setModalInterval(interval, btn) {
   S.mc.interval = interval;
-  document.querySelectorAll('#m-interval-bar .interval-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  S.mc.data = await getChartData(S.modal.ticker, S.mc.period, interval);
-  paintModalChart();
+  markActive(btn);
+  await loadChart(S.mc, S.modal.ticker, paintModalChart);
 }
 
 function setModalType(type, btn) {
@@ -1770,7 +1825,10 @@ function setModalType(type, btn) {
   const isB = type === 'BUY';
   document.getElementById('m-action-btn').className   = `btn-modal ${isB?'green':'red'}`;
   document.getElementById('m-action-btn').textContent = isB ? 'Buy' : 'Sell';
+  const sltp = document.getElementById('m-sltp');
+  if (sltp) sltp.style.display = isB ? 'grid' : 'none';
   updateModalEstimate();
+  checkModalQty();
   paintModalChart();
 }
 
@@ -1817,31 +1875,33 @@ function expandChart(source) {
   const ticker = source === 'trade' ? S.tradeStock : source === 'cfd' ? S.cfdStock : S.modal.ticker;
   if (!ticker) return;
   S.ec.ticker = ticker;
-  S.ec.period = source === 'trade' ? S.tc.period : source === 'cfd' ? S.cc.period : S.mc.period;
-  S.ec.type   = source === 'trade' ? S.tc.type   : source === 'cfd' ? S.cc.type   : S.mc.type;
-  S.ec.data   = source === 'trade' ? S.tc.data   : source === 'cfd' ? S.cc.data   : S.mc.data;
+  const src = source === 'trade' ? S.tc : source === 'cfd' ? S.cc : S.mc;
+  S.ec.period   = src.period;
+  S.ec.interval = src.interval;
+  S.ec.type     = src.type;
+  S.ec.data     = src.data;
 
   document.getElementById('expand-title').textContent = ticker;
   document.getElementById('expand-overlay').classList.add('open');
 
-  // sync period buttons
-  document.querySelectorAll('#expand-period-bar .period-btn').forEach(btn => {
-    const p = btn.textContent === '1W' ? '5d' : btn.textContent === '1M' ? '1mo' :
-              btn.textContent === '3M' ? '3mo' : btn.textContent === '6M' ? '6mo' : '1y';
-    btn.classList.toggle('active', p === S.ec.period);
-  });
+  // show the same period, interval and chart type as the chart it came from
+  const arg = el => (el.getAttribute('onclick').match(/'([^']+)'/) || [])[1];
+  document.querySelectorAll('#expand-period-bar .period-btn').forEach(btn =>
+    btn.classList.toggle('active', arg(btn) === S.ec.period));
+  document.querySelectorAll('#expand-interval-bar .interval-btn').forEach(btn =>
+    btn.classList.toggle('active', arg(btn) === S.ec.interval));
   document.querySelectorAll('#expand-overlay .ctype-btn').forEach(btn =>
     btn.classList.toggle('active', btn.textContent.toLowerCase() === S.ec.type));
+  const ibar = document.getElementById('expand-interval-bar');
+  if (ibar) ibar.classList.toggle('visible', S.ec.type === 'candle');
 
   requestAnimationFrame(() => { paintExpandChart(); initExpandResize(); });
 }
 
 async function setExpandPeriod(period, btn) {
   S.ec.period = period;
-  document.querySelectorAll('#expand-period-bar .period-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  S.ec.data = await getChartData(S.ec.ticker, period, S.ec.interval);
-  paintExpandChart();
+  markActive(btn);
+  await loadChart(S.ec, S.ec.ticker, paintExpandChart);
 }
 
 function setExpandChartType(type, btn) {
@@ -1855,10 +1915,8 @@ function setExpandChartType(type, btn) {
 
 async function setExpandInterval(interval, btn) {
   S.ec.interval = interval;
-  document.querySelectorAll('#expand-interval-bar .interval-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  S.ec.data = await getChartData(S.ec.ticker, S.ec.period, interval);
-  paintExpandChart();
+  markActive(btn);
+  await loadChart(S.ec, S.ec.ticker, paintExpandChart);
 }
 
 function paintExpandChart() {
@@ -1899,7 +1957,8 @@ function chartScales(prices, W, H, pad) {
   const ylo = lo - margin, yhi = hi + margin;
   const cw = W - pl - pr, ch = H - pt - pb;
   return {
-    x:   i   => pl + (i / (prices.length - 1)) * cw,
+    // a single bar (e.g. period 1D at a daily interval) sits in the middle
+    x:   i   => prices.length < 2 ? pl + cw / 2 : pl + (i / (prices.length - 1)) * cw,
     y:   v   => pt + ch - ((v - ylo) / (yhi - ylo)) * ch,
     lo, hi, ylo, yhi, cw, ch,
   };
@@ -1991,12 +2050,13 @@ function drawAxes(ctx, prices, xFn, s, W, H, pad) {
   ctx.strokeStyle = 'rgba(142,142,147,.2)'; ctx.lineWidth = 0.5;
   ctx.beginPath(); ctx.moveTo(pl, H - pb); ctx.lineTo(W - pr, H - pb); ctx.stroke();
 
-  // X axis labels — 4 evenly spaced
-  const nX = Math.min(4, n);
+  // X axis labels — up to 4 evenly spaced, fewer when the long intraday labels would overlap
   ctx.fillStyle = 'rgba(142,142,147,.8)';
   ctx.font      = '10px -apple-system,sans-serif';
+  const labelW = Math.max(...[0, n - 1].map(i => ctx.measureText(chartLabel(prices[i].date, true)).width));
+  const nX = Math.max(1, Math.min(4, n, Math.floor((W - pl - pr) / (labelW + 16))));
   for (let i = 0; i < nX; i++) {
-    const idx  = Math.round(i / (nX - 1) * (n - 1));
+    const idx  = nX < 2 ? 0 : Math.round(i / (nX - 1) * (n - 1));
     const xPos = xFn(idx);
     ctx.textAlign = i === 0 ? 'left' : i === nX - 1 ? 'right' : 'center';
     ctx.fillText(chartLabel(prices[idx].date, true), xPos, H - pb + 14);
@@ -2080,9 +2140,11 @@ function addHover(canvas, s, tooltipId, crosshairId) {
 let _pendingOrder = null;
 
 function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, tradeType = 'STOCK', leverage = null, stopLoss = '', takeProfit = '', stopLossQty = '', takeProfitQty = '' }) {
-  _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source, tradeType, leverage, stopLoss, takeProfit, stopLossQty, takeProfitQty };
   const isBuy  = type === 'BUY';
   const isCFD  = tradeType === 'CFD';
+  // the chain attaches stop-loss / take-profit to a stock BUY or a CFD only
+  if (!isCFD && !isBuy) { stopLoss = takeProfit = stopLossQty = takeProfitQty = ''; }
+  _pendingOrder = { stock, type, qty, nonce, price, limitPrice, source, tradeType, leverage, stopLoss, takeProfit, stopLossQty, takeProfitQty };
   const label  = isCFD ? (isBuy ? 'LONG' : 'SHORT') : type;
   document.getElementById('confirm-headline').textContent = isCFD
     ? `${label} ${qty} ${stock} (${leverage}x)` : `${type} ${qty} ${stock}`;
@@ -2095,10 +2157,13 @@ function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, trade
   if (price) {
     priceRow.style.display = '';
     totalRow.style.display = '';
-    document.getElementById('confirm-price').textContent = fmt$(price) + '/share';
-    const total = isCFD
-      ? parseFloat(price) * parseFloat(qty) / leverage
-      : parseFloat(price) * parseFloat(qty);
+    const unit = isCFD ? '/unit' : '/share';
+    document.getElementById('confirm-price').textContent = fmt$(price) + unit;
+    // a limit order fills at the limit or better: show the total at the limit
+    const atLimit = !isCFD && limitPrice && parseFloat(limitPrice) > 0;
+    const px = atLimit ? parseFloat(limitPrice) : parseFloat(price);
+    const total = isCFD ? px * parseFloat(qty) / leverage : px * parseFloat(qty);
+    if (atLimit) totalRow.querySelector('.c-label').textContent = isBuy ? 'Total at most' : 'Total at least';
     document.getElementById('confirm-total').textContent = fmt$(total);
   } else {
     priceRow.style.display = 'none';
@@ -2130,8 +2195,8 @@ function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, trade
   }
   if (stopLoss && parseFloat(stopLoss) > 0) {
     slRow.style.display = '';
-    const slQtyLabel = stopLossQty && parseFloat(stopLossQty) > 0 ? ` × ${parseFloat(stopLossQty)} units` : ` × all`;
-    document.getElementById('confirm-sl-val').textContent = fmt$(stopLoss) + '/share' + slQtyLabel;
+    const slQtyLabel = stopLossQty && parseFloat(stopLossQty) > 0 ? ` × ${parseFloat(stopLossQty)} ${isCFD ? 'units' : 'shares'}` : ` × all`;
+    document.getElementById('confirm-sl-val').textContent = fmt$(stopLoss) + (isCFD ? '/unit' : '/share') + slQtyLabel;
   } else {
     slRow.style.display = 'none';
   }
@@ -2147,8 +2212,8 @@ function showConfirm({ stock, type, qty, nonce, price, limitPrice, source, trade
   }
   if (takeProfit && parseFloat(takeProfit) > 0) {
     tpRow.style.display = '';
-    const tpQtyLabel = takeProfitQty && parseFloat(takeProfitQty) > 0 ? ` × ${parseFloat(takeProfitQty)} units` : ` × all`;
-    document.getElementById('confirm-tp-val').textContent = fmt$(takeProfit) + '/share' + tpQtyLabel;
+    const tpQtyLabel = takeProfitQty && parseFloat(takeProfitQty) > 0 ? ` × ${parseFloat(takeProfitQty)} ${isCFD ? 'units' : 'shares'}` : ` × all`;
+    document.getElementById('confirm-tp-val').textContent = fmt$(takeProfit) + (isCFD ? '/unit' : '/share') + tpQtyLabel;
   } else {
     tpRow.style.display = 'none';
   }
@@ -2382,13 +2447,19 @@ async function doConfirmedOrder() {
       if (takeProfitQty && parseFloat(takeProfitQty) > 0) order.tp_qty = String(takeProfitQty);
     }
   }
-  btn.disabled = false; btn.textContent = 'Confirm';
-  closeConfirm();
+  // Keep the dialog open until the wallet answers; a refusal leaves the form as it was.
+  const note = document.getElementById('confirm-note');
+  const noteText = note.textContent;
+  btn.textContent = 'Approve in wallet…';
+  note.textContent = 'Review and approve this order in the TradeDesk Wallet window.';
   const pending = orderTx(order, order.limit
     ? '⚡ Signed — placing a limit order at ' + fmt$(order.limit) + '…'
-    : '⚡ Signed and sent — waiting for consensus…');
+    : '⚡ Signed and sent — waiting for consensus…', () => { closeConfirm(); resetOrderForm(source); });
+  pending.finally(() => { btn.disabled = false; btn.textContent = 'Confirm'; note.textContent = noteText; });
+  await pending;
+}
 
-  // Reset source form
+function resetOrderForm(source) {
   if (source === 'trade') {
     S.tradeNonce      = genNonce();
     S.tradeQty        = '';
@@ -2401,6 +2472,7 @@ async function doConfirmedOrder() {
     const warn = document.getElementById('trade-qty-warning');
     if (warn) { warn.textContent = ''; warn.classList.remove('visible'); }
     updateTradePriceCard();
+    updateTradeSLTPPreview();
   } else if (source === 'cfd') {
     S.cfdQty        = '';
     S.cfdStopLoss   = '';
@@ -2413,6 +2485,7 @@ async function doConfirmedOrder() {
     const tpEl  = document.getElementById('cfd-tp');
     if (tpEl)  tpEl.value  = '';
     updateCFDPriceCard();
+    updateCFDSLTPPreview();
   } else {
     document.getElementById('m-qty').value   = '';
     document.getElementById('m-limit').value = '';
@@ -2422,8 +2495,6 @@ async function doConfirmedOrder() {
     document.getElementById('m-estimate').textContent = '—';
     closeModal();
   }
-
-  await pending;
 }
 
 // ── QUANTITY VALIDATION ──────────────────────────────────────────
@@ -2483,7 +2554,8 @@ function doPlaceOrder() {
   if (!stock) { showErr(errEl, 'Enter a ticker symbol.'); return; }
   if (!qty || parseFloat(qty) <= 0) { showErr(errEl, 'Enter a valid quantity.'); return; }
   if (limitPrice && parseFloat(limitPrice) <= 0) { showErr(errEl, 'Limit price must be greater than 0.'); return; }
-  const price = S.tradePrice ? S.tradePrice.execution_price : null;
+  if (!S.tradePrice) { showErr(errEl, S.tradePriceError || 'Waiting for the price of this ticker…'); return; }
+  const price = S.tradePrice.execution_price;
   showConfirm({ stock: stock.toUpperCase(), type, qty, nonce, price, limitPrice, stopLoss, takeProfit, stopLossQty: S.tradeSlQty, takeProfitQty: S.tradeTpQty, source: 'trade' });
 }
 
@@ -2518,8 +2590,9 @@ function renderActivity() {
       const optTag = (isOpt||isOptClose||isOptExer) ? `<span style="font-size:10px;background:rgba(52,199,89,.12);color:var(--green);padding:2px 7px;border-radius:10px;font-weight:700;margin-left:4px">OPTION</span>` : '';
       const amount = parseFloat(o.amount || 0);
       const total  = amount ? (amount > 0 ? '+' : '−') + fmt$(Math.abs(amount)) : '—';
-      const perSh  = o.execution_price ? fmt$(parseFloat(o.execution_price)) + ((isOpt||isOptClose) ? '/sh premium' : '/share')
-                   : (o.status === 'OPEN' ? 'Resting' : '');
+      const perSh  = o.status === 'REJECTED' || o.status === 'EXPIRED' ? ''
+                   : o.execution_price ? fmt$(parseFloat(o.execution_price)) + ((isOpt||isOptClose) ? '/sh premium' : (isCFD||isCFDClose) ? '/unit' : '/share')
+                   : (o.status === 'OPEN' ? 'Resting · expires after 24 h' : '');
       const qtyTxt = parseFloat(o.quantity) ? parseFloat(o.quantity) + ' ' : '';
       return `<div class="order-row ${isBuy?'buy':'sell'}">
         <div class="order-info">
@@ -2528,7 +2601,7 @@ function renderActivity() {
           </div>
           <div class="order-sub">
             <span class="status-badge badge-${esc(o.status.toLowerCase())}"${o.reject_reason ? ` title="${esc(o.reject_reason)}"` : ''}>${esc(o.status)}</span>
-            &nbsp;· #${esc(o.id)} · ${timeAgo(o.created_at)}${o.status === 'REJECTED' && o.reject_reason ? ` · ${esc(o.reject_reason)}` : ''}
+            &nbsp;· #${esc(o.id)} · ${timeAgo(o.created_at)}${o.reject_reason ? ` · ${esc(o.reject_reason)}` : ''}
           </div>
         </div>
         <div class="order-right">
@@ -2667,7 +2740,7 @@ function renderCFD() {
         <button class="btn-small blue" style="font-size:11px;padding:5px 10px"
           onclick="openSLTPModal('cfd',${pos.id},'${dir} ${parseFloat(pos.quantity)} ${esc(pos.stock)}',${parseFloat(pos.quantity)},${parseFloat(pos.entry_price)},'${esc(pos.direction)}')">
           SL/TP</button>
-        <button class="btn-small red" onclick="doCloseCFD(${pos.id},this)">Close</button>
+        <button class="btn-small red" ${busyAttr(pos.id)} onclick="doCloseCFD(${pos.id},this)">${BUSY.has(pos.id) ? '…' : 'Close'}</button>
       </div>
     </div>`;
   }).join('')
@@ -2682,7 +2755,7 @@ function renderCFD() {
       return `<div class="order-row ${pos.direction==='LONG'?'buy':'sell'}">
         <div class="order-info">
           <div class="order-title" style="color:${pos.direction==='LONG'?'var(--green)':'var(--red)'}">
-            ${esc(pos.direction)} ${parseFloat(pos.quantity)} ${esc(pos.stock)} (${pos.leverage}x)
+            ${esc(pos.direction)} ${esc(pos.stock)} (${pos.leverage}x)
           </div>
           <div class="order-sub">
             <span class="status-badge ${pnl>=0?'badge-confirmed':'badge-rejected'}">CLOSED</span>
@@ -2691,7 +2764,7 @@ function renderCFD() {
         </div>
         <div class="order-right">
           <div class="order-price" style="color:${pnl>=0?'var(--green)':'var(--red)'}">${sign}${fmt$(pnl)}</div>
-          <div class="order-date">Margin back: ${fmt$(pos.margin_used)}</div>
+          <div class="order-date">Realized P&amp;L</div>
         </div>
       </div>`;
     }).join('')}</div>` : '';
@@ -2712,7 +2785,7 @@ function renderCFD() {
                value="${S.cfdStock}"
                oninput="S.cfdStock=cleanTicker(this.value);this.value=S.cfdStock;onCFDTickerChange()">
         <div style="font-size:11px;color:var(--label2);margin:4px 0 8px">
-          Popular: ${['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','NFLX','AMD','INTC'].map(t=>`<span onclick="S.cfdStock='${t}';const el=document.getElementById('cfd-ticker');if(el)el.value='${t}';onCFDTickerChange()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join('')}
+          Popular: ${['AAPL','MSFT','GOOGL','AMZN','NVDA','META','TSLA','NFLX','AMD','INTC'].map(t=>`<span onclick="S.cfdStock='${t}';const el=document.getElementById('cfd-ticker');if(el)el.value='${t}';onCFDTickerChange()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join(' ')}
         </div>
         <div class="field-label">Quantity</div>
         <input class="input-field" id="cfd-qty" type="number" min="1" placeholder="Units"
@@ -2724,7 +2797,7 @@ function renderCFD() {
             `<button class="lev-btn ${S.cfdLeverage===l?'active':''}" onclick="setCFDLeverage(${l})">${l}x</button>`
           ).join('')}
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div id="trade-sltp" style="display:${S.tradeType==='BUY'?'grid':'none'};grid-template-columns:1fr 1fr;gap:10px">
           <div>
             <div class="field-label" style="color:var(--red)">Stop Loss <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--label3)">(opt.)</span></div>
             <input class="input-field" id="cfd-sl" type="number" min="0.01" step="0.01" placeholder="Trigger price"
@@ -2763,8 +2836,8 @@ function renderCFD() {
   if (_savedChat !== null) { document.getElementById('cfd-chat-panel').innerHTML = _savedChat; document.querySelector('#cfd-chat-panel > div')?.style.setProperty('animation','none'); }
   if (_savedNews !== null) { document.getElementById('cfd-news-panel').innerHTML = _savedNews; document.querySelector('#cfd-news-panel > div')?.style.setProperty('animation','none'); }
   updateCFDPriceCard();
-  updateNewsPanel('cfd-news-panel', S.cfdStock);
-  renderChatPanel('cfd-chat-panel', S.cfdStock);
+  updateNewsPanel('cfd-news-panel', S.cfdPriceError ? '' : S.cfdStock);
+  renderChatPanel('cfd-chat-panel', S.cfdPriceError ? '' : S.cfdStock);
 }
 
 function updateCFDLivePrices() {
@@ -2808,10 +2881,18 @@ let _cfdPriceTimer;
 function onCFDTickerChange() {
   clearTimeout(_cfdPriceTimer);
   const t = S.cfdStock.trim();
-  if (!t) { S.cfdPrice = null; S.cc.ticker = ''; S.cc.data = null; updateCFDPriceCard(); updateNewsPanel('cfd-news-panel', ''); return; }
+  S.cfdPrice = null; S.cfdPriceError = null;
+  if (!t) { S.cc.ticker = ''; S.cc.data = null; updateCFDPriceCard(); updateNewsPanel('cfd-news-panel', ''); return; }
   _cfdPriceTimer = setTimeout(async () => {
     const r = await api('GET', `/price/${t}/`);
-    if (r.ok) { S.cfdPrice = r.data; S.holdingPrices[t] = r.data; }
+    if (S.cfdStock.trim() !== t) return;              // the user typed on meanwhile
+    if (!r.ok) {
+      S.cfdPrice = null; S.cc.ticker = ''; S.cc.data = null;
+      S.cfdPriceError = r.data.error === 'not a listed ticker' ? `${t} is not a listed ticker.` : (r.data.error || 'No price for this ticker.');
+      updateCFDPriceCard(); updateNewsPanel('cfd-news-panel', ''); renderChatPanel('cfd-chat-panel', '');
+      return;
+    }
+    S.cfdPrice = r.data; S.cfdPriceError = null; S.holdingPrices[t] = r.data;
     if (S.cc.ticker !== t) {
       S.cc.ticker = t;
       S.cc.data = await getChartData(t, S.cc.period, S.cc.interval);
@@ -2826,7 +2907,9 @@ function updateCFDPriceCard() {
   const card = document.getElementById('cfd-price-card');
   if (!card) return;
   if (!S.cfdPrice) {
-    card.innerHTML = `<div style="color:var(--label2);font-size:14px;padding:20px 0">Enter a ticker to see the live price and chart.</div>`;
+    card.innerHTML = S.cfdPriceError
+      ? `<div class="error-msg" style="display:block;margin:12px 0">${esc(S.cfdPriceError)}</div>`
+      : `<div style="color:var(--label2);font-size:14px;padding:20px 0">Enter a ticker to see the live price and chart.</div>`;
     return;
   }
   const price    = parseFloat(S.cfdPrice.execution_price);
@@ -2932,12 +3015,13 @@ function paintCFDChart() {
 
 async function setCFDPeriod(period, btn) {
   S.cc.period = period;
-  S.cc.data = await getChartData(S.cfdStock, period, S.cc.interval);
-  paintCFDChart();
+  markActive(btn);
+  await loadChart(S.cc, S.cfdStock, paintCFDChart);
 }
 
-function setCFDChartType(type) {
+function setCFDChartType(type, btn) {
   S.cc.type = type;
+  markActive(btn);
   const bar = document.getElementById('cc-interval-bar');
   if (bar) bar.classList.toggle('visible', type === 'candle');
   paintCFDChart();
@@ -2945,10 +3029,8 @@ function setCFDChartType(type) {
 
 async function setCFDInterval(interval, btn) {
   S.cc.interval = interval;
-  document.querySelectorAll('#cc-interval-bar .interval-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  S.cc.data = await getChartData(S.cfdStock, S.cc.period, interval);
-  paintCFDChart();
+  markActive(btn);
+  await loadChart(S.cc, S.cfdStock, paintCFDChart);
 }
 
 function doPlaceCFD() {
@@ -2958,6 +3040,7 @@ function doPlaceCFD() {
   const qty   = S.cfdQty;
   if (!stock) { showErr(errEl, 'Enter a ticker symbol.'); return; }
   if (!qty || parseFloat(qty) <= 0) { showErr(errEl, 'Enter a valid quantity.'); return; }
+  if (!S.cfdPrice) { showErr(errEl, S.cfdPriceError || 'Waiting for the price of this ticker…'); return; }
   showConfirm({
     stock: stock.toUpperCase(), type: S.cfdDir, qty,
     nonce: genNonce(), price: S.cfdPrice?.execution_price,
@@ -2968,12 +3051,21 @@ function doPlaceCFD() {
   });
 }
 
+// Positions with a close or exercise in flight; their buttons stay disabled across re-renders.
+const BUSY = new Set();
+const busyAttr = id => BUSY.has(id) ? 'disabled' : '';
+async function closingTx(posId, btn, order) {
+  if (BUSY.has(posId)) return;
+  BUSY.add(posId);
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try { await orderTx(order); }
+  finally { BUSY.delete(posId); renderActiveTab(); }
+}
+
 async function doCloseCFD(posId, btn) {
   const pos = S.cfdPositions.find(p => p.id === posId);
   if (!pos) return;
-  btn.disabled = true; btn.textContent = '…';
-  await orderTx({kind: 'CFD_CLOSE', side: 'SELL', ticker: pos.stock, qty: pos.quantity, position: String(pos.id)});
-  btn.disabled = false; btn.textContent = 'Close';
+  await closingTx(posId, btn, {kind: 'CFD_CLOSE', side: 'SELL', ticker: pos.stock, qty: pos.quantity, position: String(pos.id)});
 }
 
 // ── OPTIONS ──────────────────────────────────────────────────────
@@ -2996,7 +3088,12 @@ function renderOptions() {
       if (S.optSelectedRow) {
         const row = S.optSelectedRow;
         const contracts = parseInt(S.optContracts) || 1;
-        const indicativePremium = row.ask > 0 ? row.ask : row.lastPrice;
+        // The chain charges its own model premium at the verified price; the market ask is only a fallback hint.
+        const q = S.optQuote && S.optQuote.key === optQuoteKey(row) ? S.optQuote : null;
+        const modelPremium = q && q.premium ? parseFloat(q.premium) : null;
+        const indicativePremium = modelPremium ?? (row.ask > 0 ? row.ask : row.lastPrice);
+        const premiumLabel = modelPremium !== null ? 'Chain premium (per share)'
+                           : q ? 'Market ask (per share)' : 'Premium (per share)';
         const indicativeCost = indicativePremium * contracts * 100;
         const maxProfit = S.optContractType === 'CALL' ? 'Unlimited' : fmt$(row.strike * contracts * 100);
         chainContent += `
@@ -3010,14 +3107,14 @@ function renderOptions() {
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
               <div>
-                <div class="field-label">Indicative ask (per share)</div>
-                <div style="font-size:16px;font-weight:700;color:var(--red)">${fmt$(indicativePremium)}</div>
+                <div class="field-label">${premiumLabel}</div>
+                <div style="font-size:16px;font-weight:700;color:var(--red)">${q ? fmt$(indicativePremium) : '…'}</div>
               </div>
               <div>
                 <div class="field-label">Contracts (×100 shares)</div>
                 <input class="modal-input" type="number" min="1" step="1" value="${S.optContracts}"
                   id="opt-contracts-input"
-                  oninput="S.optContracts=this.value;const tc=document.getElementById('opt-total-cost');if(tc)tc.textContent=fmt$(${indicativePremium}*parseFloat(this.value||1)*100)"
+                  oninput="S.optContracts=this.value;onOptContracts(${indicativePremium})"
                   style="margin-bottom:0">
               </div>
             </div>
@@ -3026,14 +3123,16 @@ function renderOptions() {
               <span>Max loss: <strong>premium paid</strong> · Max profit: <strong>${maxProfit}</strong></span>
             </div>
             <div style="font-size:11px;color:var(--label2);margin-bottom:10px;opacity:.7">
-              ⚡ Premium verified server-side at purchase — actual price may differ slightly from indicative.
+              ⚡ ${modelPremium !== null
+                ? 'The chain prices the option with its model at the verified price when the block is built, so the final premium can move slightly.'
+                : 'No verified price of ' + esc(S.optTicker) + ' on the chain yet — the chain will price the option with its model when the block is built.'}
             </div>
             <div id="opt-buy-error" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px"></div>
             <div style="display:flex;gap:8px">
               <button class="btn-modal" style="flex:1;background:var(--gray5);color:var(--label)"
                 onclick="S.optSelectedRow=null;renderOptions()">Cancel</button>
               <button class="btn-modal blue" id="opt-buy-btn" style="flex:1" onclick="doOpenOption()">
-                Buy ${contracts} Contract${contracts!==1?'s':''}
+                ${buyLabel(contracts)}
               </button>
             </div>
           </div>`;
@@ -3078,10 +3177,10 @@ function renderOptions() {
         <button class="btn-modal blue" style="height:38px;padding:0 20px;flex-shrink:0;width:auto" onclick="loadOptExpiries()">Load</button>
       </div>
       <div style="font-size:11px;color:var(--label2);margin-top:4px">
-        Popular: ${SP500_HINT.map(t=>`<span onclick="S.optTicker='${t}';loadOptExpiries()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join('')}
+        Popular: ${SP500_HINT.map(t=>`<span onclick="S.optTicker='${t}';loadOptExpiries()" style="cursor:pointer;color:var(--blue);margin-right:6px">${t}</span>`).join(' ')}
       </div>
       ${illiquid ? `<div style="margin-top:8px;padding:8px 12px;background:rgba(255,149,0,.1);border-radius:8px;font-size:12px;color:var(--label2)">
-        ⚠️ No live bid/ask for <strong>${esc(S.optTicker)}</strong> options right now — usually because the US options market is closed. Prices shown are the last trades, and an order fills at the last traded price (never below the option's intrinsic value).
+        ⚠️ No live bid/ask for <strong>${esc(S.optTicker)}</strong> options right now — usually because the US options market is closed. The table shows the last trades; a purchase is priced by the chain's option model, not by this table.
       </div>` : ''}
       ${expiriesHtml}
       ${chainContent}`;
@@ -3095,7 +3194,9 @@ function renderOptions() {
       const intrinsic = sp !== null
         ? (pos.contract_type === 'CALL' ? Math.max(0, sp - strike) : Math.max(0, strike - sp))
         : null;
-      const curVal  = intrinsic !== null ? intrinsic * pos.contracts * 100 : null;
+      const mark    = S.optMarks[pos.id] != null ? parseFloat(S.optMarks[pos.id]) : null;
+      const perSh   = mark ?? intrinsic;               // model premium (the close price), else intrinsic
+      const curVal  = perSh !== null ? perSh * pos.contracts * 100 : null;
       const tc      = parseFloat(pos.total_cost);
       const livePnl = curVal !== null ? curVal - tc : null;
       const isITM   = intrinsic !== null && intrinsic > 0;
@@ -3104,10 +3205,10 @@ function renderOptions() {
       const expLabel = daysLeft <= 7 ? `${daysLeft}d left` : `exp ${esc(pos.expiry)}`;
       const side     = pos.contract_type === 'CALL' ? 'long' : 'short';
       let pnlHtml;
-      if (sp !== null) {
+      if (livePnl !== null) {
         const cls = livePnl >= 0 ? 'pos' : 'neg';
         pnlHtml = `<div class="cfd-pnl ${cls}">${livePnl>=0?'+':''}${fmt$(livePnl)}</div>
-                   <div class="cfd-sub">Intrinsic ${fmt$(intrinsic)}/sh</div>`;
+                   <div class="cfd-sub">${mark !== null ? 'Close value ' + fmt$(mark) : 'Intrinsic ' + fmt$(intrinsic)}/sh</div>`;
       } else {
         pnlHtml = `<div class="cfd-pnl" style="color:var(--label2)">—</div>
                    <div class="cfd-sub">Fetching…</div>`;
@@ -3120,8 +3221,8 @@ function renderOptions() {
         </div>
         <div class="cfd-right">${pnlHtml}</div>
         <div style="display:flex;gap:8px">
-          ${isITM ? `<button class="btn-small blue" style="font-size:11px;padding:5px 10px" onclick="doExerciseOption(${pos.id},this)">Exercise</button>` : ''}
-          <button class="btn-small" style="font-size:11px;padding:5px 10px;background:var(--gray5);color:var(--label)" onclick="doCloseOption(${pos.id},this)">Close</button>
+          ${isITM ? `<button class="btn-small blue" style="font-size:11px;padding:5px 10px" ${busyAttr(pos.id)} onclick="doExerciseOption(${pos.id},this)">Exercise</button>` : ''}
+          <button class="btn-small" style="font-size:11px;padding:5px 10px;background:var(--gray5);color:var(--label)" ${busyAttr(pos.id)} onclick="doCloseOption(${pos.id},this)">${BUSY.has(pos.id) ? '…' : 'Close'}</button>
         </div>
       </div>`;
     }).join('')
@@ -3193,7 +3294,8 @@ function _buildChainTable(rows) {
     <th></th></tr>`;
   const bodyRows = rows.map((row, i) => {
     const isITM = row.inTheMoney;
-    const iv    = row.impliedVolatility ? (row.impliedVolatility*100).toFixed(1)+'%' : '—';
+    // Yahoo reports a near-zero IV when there is no live quote
+    const iv    = row.impliedVolatility >= 0.005 ? (row.impliedVolatility*100).toFixed(1)+'%' : '—';
     const vol   = row.volume      > 0 ? parseInt(row.volume).toLocaleString()      : '—';
     const oi    = row.openInterest > 0 ? parseInt(row.openInterest).toLocaleString() : '—';
     return `<tr onclick="selectOptRow(${i})" style="cursor:pointer;${isITM?'background:rgba(52,199,89,.06);':''}">
@@ -3230,7 +3332,9 @@ function selectOptRow(idx) {
   if (!rows || idx < 0 || idx >= rows.length) return;
   S.optSelectedRow = rows[idx];
   S.optContracts = '1';
+  S.optQuote = null;
   renderOptions();
+  loadOptQuote(rows[idx]);
   setTimeout(() => {
     const panel = document.getElementById('opt-buy-btn');
     if (panel) panel.scrollIntoView({behavior:'smooth', block:'nearest'});
@@ -3277,26 +3381,43 @@ async function doOpenOption() {
   // The premium is set by the chain's option model at the verified price.
   const res = await orderTx({kind: 'OPTION', side: 'BUY', ticker: S.optTicker, qty: String(contracts),
     option_type: S.optContractType, strike: String(row.strike), expiry: S.optExpiry});
-  if (btn) { btn.disabled = false; btn.textContent = 'Buy ' + contracts + ' Contract' + (contracts !== 1 ? 's' : ''); }
-  if (res && res.code === 0 && String(res.log).startsWith('CONFIRMED')) S.optSelectedRow = null;
+  if (btn) { btn.disabled = false; btn.textContent = buyLabel(contracts); }
+  if (res && res.code === 0 && String(res.log).startsWith('CONFIRMED')) { S.optSelectedRow = null; renderOptions(); }
+}
+
+const buyLabel = n => 'Buy ' + n + ' Contract' + (n !== 1 ? 's' : '');
+const optQuoteKey = row => `${S.optTicker}|${S.optContractType}|${row.strike}|${S.optExpiry}`;
+
+function onOptContracts(premium) {
+  const n = parseInt(S.optContracts) || 0;
+  const tc = document.getElementById('opt-total-cost');
+  if (tc) tc.textContent = n > 0 ? fmt$(premium * n * 100) : '—';
+  const btn = document.getElementById('opt-buy-btn');
+  if (btn && !btn.disabled) btn.textContent = buyLabel(n);
+}
+
+async function loadOptQuote(row) {
+  const key = optQuoteKey(row);
+  const r = await api('GET', `/option-quote/?ticker=${encodeURIComponent(S.optTicker)}&type=${S.optContractType}&strike=${row.strike}&expiry=${S.optExpiry}`);
+  if (S.optSelectedRow !== row) return;            // another row was picked meanwhile
+  S.optQuote = {key, premium: r.ok ? r.data.premium : null};
+  const typing = document.activeElement?.id === 'opt-contracts-input';
+  renderOptions();
+  if (typing) { const el = document.getElementById('opt-contracts-input'); el?.focus(); }
 }
 
 async function doCloseOption(posId, btn) {
   const pos = S.optPositions.find(p => p.id === posId);
   if (!pos) return;
   if (!confirm('Sell this option contract back at the chain\'s model price?\n\nThis captures both intrinsic value and any remaining time value.')) return;
-  if (btn) { btn.disabled = true; btn.textContent = '…'; }
-  await orderTx({kind: 'OPT_CLOSE', side: 'SELL', ticker: pos.stock, qty: String(pos.contracts), position: String(pos.id)});
-  if (btn) { btn.disabled = false; btn.textContent = 'Close'; }
+  await closingTx(posId, btn, {kind: 'OPT_CLOSE', side: 'SELL', ticker: pos.stock, qty: String(pos.contracts), position: String(pos.id)});
 }
 
 async function doExerciseOption(posId, btn) {
   const pos = S.optPositions.find(p => p.id === posId);
   if (!pos) return;
   if (!confirm('Exercise this option?\n\nYou will receive the intrinsic value in cash (current stock price − strike × 100 shares × contracts).\nNote: any remaining time value is forfeited.')) return;
-  if (btn) { btn.disabled = true; btn.textContent = '…'; }
-  await orderTx({kind: 'OPT_EXER', side: 'SELL', ticker: pos.stock, qty: String(pos.contracts), position: String(pos.id)});
-  if (btn) { btn.disabled = false; btn.textContent = 'Exercise'; }
+  await closingTx(posId, btn, {kind: 'OPT_EXER', side: 'SELL', ticker: pos.stock, qty: String(pos.contracts), position: String(pos.id)});
 }
 
 
