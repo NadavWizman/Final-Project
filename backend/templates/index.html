@@ -2368,7 +2368,7 @@ async function doConfirmedOrder() {
   const btn = document.getElementById('confirm-ok-btn');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
 
-  // The order is signed in this browser and settled by the chain.
+  // The order is signed in the wallet (after the user approves it there) and settled by the chain.
   const order = {kind: tradeType === 'CFD' ? 'CFD' : 'STOCK', side: type, ticker: stock.toUpperCase(), qty: String(qty)};
   if (tradeType === 'CFD') order.leverage = String(leverage);
   else if (limitPrice && parseFloat(limitPrice) > 0) order.limit = String(limitPrice);

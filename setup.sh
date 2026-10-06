@@ -5,7 +5,8 @@
 #   2. backend/.env with a random SECRET_KEY
 #   3. builds the node binary (nodes/tradedesk-node)
 #   4. creates a local network in ./testnet: 4 validators, their keys,
-#      one genesis file, and a signing key for each of the 3 price sources
+#      one genesis file, a signing key for each of the 5 price sources and
+#      the custodian's key (the only signer of deposits)
 #
 # Then: ./run.sh start
 set -euo pipefail
@@ -46,5 +47,6 @@ fi
 
 echo ""
 echo "Done. Start everything with:   ./run.sh start"
-echo "Then open http://127.0.0.1:8000 and create an account."
+echo "Install the wallet once: chrome://extensions -> Developer mode -> Load unpacked -> the wallet/ folder,"
+echo "then create an account in it (write down its recovery code) and open http://127.0.0.1:8000."
 echo ""
