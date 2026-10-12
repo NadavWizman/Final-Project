@@ -30,7 +30,7 @@ type Envelope struct {
 
 // Msg is the content the user signs.
 type Msg struct {
-	Type     string    `json:"type"`  // register, order, level_add, level_cancel
+	Type     string    `json:"type"`  // register, order, order_cancel, level_add, level_cancel
 	Chain    string    `json:"chain"` // must equal the chain id (no replay on another chain)
 	From     string    `json:"from"`  // the sender's address
 	Nonce    string    `json:"nonce"` // the account's next transaction number, as a decimal string
@@ -38,6 +38,7 @@ type Msg struct {
 	Order    *OrderMsg `json:"order,omitempty"`
 	Level    *LevelMsg `json:"level,omitempty"`
 	LevelID  string    `json:"level_id,omitempty"`
+	OrderID  string    `json:"order_id,omitempty"` // the resting limit order to cancel
 }
 
 // OrderMsg describes a trade. Amounts are decimal strings, parsed exactly.
@@ -196,7 +197,7 @@ var (
 	idRe     = regexp.MustCompile(`^[0-9]{1,19}$`)
 	keyRe    = regexp.MustCompile(`^[a-z_]+$`)
 
-	msgTypes   = map[string]bool{"register": true, "order": true, "level_add": true, "level_cancel": true}
+	msgTypes   = map[string]bool{"register": true, "order": true, "order_cancel": true, "level_add": true, "level_cancel": true}
 	orderKinds = map[string]bool{"STOCK": true, "CFD": true, "CFD_CLOSE": true, "OPTION": true, "OPT_CLOSE": true, "OPT_EXER": true}
 )
 
@@ -210,7 +211,8 @@ func checkShape(m *Msg) error {
 	// each type carries its own fields only, so a wallet that shows the
 	// fields of the type shows everything the transaction does
 	if (m.Username != "") != (m.Type == "register") || (m.Order != nil) != (m.Type == "order") ||
-		(m.Level != nil) != (m.Type == "level_add") || (m.LevelID != "") != (m.Type == "level_cancel") {
+		(m.Level != nil) != (m.Type == "level_add") || (m.LevelID != "") != (m.Type == "level_cancel") ||
+		(m.OrderID != "") != (m.Type == "order_cancel") {
 		return fmt.Errorf("fields do not match the transaction type %q", m.Type)
 	}
 	if o := m.Order; o != nil {
@@ -251,6 +253,9 @@ func checkShape(m *Msg) error {
 	}
 	if m.LevelID != "" && !idRe.MatchString(m.LevelID) {
 		return errors.New("malformed level id")
+	}
+	if m.OrderID != "" && !idRe.MatchString(m.OrderID) {
+		return errors.New("malformed order id")
 	}
 	return nil
 }

@@ -382,8 +382,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
 .status-badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;
   font-weight:700;text-transform:uppercase;letter-spacing:.4px}
 .badge-confirmed{background:rgba(52,199,89,.12);color:#248A3D}
-.badge-submitted{background:rgba(255,149,0,.12);color:#C87000}
-.badge-draft{background:rgba(142,142,147,.12);color:var(--gray)}
+.badge-open{background:rgba(255,149,0,.12);color:#C87000}
+.badge-expired,.badge-cancelled{background:rgba(142,142,147,.12);color:var(--gray)}
 .badge-rejected{background:rgba(255,59,48,.12);color:#D70015}
 
 /* ── CFD ─────────────────────────────────────────── */
@@ -2582,7 +2582,7 @@ function renderActivity() {
       const isOptClose= o.trade_type === 'OPT_CLOSE';
       const isOptExer = o.trade_type === 'OPT_EXER';
       const auto = {SL: 'STOP LOSS', TP: 'TAKE PROFIT', LIQUIDATION: 'LIQUIDATION', EXPIRY: 'OPTION EXPIRY',
-                    DEPOSIT: 'DEPOSIT', LEVEL: 'SL/TP LEVEL'}[o.trade_type];
+                    DEPOSIT: 'DEPOSIT', LEVEL: 'SL/TP LEVEL', CANCEL: 'CANCEL ORDER'}[o.trade_type];
       const label = auto       ? auto
                   : isCFD      ? (isBuy ? 'LONG' : 'SHORT')
                   : isCFDClose ? 'CLOSE CFD'
@@ -2611,6 +2611,8 @@ function renderActivity() {
         <div class="order-right">
           <div class="order-price">${total}</div>
           <div class="order-date">${perSh}</div>
+          ${o.status === 'OPEN' ? `<button class="btn-small gray" style="font-size:11px;padding:4px 10px;margin-top:6px"
+            ${busyAttr(o.id)} onclick="doCancelOrder(${Number(o.id)},this)">${BUSY.has(o.id) ? '…' : 'Cancel'}</button>` : ''}
         </div>
       </div>`;
     }).join('')}</div>`;
@@ -3058,12 +3060,19 @@ function doPlaceCFD() {
 // Positions with a close or exercise in flight; their buttons stay disabled across re-renders.
 const BUSY = new Set();
 const busyAttr = id => BUSY.has(id) ? 'disabled' : '';
-async function closingTx(posId, btn, order) {
-  if (BUSY.has(posId)) return;
-  BUSY.add(posId);
+async function busyTx(id, btn, send) {
+  if (BUSY.has(id)) return;
+  BUSY.add(id);
   if (btn) { btn.disabled = true; btn.textContent = '…'; }
-  try { await orderTx(order); }
-  finally { BUSY.delete(posId); renderActiveTab(); }
+  try { await send(); }
+  finally { BUSY.delete(id); renderActiveTab(); }
+}
+const closingTx = (posId, btn, order) => busyTx(posId, btn, () => orderTx(order));
+
+// A resting limit order is withdrawn by a transaction the wallet signs, like any other.
+async function doCancelOrder(orderId, btn) {
+  if (!confirm(`Cancel limit order #${orderId}?`)) return;
+  await busyTx(orderId, btn, () => submitTx({type: 'order_cancel', order_id: String(orderId)}, '⚡ Signed — cancelling the order…'));
 }
 
 async function doCloseCFD(posId, btn) {

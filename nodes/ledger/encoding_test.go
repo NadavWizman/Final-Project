@@ -136,14 +136,18 @@ func TestFieldsMatchTheType(t *testing.T) {
 	u := newUser(t)
 	mustOK(t, block(s, 1000, nil, u.register(t, "fields")))
 	for name, m := range map[string]Msg{
-		"leverage on a stock order":  {Type: "order", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1", Leverage: "50"}},
-		"position on an open order":  {Type: "order", Order: &OrderMsg{Kind: "CFD", Side: "BUY", Ticker: "AAPL", Qty: "1", Leverage: "5", Position: "3"}},
-		"close without a position":   {Type: "order", Order: &OrderMsg{Kind: "CFD_CLOSE", Side: "SELL", Ticker: "AAPL", Qty: "1"}},
-		"option fields on a stock":   {Type: "order", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1", Strike: "90"}},
-		"username on an order":       {Type: "order", Username: "x", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1"}},
-		"level id on an order":       {Type: "order", LevelID: "4", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1"}},
-		"order on a level cancel":    {Type: "level_cancel", LevelID: "4", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1"}},
-		"level cancel without an id": {Type: "level_cancel"},
+		"leverage on a stock order":   {Type: "order", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1", Leverage: "50"}},
+		"position on an open order":   {Type: "order", Order: &OrderMsg{Kind: "CFD", Side: "BUY", Ticker: "AAPL", Qty: "1", Leverage: "5", Position: "3"}},
+		"close without a position":    {Type: "order", Order: &OrderMsg{Kind: "CFD_CLOSE", Side: "SELL", Ticker: "AAPL", Qty: "1"}},
+		"option fields on a stock":    {Type: "order", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1", Strike: "90"}},
+		"username on an order":        {Type: "order", Username: "x", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1"}},
+		"level id on an order":        {Type: "order", LevelID: "4", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1"}},
+		"order on a level cancel":     {Type: "level_cancel", LevelID: "4", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1"}},
+		"level cancel without an id":  {Type: "level_cancel"},
+		"order id on an order":        {Type: "order", OrderID: "4", Order: &OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1"}},
+		"order cancel without an id":  {Type: "order_cancel"},
+		"malformed order id":          {Type: "order_cancel", OrderID: "4x"},
+		"level id on an order cancel": {Type: "order_cancel", OrderID: "4", LevelID: "5"},
 	} {
 		raw := u.sign(t, m, false)
 		u.nonce--

@@ -140,11 +140,11 @@ type Record struct {
 	ID     uint64 `json:"id"`
 	Height int64  `json:"height"`
 	Time   int64  `json:"time"`
-	Kind   string `json:"kind"` // STOCK, CFD, CFD_CLOSE, OPTION, OPT_CLOSE, OPT_EXER, DEPOSIT, SL, TP, LIQUIDATION, EXPIRY
+	Kind   string `json:"kind"` // STOCK, CFD, CFD_CLOSE, OPTION, OPT_CLOSE, OPT_EXER, DEPOSIT, SL, TP, LIQUIDATION, EXPIRY, LEVEL, CANCEL
 	Side   string `json:"side"` // BUY or SELL
 	Ticker string `json:"ticker"`
 	Qty    Qty    `json:"qty"`
-	Status string `json:"status"` // OPEN (resting), CONFIRMED, REJECTED, EXPIRED
+	Status string `json:"status"` // OPEN (resting), CONFIRMED, REJECTED, EXPIRED, CANCELLED
 	Price  Cents  `json:"price,omitempty"`
 	Amount Cents  `json:"amount,omitempty"` // cash moved, signed: + credit, − debit
 	Reason string `json:"reason,omitempty"`

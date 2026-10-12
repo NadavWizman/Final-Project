@@ -210,6 +210,37 @@ func TestLimitOrderRestsFillsAndExpires(t *testing.T) {
 	}
 }
 
+// A resting limit order can be withdrawn by its owner only, and once
+// cancelled it never fills.
+func TestLimitOrderCanBeCancelled(t *testing.T) {
+	s, u, acc := setup(t)
+	mustOK(t, block(s, t0, p(20000), u.order(t, OrderMsg{Kind: "STOCK", Side: "BUY", Ticker: "AAPL", Qty: "1", Limit: "190"})))
+	id := acc.Resting[0].ID
+	cash := acc.Cash
+
+	other := newUser(t)
+	mustOK(t, block(s, t0+1, nil, other.register(t, "mallory")))
+	mustOK(t, block(s, t0+2, nil, other.sign(t, Msg{Type: "order_cancel", OrderID: itoa(id)}, false)))
+	if len(acc.Resting) != 1 || last(s.Accounts[other.addr]).Status != "REJECTED" {
+		t.Fatal("another account cancelled the order")
+	}
+
+	if r := block(s, t0+3, nil, u.sign(t, Msg{Type: "order_cancel", OrderID: itoa(id)}, false))[0]; !strings.HasPrefix(r.Log, "CONFIRMED") {
+		t.Fatalf("cancel refused: %+v", r)
+	}
+	if len(acc.Resting) != 0 || acc.historyRecord(id).Status != "CANCELLED" {
+		t.Fatalf("not cancelled: %+v", acc.historyRecord(id))
+	}
+	block(s, t0+4, p(18000)) // the limit is now reached, but the order is gone
+	if acc.Holdings["AAPL"] != 0 || acc.Cash != cash {
+		t.Fatal("a cancelled order filled")
+	}
+	mustOK(t, block(s, t0+5, nil, u.sign(t, Msg{Type: "order_cancel", OrderID: itoa(id)}, false)))
+	if r := last(acc); r.Status != "REJECTED" || r.Kind != "CANCEL" {
+		t.Fatalf("second cancel: %+v", r)
+	}
+}
+
 func TestCFDOpenPartialCloseAndLiquidation(t *testing.T) {
 	s, u, acc := setup(t)
 	mustOK(t, block(s, t0, p(10000), u.order(t, OrderMsg{Kind: "CFD", Side: "BUY", Ticker: "AAPL", Qty: "10", Leverage: "10"})))

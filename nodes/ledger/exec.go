@@ -115,6 +115,8 @@ func (s *State) applyTx(raw []byte, prices map[string]Cents) TxResult {
 		}
 		r := s.placeOrder(acc, *m.Order, prices)
 		return TxResult{Code: CodeOK, Log: r.Status + " " + r.Reason}
+	case "order_cancel":
+		return s.cancelOrder(acc, m.OrderID)
 	case "level_add":
 		return s.addLevel(acc, m.Level)
 	case "level_cancel":
@@ -578,6 +580,23 @@ func (s *State) addLevel(acc *Account, lm *LevelMsg) TxResult {
 	lvl.ID = s.nextID()
 	acc.Levels = append(acc.Levels, lvl)
 	return TxResult{Code: CodeOK, Log: "CONFIRMED level " + strconv.FormatUint(lvl.ID, 10)}
+}
+
+// cancelOrder withdraws one of the account's own resting limit orders. Its
+// OPEN record becomes CANCELLED; an order that has meanwhile filled or
+// expired is no longer resting and cannot be cancelled.
+func (s *State) cancelOrder(acc *Account, id string) TxResult {
+	want := parseID(id)
+	for i, o := range acc.Resting {
+		if o.ID == want {
+			acc.Resting = append(acc.Resting[:i:i], acc.Resting[i+1:]...)
+			if rec := acc.historyRecord(want); rec != nil {
+				rec.Status, rec.Reason = "CANCELLED", "cancelled by the owner"
+			}
+			return TxResult{Code: CodeOK, Log: "CONFIRMED order " + id + " cancelled"}
+		}
+	}
+	return s.reject(acc, &Record{Kind: "CANCEL"}, "no open limit order #"+id)
 }
 
 func (s *State) cancelLevel(acc *Account, id string) TxResult {

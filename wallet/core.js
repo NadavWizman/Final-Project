@@ -160,7 +160,7 @@ export async function signText(privateKey, text) {
 // fields with string values. Anything else is refused, so the details shown
 // to the user are the only reading of the signed bytes.
 const FIELDS = {
-  msg: { register: ['username'], order: ['order'], level_add: ['level'], level_cancel: ['level_id'] },
+  msg: { register: ['username'], order: ['order'], order_cancel: ['order_id'], level_add: ['level'], level_cancel: ['level_id'] },
   level: ['kind', 'ticker', 'cfd', 'price', 'qty'],
 };
 // The fields each order kind may carry — the same rules the chain enforces,
@@ -238,6 +238,10 @@ export function describe(text) {
       rows.push([l.cfd ? 'CFD position' : 'Ticker', l.cfd ? '#' + l.cfd : l.ticker], ['Price', '$' + l.price], ['Quantity', l.qty]);
       break;
     }
+    case 'order_cancel':
+      title = 'Cancel a limit order';
+      rows.push(['Order', '#' + m.order_id]);
+      break;
     case 'level_cancel':
       title = 'Cancel a stop-loss / take-profit';
       rows.push(['Level', '#' + m.level_id]);

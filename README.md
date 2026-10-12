@@ -92,7 +92,7 @@ delete `testnet/` and run `bash setup.sh` again.
 | Area | What you can do |
 |------|-----------------|
 | **Wallet** | Keys live in the TradeDesk Wallet extension, are non-extractable, and are backed up as a recovery code. Every transaction opens the wallet's approval window, which shows what will be signed |
-| **Trade** | Market or limit BUY/SELL of S&P 500 stocks. A limit order rests on the chain until the verified price reaches it (up to 24 h) |
+| **Trade** | Market or limit BUY/SELL of S&P 500 stocks. A limit order rests on the chain until the verified price reaches it (up to 24 h); **Cancel** in Activity withdraws it, with a transaction the wallet signs |
 | **Stop loss / take profit** | Attach levels to an order or add them later. They fire inside the chain in the first block whose verified price crosses them |
 | **CFD** | Long or short at 2x–20x leverage. Liquidated when the loss reaches 80 % of the margin. A loss past the margin (a price gap) is a debt, see [Trust model](#trust-model) |
 | **Options** | CALL/PUT on the model premium. Sell back, exercise, or let them settle automatically at expiry |

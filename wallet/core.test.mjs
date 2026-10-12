@@ -59,6 +59,11 @@ test('describe shows the details read from the signed bytes', () => {
   });
   assert.equal(describe(JSON.stringify({ type: 'register', username: 'alice', ...base })).rows[0][1], 'alice');
   assert.equal(describe(JSON.stringify({ type: 'level_cancel', level_id: '12', ...base })).rows[0][1], '#12');
+  const cancel = describe(JSON.stringify({ type: 'order_cancel', order_id: '31', ...base }));
+  assert.equal(cancel.title, 'Cancel a limit order');
+  assert.equal(cancel.rows[0][1], '#31');
+  assert.throws(() => describe(JSON.stringify({ type: 'order_cancel', ...base })));
+  assert.throws(() => describe(JSON.stringify({ type: 'order_cancel', order_id: '31', level_id: '2', ...base })));
   const close = Object.fromEntries(describe(order({ kind: 'OPT_CLOSE', side: 'SELL', ticker: 'AAPL', qty: '5', position: '9' })).rows);
   assert.equal(close.Contracts, '5 (the whole position)');
 });
