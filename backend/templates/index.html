@@ -323,6 +323,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
   .trade-grid{grid-template-columns:minmax(0,1fr)}
   .trade-grid > *{min-width:0}
   .card{padding:16px}
+  /* position cards: the action buttons move to their own row */
+  .cfd-card{flex-wrap:wrap;gap:10px 12px}
+  .cfd-info{min-width:0}
+  .cfd-card > div:last-child{flex-basis:100%;justify-content:flex-end}
 }
 .field-label{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.4px;
   color:var(--label2);margin-bottom:6px}
