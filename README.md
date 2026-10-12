@@ -16,6 +16,8 @@ price or change who runs the network**.
 - Stop-loss, take-profit, liquidation, limit orders and option expiry run **inside the
   replicated state machine**.
 
+**Authors:** Stav Berkovitch, Nadav Wizman, Zohar Avrahami — Netanya Academic College, final project.
+
 **Stack:** Go · CometBFT 0.38 (ABCI++) · Python gRPC price signers (Ed25519) · Django gateway · Chrome MV3 wallet extension (WebCrypto P-256)
 
 ---
@@ -55,8 +57,13 @@ bash setup.sh          # once: Python deps, backend/.env, node binary, a 4-valid
 *Load unpacked* and select the `wallet/` folder. Open the wallet from the toolbar →
 **New account**, and write down the recovery code it shows.
 
-Open **http://127.0.0.1:8000**, pick your wallet account and a username. The wallet asks
-you to approve the registration, and you get $10,000. Stop everything with `./run.sh stop`.
+Open **http://127.0.0.1:8000** and click **Connect the TradeDesk Wallet**; the wallet asks
+once whether this site may see your accounts. Then pick your account and a username. The
+wallet asks you to approve the registration, and you get $10,000. Stop everything with
+`./run.sh stop`.
+
+`setup.sh` installs the Python packages into a virtual environment, `./.venv`, which
+`run.sh` uses. For the Python commands below, activate it first: `source .venv/bin/activate`.
 
 | Command | What it does |
 |---------|--------------|
@@ -124,7 +131,7 @@ delete `testnet/` and run `bash setup.sh` again.
 | Ledger | `nodes/ledger` | Deterministic state machine: accounts, orders, CFDs, options, levels, custodian deposits. Integer arithmetic only, with overflow checks |
 | Quotes | `nodes/quotes` | Signed quote format, verification, quorum and lower median |
 | ABCI app | `nodes/app` | `PrepareProposal` / `ProcessProposal` / `FinalizeBlock`, queries, validator-set changes, state persistence |
-| Node | `nodes/chainnode`, `nodes/cmd/tradedesk-node` | Embeds CometBFT. `init` creates the testnet; `start` runs a validator; `deposit` is the custodian's tool |
+| Node | `nodes/chainnode`, `nodes/cmd/tradedesk-node` | Embeds CometBFT. `init` creates the testnet; `start` runs a validator; `deposit` is the custodian's tool; `valset-sign` / `valset-submit` change the validator set, which takes 3 of 4 validators' signatures |
 | Price signers | `oracle_service/oracle_server.py` | One process per source; signs `tradedesk-quote\|source\|ticker\|price_cents\|unix` |
 | Gateway | `backend/gateway` | Read-only REST over the nodes. Also serves the page, charts, option chains and the AI endpoints |
 | UI | `backend/templates/index.html` | Single page; asks the wallet to sign |
@@ -141,8 +148,8 @@ delete `testnet/` and run `bash setup.sh` again.
    signature, the chain id, the next nonce and the field formats. The tx then enters the
    shared mempool.
 3. **Propose.** The validator whose turn it is collects the txs, asks the five sources for
-   signed quotes, and adds the quotes and their median. It stops waiting once each ticker
-   has 3 quotes.
+   signed quotes, and adds the quotes and their median. Once each ticker has 3 quotes it
+   waits 150 ms more for late sources, then stops.
 4. **Verify.** In `ProcessProposal` every validator:
    - checks each quote signature and its age (10 s at most);
    - requires 3 sources per priced ticker;
@@ -216,16 +223,23 @@ All fifteen scenarios run automatically in CI:
 | 14 | Price sources down | With 1 or 2 of 5 down, trading continues; with 3 down, a market order waits (nonce untouched) and executes when a source returns |
 | 15 | The whole network stops for longer than a quote may be ahead of the block time | Blocks resume by themselves and a trade settles |
 
+Each line runs from the repo root (with `.venv` activated for the Python ones):
+
 ```bash
-cd nodes && go test -race -cover ./ledger ./quotes ./app   # unit tests + coverage
-cd nodes && go test -v -timeout 25m ./e2e                  # scenarios 1–12, 14, 15
-cd wallet && npm install && npx playwright-core install chromium
-cd wallet && node --test core.test.mjs && node test/scenario13.mjs
-cd backend && python3 manage.py test gateway                # gateway
-cd oracle_service && python3 -m unittest -v                 # price signers
+(cd nodes && go test -race -cover ./ledger ./quotes ./app)   # unit tests + coverage
+(cd nodes && go test -v -timeout 25m ./e2e)                  # scenarios 1–12, 14, 15
+(cd wallet && npm install && npx playwright-core install chromium)
+(cd wallet && node --test core.test.mjs && node test/scenario13.mjs)   # scenario 13
+(cd backend && python3 manage.py test gateway)               # gateway
+(cd oracle_service && python3 -m unittest -v)                # price signers
 ```
 
-Coverage: `nodes/ledger` 86 %, `nodes/quotes` 98 %, `nodes/app` 81 % (with the acceptance tests).
+95 tests in all: 64 in Go (33 ledger, 13 quotes, 4 app, 14 acceptance), 7 for the wallet,
+15 for the gateway and 9 for the price signers.
+
+Coverage: `nodes/ledger` 86 %, `nodes/quotes` 98 %. `nodes/app` is exercised mostly by the
+acceptance tests: 81 % with them, measured with
+`(cd nodes && go test -timeout 25m -coverpkg=./app ./app ./e2e)`.
 
 ---
 
@@ -243,8 +257,10 @@ compromised gateway, and each of these attempts must be refused:
 
 The tool prints each verdict and exits non-zero if any attempt is accepted.
 
-- **Rogue price source:** run `python3 oracle_service/rogue_oracle.py` in place of the
-  cnbc signer (stop that process first). The median stays on the honest sources.
+- **Rogue price source:** stop the cnbc signer with `kill $(cat .run/cnbc.pid)` and run
+  `.venv/bin/python3 oracle_service/rogue_oracle.py` in its place: it signs $1.00 with
+  cnbc's registered key. The median stays on the honest sources. Stop it with Ctrl-C;
+  `./run.sh stop` does not know about it.
 - **Source down:** stop one or two `oracle_server.py` processes. Trading continues.
 - **Node down:** `kill $(cat .run/node3.pid)`. Trading continues.
 
@@ -263,7 +279,7 @@ graphs are in [docs/report/performance.md](docs/report/performance.md).
 | 200 | 2.5 s | 3.7 s | 38.6 |
 | 800 (highest throughput) | 2.3 s | 3.1 s | **141** |
 | 1,600 (past saturation) | 2.7 s | 8.3 s | 63 |
-| Previous architecture, 5 / 50 / 200 users | ≥ 23 / ≥ 31 / ≥ 29 s | | 0.50 / 0.12 / 0.017 |
+| Previous architecture, 5 / 50 / 200 users | ≥ 23 / ≥ 31 / ≥ 29 s | | 0.50 / 0.12 / 0.02 |
 
 Finality stays around 2 s up to 800 users. Past that, the limit is the Django development
 server (one process) and the load generator on the same machine, not consensus: a node
@@ -273,8 +289,8 @@ With one node down, trading continued with no failures; the P95 rose to about 7 
 because the dead node's proposer turns time out and the next validator takes over.
 
 ```bash
-pip3 install locust
-locust -f locustfile.py --host http://127.0.0.1:8000 --headless -u 50 -r 10 -t 60s --csv results
+.venv/bin/python3 -m pip install locust
+.venv/bin/locust -f locustfile.py --host http://127.0.0.1:8000 --headless -u 50 -r 10 -t 60s --csv results
 ```
 
 The gateway limits transactions per IP (`THROTTLE_TX`, default 600/minute). Locust runs
@@ -295,6 +311,10 @@ every user from one IP, so raise the limit for load tests.
 | `GEMINI_MODEL` | `gemini-2.5-flash-lite` | Pinned Gemini model |
 | `THROTTLE_TX` / `THROTTLE_AI` | `600/minute` / `120/hour` | Per-IP limits |
 | `NUM_PROXIES` | `0` | Reverse proxies whose `X-Forwarded-For` is trusted |
+| `DEBUG` | `False` | Django debug mode (never in a real deployment) |
+| `NODE_RPC_TIMEOUT` | `5` | Seconds to wait for a node before trying the next |
+
+The last four are not in `.env.example`; add them to `backend/.env` to change them.
 
 Chain parameters live in `testnet/node*/config/genesis.json`:
 - tickers;
@@ -316,7 +336,7 @@ sessions.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `status/` | Height, chain id, state root, validators, sources, custody sequence |
+| GET | `status/` | Height, chain id, state root, app hash, validators, `oracles`, account count, tickers, custody sequence, `outstanding_debt` |
 | POST | `tx/` | Forward a signed `{msg, sig[, pubkey]}`; returns the tx hash |
 | GET | `tx/<hash>/` | `pending` / `committed`, with the result |
 | GET | `username/<name>/` | Address registered under a username |
@@ -324,7 +344,8 @@ sessions.
 | GET | `price/<ticker>/` | Last verified price |
 | GET | `option-quote/` | Model premium for a ticker/type/strike/expiry |
 | GET | `history/<ticker>/`, `options/chain/<ticker>/` | Market data for display |
-| POST | `ai-news/<ticker>/`, `ai-chat/<ticker>/` | Gemini analysis (not investment advice) |
+| GET | `ai-news/<ticker>/` | Gemini news summary (not investment advice) |
+| POST | `ai-chat/<ticker>/` | Gemini answer to a question about the ticker (not investment advice) |
 
 ---
 

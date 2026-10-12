@@ -1,11 +1,11 @@
 """Load test for TradeDesk on its CometBFT network.
 
 Every simulated user is a real wallet: it creates a P-256 key, registers on
-the chain, and signs every order itself — exactly what the browser does. The
-gateway only forwards. Besides the HTTP timings, each transaction reports an
+the chain, and signs every order itself — as the TradeDesk Wallet does for a
+real user. The gateway only forwards. Besides the HTTP timings, each transaction reports an
 "end-to-end" timing: from sending it until it is in a committed (final) block.
 
-    pip3 install locust
+    .venv/bin/python3 -m pip install locust
     ./run.sh start
     locust -f locustfile.py --host http://127.0.0.1:8000
     # or headless, with CSV output:

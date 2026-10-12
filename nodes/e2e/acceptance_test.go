@@ -390,7 +390,7 @@ func TestPriceSourcesDown(t *testing.T) {
 	t.Fatal("the waiting order did not execute after a source came back")
 }
 
-// The whole network stops for longer than a quote may be ahead of the block
+// 15. The whole network stops for longer than a quote may be ahead of the block
 // time (MaxFuture). The next block's time is the last commit's — before the
 // stop — so every fresh quote looks like it comes from the future. The
 // proposer must drop those quotes rather than propose a bundle that every
