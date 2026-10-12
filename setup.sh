@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # setup.sh — one-time setup for TradeDesk. Run once after cloning: bash setup.sh
 #
-#   1. Python dependencies (gateway, oracle signers)
+#   1. a Python virtual environment in ./.venv with the dependencies
+#      (gateway, oracle signers); run.sh uses it
 #   2. backend/.env with a random SECRET_KEY
 #   3. builds the node binary (nodes/tradedesk-node)
 #   4. creates a local network in ./testnet: 4 validators, their keys,
@@ -21,11 +22,19 @@ echo "========================================"
 
 echo "[1/4] Python dependencies…"
 command -v python3 >/dev/null || { echo "  ✗ python3 not found"; exit 1; }
-pip3 install -r requirements.txt --quiet
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' \
+    || { echo "  ✗ Python 3.11+ is needed (found $(python3 -V 2>&1))"; exit 1; }
+# a virtual environment, so the install works where the system Python is
+# managed by the OS or Homebrew (PEP 668)
+[ -x .venv/bin/python3 ] || python3 -m venv .venv
+.venv/bin/python3 -m pip install --quiet --upgrade pip
+.venv/bin/python3 -m pip install --quiet -r requirements.txt
+echo "  installed into ./.venv"
+PY=.venv/bin/python3
 
 echo "[2/4] Gateway configuration…"
 if [ ! -f backend/.env ]; then
-    key=$(python3 -c "import secrets; print(secrets.token_urlsafe(50))")
+    key=$("$PY" -c "import secrets; print(secrets.token_urlsafe(50))")
     sed "s|^SECRET_KEY=.*|SECRET_KEY=$key|" backend/.env.example > backend/.env
     chmod 600 backend/.env
     echo "  created backend/.env (random SECRET_KEY)"

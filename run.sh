@@ -6,7 +6,7 @@
 #   ./run.sh status    show which services are running
 #   ./run.sh logs [s]  follow logs (s = yahoo | nasdaq | cnbc | tradingview | google |
 #                      node0..node3 | gateway)
-#   ./run.sh deposit <username> <amount>
+#   ./run.sh deposit <username|address> <amount>
 #                      credit an account as the custodian (the only signer of
 #                      deposits; its key is testnet/custody.key)
 #
@@ -29,6 +29,9 @@ ORACLE_MODE="${ORACLE_MODE:-live}"
 FIXED_PRICE="${FIXED_PRICE:-190.00}"
 ORACLES=(yahoo nasdaq cnbc tradingview google)
 SERVICES=(yahoo nasdaq cnbc tradingview google node0 node1 node2 node3 gateway)
+# the virtual environment setup.sh creates; an older install without it uses the system Python
+PY="$ROOT/.venv/bin/python3"
+[ -x "$PY" ] || PY=python3
 
 port_of() {
     case "$1" in
@@ -80,10 +83,10 @@ start() {
 
     for o in "${ORACLES[@]}"; do
         if [ "$ORACLE_MODE" = "fixed" ]; then
-            launch "$o" "$ROOT/oracle_service" python3 oracle_server.py --source fixed --price "$FIXED_PRICE" \
+            launch "$o" "$ROOT/oracle_service" "$PY" oracle_server.py --source fixed --price "$FIXED_PRICE" \
                 --name "$o" --key "$NET/oracles/$o.key" --port "$(port_of "$o")"
         else
-            launch "$o" "$ROOT/oracle_service" python3 oracle_server.py --source "$o" \
+            launch "$o" "$ROOT/oracle_service" "$PY" oracle_server.py --source "$o" \
                 --key "$NET/oracles/$o.key" --port "$(port_of "$o")"
         fi
     done
@@ -101,7 +104,7 @@ start() {
     done
     echo "  nodes     4 validators (RPC :26657 :26667 :26677 :26687)"
 
-    launch gateway "$ROOT/backend" python3 manage.py runserver "127.0.0.1:$DJANGO_PORT"
+    launch gateway "$ROOT/backend" "$PY" manage.py runserver "127.0.0.1:$DJANGO_PORT"
     wait_for_port gateway "$DJANGO_PORT" || fail "the gateway did not start — see logs/gateway.log"
     echo "  gateway   http://127.0.0.1:$DJANGO_PORT"
 

@@ -1,4 +1,5 @@
-# Python
+# Python (setup.sh creates .venv)
+.venv/
 venv/
 __pycache__/
 *.pyc
@@ -12,12 +13,6 @@ build/
 db.sqlite3
 *.sqlite3
 .env
-
-# Blockchain data and node signing keys (node-local, never committed)
-nodes/chain_*.jsonl
-nodes/nodekey_*.hex
-nodes/pending_*.json*
-
 
 # macOS
 **/.DS_Store
@@ -38,5 +33,8 @@ testnet/
 nodes/tradedesk-node
 
 # wallet test dependencies
-wallet/node_modules/
+node_modules/
 wallet/package-lock.json
+
+# load-test output (locust --csv results)
+results*.csv
