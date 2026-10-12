@@ -74,6 +74,10 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [],
     'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.AllowAny'],
     'UNAUTHENTICATED_USER': None,
+    # JSON only: a page on another site can send a plain form cross-origin, but
+    # not a JSON body (that needs a CORS preflight, which the gateway never
+    # allows), so no other site can post to tx/ or ai-chat/ in a visitor's name.
+    'DEFAULT_PARSER_CLASSES': ['rest_framework.parsers.JSONParser'],
     # Rate limits count the client's own address. X-Forwarded-For is trusted
     # only through this many reverse proxies (0: never), or anyone could
     # dodge the limits by sending a different header each time.

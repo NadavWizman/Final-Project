@@ -97,6 +97,12 @@ class TransactionForwardingTests(SimpleTestCase):
                      {'msg': 'x' * 5000, 'sig': 'y'}):
             self.assertEqual(self.c.post('/api/tx/', body, format='json').status_code, 400, body)
 
+    def test_form_posts_are_refused(self):
+        # a cross-site HTML form can only send form encodings, never JSON
+        for path in ('/api/tx/', '/api/ai-chat/AAPL/'):
+            r = self.c.post(path, {'msg': '{}', 'sig': 'x', 'question': 'hi'})
+            self.assertEqual(r.status_code, 415, path)
+
     def test_chain_outage_is_503(self):
         with patch.object(chain, 'broadcast', side_effect=chain.ChainUnavailable('down')):
             r = self.c.post('/api/tx/', {'msg': '{}', 'sig': 'x'}, format='json')

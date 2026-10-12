@@ -61,8 +61,6 @@ def _gemini_error(e):
     return Response({"error": msg}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
-
-
 @api_view(['GET'])
 def history_view(_request, ticker):
     listed = _listed_ticker(ticker)
@@ -168,7 +166,6 @@ _COMPANY_NAMES = {
 def ai_news_view(_request, ticker):
     import time, json
     import yfinance as yf
-    from django.conf import settings
 
     ticker = _listed_ticker(ticker)
     if not ticker:
@@ -310,7 +307,6 @@ def _clean_news(result):
 @throttle_classes([AIThrottle])
 def ai_chat_view(request, ticker):
     import time
-    from django.conf import settings
 
     ticker = _listed_ticker(ticker)
     if not ticker:
