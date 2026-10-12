@@ -468,8 +468,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
       <div class="form-group"><label>Username</label>
         <input id="reg-user" type="text" placeholder="Choose a username (3-32 letters, digits, . _ -)"
                onkeydown="if(event.key==='Enter')doRegister()"></div>
-      <p class="wallet-note">New key? Open the wallet from the browser toolbar → <b>New account</b>, and
-        write down its recovery code. The wallet will ask you to approve the registration.</p>
+      <p class="wallet-note">New key? Open the wallet from the browser toolbar → <b>New account</b>,
+        write down its recovery code and choose a password. The wallet will ask you to approve the
+        registration with that password.</p>
       <button class="btn-primary" id="reg-btn" onclick="doRegister()">Create Account</button>
       <div id="reg-error" class="error-msg" style="display:none"></div>
     </div>
@@ -866,7 +867,8 @@ const acct = path => path + (path.includes('?') ? '&' : '?') + 'address=' + S.ac
 
 // ── WALLET: the signing key is not in this page ─────────────────
 // Keys live in the TradeDesk Wallet browser extension (wallet/ in the repo),
-// created there as non-extractable WebCrypto keys. This page can only ask:
+// stored there encrypted under the user's password and used only as
+// non-extractable WebCrypto keys. This page can only ask:
 // "which accounts?" and "sign this text". The wallet parses the text, shows
 // what it does in its own window, and signs only after the user approves.
 // Nothing this page runs can read a key or sign by itself.

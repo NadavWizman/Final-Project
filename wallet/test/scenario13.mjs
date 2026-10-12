@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const WALLET = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const N = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+const PASSWORD = 'alice-wallet-pw';
 
 // The compromised gateway's page: it tells the user "1 share" and asks the
 // wallet to sign whatever the test passes in.
@@ -52,18 +53,35 @@ try {
   await popup.click('#new');
   const code = await popup.textContent('#code');
   await popup.fill('#new-label', 'alice');
+  await popup.fill('#new-password', 'short');
+  await popup.fill('#new-password2', 'short');
+  await popup.click('#new-save');
+  const tooShort = await popup.textContent('#new-error');
+  await popup.fill('#new-password', PASSWORD);
+  await popup.fill('#new-password2', PASSWORD);
   await popup.click('#new-save');
   await popup.waitForSelector('.account small');
   const address = await popup.textContent('.account small');
   check('Account created in the wallet, recovery code shown once', /^([0-9A-Z]{4}-){7}[0-9A-Z]{4}$/.test(code), address);
 
-  // the key is non-extractable: not even the wallet's own pages can export it
-  const exported = await popup.evaluate(async () => {
+  check('A password shorter than 8 characters is refused', /at least 8/.test(tooShort), tooShort);
+
+  // storage holds no usable key: only the public key and the seed encrypted
+  // under the password; the key derived for signing is non-extractable
+  const stored = await popup.evaluate(async code => {
+    const { seedFromCode, keyFromSeed, toHex } = await import('./core.js');
     const db = await new Promise(r => { const q = indexedDB.open('tradedesk-wallet', 1); q.onsuccess = () => r(q.result); });
     const rec = await new Promise(r => { const q = db.transaction('accounts').objectStore('accounts').getAll(); q.onsuccess = () => r(q.result[0]); });
-    try { await crypto.subtle.exportKey('jwk', rec.privateKey); return 'EXPORTED'; } catch (e) { return `${rec.privateKey.extractable}:${e.name}`; }
-  });
-  check('Private key is non-extractable', exported.startsWith('false:'), exported);
+    const seed = await seedFromCode(code);
+    const k = await keyFromSeed(seed);
+    let exported = 'EXPORTED';
+    try { await crypto.subtle.exportKey('jwk', k.privateKey); } catch (e) { exported = `${k.privateKey.extractable}:${e.name}`; }
+    return { fields: Object.keys(rec).sort().join(','), seedInVault: toHex(rec.vault.ct).includes(toHex(seed)),
+      iterations: rec.vault.iterations, exported };
+  }, code);
+  check('Storage holds only the public key and the password-encrypted seed',
+    stored.fields === 'address,label,publicRaw,vault' && !stored.seedInVault && stored.iterations === 600000, JSON.stringify(stored));
+  check('Private key is non-extractable', stored.exported.startsWith('false:'), stored.exported);
 
   const page = await ctx.newPage();
   await page.goto(site);
@@ -95,6 +113,7 @@ try {
     await win.waitForLoadState();
     await win.waitForFunction(() => document.querySelector('.err') || document.querySelector('#title')?.textContent);
     await win.waitForFunction(() => !document.querySelector('#approve').disabled || document.querySelector('.err'));
+    if (await win.isVisible('#password')) await win.fill('#password', PASSWORD);
     return win;
   };
   const result = id => page.evaluate(i => window.results[i] || null, id);
@@ -144,6 +163,14 @@ try {
   // 5. the honest path: approve, and the signature verifies under the account key
   const text = order('1');
   const win4 = await approvalFor('ok', text);
+  await win4.fill('#password', 'not-the-password');
+  await win4.click('#approve');
+  await win4.waitForSelector('#pw-error:not([hidden])');
+  await page.waitForTimeout(500);
+  check('A wrong password signs nothing and the window stays',
+    (await result('ok')) === null && /Wrong password/.test(await win4.textContent('#pw-error')) && !win4.isClosed());
+  await win4.waitForFunction(() => !document.querySelector('#approve').disabled);
+  await win4.fill('#password', PASSWORD);
   await win4.click('#approve');
   await page.waitForFunction(() => window.results.ok);
   const ok = (await result('ok')).result;
@@ -162,6 +189,8 @@ try {
   await popup.click('#restore');
   await popup.fill('#restore-code', code.toLowerCase());
   await popup.fill('#restore-label', 'alice again');
+  await popup.fill('#restore-password', 'a new password');
+  await popup.fill('#restore-password2', 'a new password');
   await popup.click('#restore-save');
   await popup.waitForSelector('.account small');
   check('Recovery code restores the same address', (await popup.textContent('.account small')) === address);

@@ -5,6 +5,9 @@
 //   as a recovery code; the private key is imported into WebCrypto as
 //   NON-EXTRACTABLE, so no script — not even the wallet's own — can read it
 //   back. Restoring = typing the recovery code on another browser.
+// - The wallet stores no key: only the seed, encrypted under the account's
+//   password. Each approval asks for the password, decrypts the seed,
+//   derives the key, signs once and drops both.
 // - The wallet signs only a message it can fully read: canonical JSON with
 //   known fields only. What the approval window shows is parsed from the
 //   exact bytes that are signed.
@@ -152,6 +155,44 @@ export async function signText(privateKey, text) {
   const s = bytesToBig(sig.slice(32));
   if (s > P256.n / 2n) sig.set(bigToBytes(P256.n - s), 32);
   return b64(sig);
+}
+
+// ── the password vault ────────────────────────────────────────────────
+// The seed is stored encrypted with AES-256-GCM under a key derived from the
+// password with PBKDF2-SHA256 (600,000 iterations, a random salt per
+// account), so each guess at a stolen vault costs that much work. The
+// account's address is the GCM associated data: a vault moved onto another
+// account record does not decrypt.
+export const VAULT_ITERATIONS = 600_000;
+export const MIN_PASSWORD = 8;
+
+async function vaultKey(password, salt, iterations) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, base,
+    { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+const vaultAAD = address => enc.encode('tradedesk-wallet-seed|' + address);
+
+export function checkNewPassword(password, again) {
+  if (String(password).length < MIN_PASSWORD) throw new Error(`the password needs at least ${MIN_PASSWORD} characters`);
+  if (password !== again) throw new Error('the two passwords are not the same');
+}
+
+export async function lockSeed(seed, password, address) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await vaultKey(password, salt, VAULT_ITERATIONS);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: vaultAAD(address) }, key, seed));
+  return { salt, iv, ct, iterations: VAULT_ITERATIONS };
+}
+
+export async function unlockSeed(vault, password, address) {
+  const key = await vaultKey(password, vault.salt, vault.iterations);
+  try {
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: vault.iv, additionalData: vaultAAD(address) }, key, vault.ct));
+  } catch {
+    throw new Error('wrong password');
+  }
 }
 
 // ── reading what is signed ────────────────────────────────────────────

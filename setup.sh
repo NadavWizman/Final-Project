@@ -57,5 +57,5 @@ fi
 echo ""
 echo "Done. Start everything with:   ./run.sh start"
 echo "Install the wallet once: chrome://extensions -> Developer mode -> Load unpacked -> the wallet/ folder,"
-echo "then create an account in it (write down its recovery code) and open http://127.0.0.1:8000."
+echo "then create an account in it (write down its recovery code, choose a password) and open http://127.0.0.1:8000."
 echo ""

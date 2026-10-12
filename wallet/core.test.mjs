@@ -1,7 +1,8 @@
 // Unit tests of the wallet core:  node --test wallet/
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { P256, pointMul, newRecoveryCode, recoveryCode, seedFromCode, keyFromSeed, signText, describe, toHex } from './core.js';
+import { P256, pointMul, newRecoveryCode, recoveryCode, seedFromCode, keyFromSeed, signText, describe, toHex,
+  lockSeed, unlockSeed, checkNewPassword } from './core.js';
 
 const b64urlToBig = s => BigInt('0x' + Buffer.from(s, 'base64url').toString('hex'));
 
@@ -34,6 +35,22 @@ test('the same code gives the same account, and the key cannot be exported', asy
   assert.equal(a.privateKey.extractable, false);
   await assert.rejects(crypto.subtle.exportKey('jwk', a.privateKey));
   await assert.rejects(crypto.subtle.exportKey('pkcs8', a.privateKey));
+});
+
+test('the seed is stored only under the password', async () => {
+  const seed = crypto.getRandomValues(new Uint8Array(16));
+  const { address } = await keyFromSeed(seed);
+  const vault = await lockSeed(seed, 'correct horse', address);
+  assert.ok(!toHex(vault.ct).includes(toHex(seed)), 'seed visible in the vault');
+  assert.equal(vault.iterations, 600_000);
+  assert.deepEqual(await unlockSeed(vault, 'correct horse', address), seed);
+  await assert.rejects(unlockSeed(vault, 'correct hors', address), /wrong password/);
+  await assert.rejects(unlockSeed(vault, 'correct horse', 'ab'.repeat(20)), /wrong password/);   // vault on another account
+  const again = await lockSeed(seed, 'correct horse', address);
+  assert.notEqual(toHex(again.salt), toHex(vault.salt));
+  assert.throws(() => checkNewPassword('short', 'short'), /at least 8/);
+  assert.throws(() => checkNewPassword('long enough', 'long enougH'), /not the same/);
+  checkNewPassword('long enough', 'long enough');
 });
 
 test('signatures verify with the account key and are always low-S', async () => {

@@ -14,8 +14,9 @@
       <button id="new">New account</button>
       <button id="restore" class="secondary">Restore</button>
     </div>
-    <p class="note" style="margin-top:14px">Your signing keys live only in this wallet and cannot be
-      exported. A connected site can ask for a signature; you approve each one here.</p>
+    <p class="note" style="margin-top:14px">Your keys never leave this wallet: it keeps each
+      account's seed encrypted under your password. A connected site can ask for a signature;
+      you approve each one here, with the password.</p>
     <h2>Connected sites</h2>
     <div id="sites"></div>
   </section>
@@ -26,6 +27,11 @@
     <p class="note">Write it down and keep it private. It is the only way to restore this account in
       another browser — the wallet will not show it again.</p>
     <input id="new-label" placeholder="Label (e.g. my trading account)">
+    <input id="new-password" type="password" placeholder="Password (at least 8 characters)" autocomplete="new-password">
+    <input id="new-password2" type="password" placeholder="The password again" autocomplete="new-password">
+    <p class="note">The wallet asks for this password before every signature. It cannot be
+      recovered — with the recovery code you can restore the account and choose a new one.</p>
+    <p class="err hidden" id="new-error"></p>
     <div class="actions">
       <button id="new-cancel" class="secondary">Cancel</button>
       <button id="new-save">I wrote it down</button>
@@ -36,6 +42,8 @@
     <h2>Restore an account</h2>
     <textarea id="restore-code" rows="2" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"></textarea>
     <input id="restore-label" placeholder="Label">
+    <input id="restore-password" type="password" placeholder="New password (at least 8 characters)" autocomplete="new-password">
+    <input id="restore-password2" type="password" placeholder="The password again" autocomplete="new-password">
     <p class="err hidden" id="restore-error"></p>
     <div class="actions">
       <button id="restore-cancel" class="secondary">Cancel</button>

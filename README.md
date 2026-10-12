@@ -6,7 +6,8 @@ A stock, CFD and options trading platform where **no single server can move mone
 price or change who runs the network**.
 
 - Every transaction is signed in the **TradeDesk Wallet**, a browser extension that keeps
-  the key non-extractable and shows each transaction's details before you approve it.
+  the key locked under your password and non-extractable, and shows each transaction's
+  details before you approve it.
   The web server only forwards what the wallet signed.
 - Transactions are ordered and settled by **4 CometBFT validators**, which tolerate one
   faulty or malicious validator.
@@ -55,7 +56,8 @@ bash setup.sh          # once: Python deps, backend/.env, node binary, a 4-valid
 
 **Install the wallet once:** open `chrome://extensions`, turn on *Developer mode*, choose
 *Load unpacked* and select the `wallet/` folder. Open the wallet from the toolbar →
-**New account**, and write down the recovery code it shows.
+**New account**, write down the recovery code it shows, and choose a password (8+ characters).
+The wallet asks for the password before every signature.
 
 Open **http://127.0.0.1:8000** and click **Connect the TradeDesk Wallet**; the wallet asks
 once whether this site may see your accounts. Then pick your account and a username. The
@@ -91,7 +93,7 @@ delete `testnet/` and run `bash setup.sh` again.
 
 | Area | What you can do |
 |------|-----------------|
-| **Wallet** | Keys live in the TradeDesk Wallet extension, are non-extractable, and are backed up as a recovery code. Every transaction opens the wallet's approval window, which shows what will be signed |
+| **Wallet** | Keys live in the TradeDesk Wallet extension: it stores each account's seed encrypted under your password and derives a non-extractable key only to sign. Backed up as a recovery code. Every transaction opens the wallet's approval window, which shows what will be signed and asks for the password |
 | **Trade** | Market or limit BUY/SELL of S&P 500 stocks. A limit order rests on the chain until the verified price reaches it (up to 24 h); **Cancel** in Activity withdraws it, with a transaction the wallet signs |
 | **Stop loss / take profit** | Attach levels to an order or add them later. They fire inside the chain in the first block whose verified price crosses them |
 | **CFD** | Long or short at 2x–20x leverage. Liquidated when the loss reaches 80 % of the margin. A loss past the margin (a price gap) is a debt, see [Trust model](#trust-model) |
@@ -105,7 +107,7 @@ delete `testnet/` and run `bash setup.sh` again.
 ## Architecture
 
 ```
- TradeDesk Wallet (extension: non-extractable P-256 key, approval window)
+ TradeDesk Wallet (extension: password-locked, non-extractable P-256 key, approval window)
     ▲ "sign this text?"            │ signature, only after the user approves
     │                              ▼
  Browser page (served by the gateway; holds no key)
@@ -127,7 +129,7 @@ delete `testnet/` and run `bash setup.sh` again.
 
 | Component | Path | Role |
 |-----------|------|------|
-| Wallet | `wallet/` | Chrome MV3 extension: keys, recovery code, the approval window, signing |
+| Wallet | `wallet/` | Chrome MV3 extension: password-encrypted seeds, recovery code, the approval window, signing |
 | Ledger | `nodes/ledger` | Deterministic state machine: accounts, orders, CFDs, options, levels, custodian deposits. Integer arithmetic only, with overflow checks |
 | Quotes | `nodes/quotes` | Signed quote format, verification, quorum and lower median |
 | ABCI app | `nodes/app` | `PrepareProposal` / `ProcessProposal` / `FinalizeBlock`, queries, validator-set changes, state persistence |
@@ -170,7 +172,7 @@ delete `testnet/` and run `bash setup.sh` again.
 
 | Who | Can | Cannot |
 |-----|-----|--------|
-| User | Act on their own account | Act on another account or replay a tx (strict per-account nonce) |
+| User | Act on their own account (with the wallet password) | Act on another account or replay a tx (strict per-account nonce) |
 | Gateway / the page it serves | Show wrong information, or stop working (refuse to forward) | Sign anything: the key is in the wallet, which shows the real details from the signed bytes and needs your approval |
 | One validator | Go offline, propose badly | Insert unsigned txs, shift a price, burn orders by omitting prices, add validators |
 | One price source | Lie, or go offline (up to two may be offline) | Move the median outside the honest quotes |
@@ -194,6 +196,14 @@ delete `testnet/` and run `bash setup.sh` again.
 - Leverage is capped at 20× in genesis. Liquidation fires at a 4 % move, so a loss can pass the margin only on a gap of more than 5 % between priced blocks.
 - Such a loss becomes a debt (a negative balance). Every later credit repays it first, and nothing new can be opened while the balance is negative.
 - Nothing is forgiven. Debt left in an abandoned account is the house's loss and is reported in `/status` (`outstanding_debt`).
+
+**The wallet:**
+- It stores no key: only the public key and the seed, encrypted with AES-256-GCM under a
+  key derived from your password (PBKDF2-SHA256, 600,000 iterations).
+- Every signature needs the password. The key is derived non-extractable, used once, and
+  dropped. Someone at an unattended computer cannot approve a trade.
+- A copy of the browser profile still allows offline guessing of a weak password; the
+  wallet requires 8+ characters.
 
 Full chapter: [docs/report/trust-model.md](docs/report/trust-model.md).
 
@@ -219,7 +229,7 @@ All fifteen scenarios run automatically in CI:
 | 10 | A quote is altered in transit | Signature fails; block rejected |
 | 11 | A node's saved state file is edited | Detected on restart, set aside and rebuilt from the blocks |
 | 12 | A stop-loss level is crossed | Fires inside the chain in the first block with that verified price |
-| 13 | A compromised gateway page shows "1 share" and asks the wallet to sign 50 | The wallet shows 50; without approval there is no signature. An unconnected site sees no accounts and cannot ask |
+| 13 | A compromised gateway page shows "1 share" and asks the wallet to sign 50 | The wallet shows 50; without approval — and the account's password — there is no signature, and a wrong password signs nothing. The wallet stores only the password-encrypted seed. An unconnected site sees no accounts and cannot ask |
 | 14 | Price sources down | With 1 or 2 of 5 down, trading continues; with 3 down, a market order waits (nonce untouched) and executes when a source returns |
 | 15 | The whole network stops for longer than a quote may be ahead of the block time | Blocks resume by themselves and a trade settles |
 
@@ -234,8 +244,8 @@ Each line runs from the repo root (with `.venv` activated for the Python ones):
 (cd oracle_service && python3 -m unittest -v)                # price signers
 ```
 
-95 tests in all: 64 in Go (33 ledger, 13 quotes, 4 app, 14 acceptance), 7 for the wallet,
-15 for the gateway and 9 for the price signers.
+97 tests in all: 65 in Go (34 ledger, 13 quotes, 4 app, 14 acceptance), 8 for the wallet
+(7 unit tests and scenario 13), 15 for the gateway and 9 for the price signers.
 
 Coverage: `nodes/ledger` 86 %, `nodes/quotes` 98 %. `nodes/app` is exercised mostly by the
 acceptance tests: 81 % with them, measured as one merged profile:

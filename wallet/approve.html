@@ -16,6 +16,10 @@
       If they are not what you entered on the site, reject.</p>
   </div>
   <details id="raw-box"><summary>Exact text to be signed</summary><pre id="raw"></pre></details>
+  <div id="unlock" hidden>
+    <input id="password" type="password" placeholder="Wallet password for this account" autocomplete="current-password">
+    <p class="err" id="pw-error" hidden></p>
+  </div>
   <div class="actions">
     <button id="reject" class="secondary">Reject</button>
     <button id="approve" disabled>Approve and sign</button>
