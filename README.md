@@ -238,8 +238,12 @@ Each line runs from the repo root (with `.venv` activated for the Python ones):
 15 for the gateway and 9 for the price signers.
 
 Coverage: `nodes/ledger` 86 %, `nodes/quotes` 98 %. `nodes/app` is exercised mostly by the
-acceptance tests: 81 % with them, measured with
-`(cd nodes && go test -timeout 25m -coverpkg=./app ./app ./e2e)`.
+acceptance tests: 81 % with them, measured as one merged profile:
+
+```bash
+(cd nodes && go test -count=1 -timeout 25m -coverpkg=./app -coverprofile=app.cov ./app ./e2e \
+  && go tool cover -func=app.cov | tail -1)
+```
 
 ---
 

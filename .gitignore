@@ -38,3 +38,6 @@ wallet/package-lock.json
 
 # load-test output (locust --csv results)
 results*.csv
+
+# coverage profiles
+*.cov
