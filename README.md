@@ -100,7 +100,7 @@ delete `testnet/` and run `bash setup.sh` again.
 | **Options** | CALL/PUT on the model premium. Sell back, exercise, or let them settle automatically at expiry |
 | **Deposits** | Only the custodian can credit an account (`./run.sh deposit` in the demo) |
 | **Activity** | Every transaction, including automatic events (SL, TP, liquidation, expiry, deposits), and the reason for any refusal |
-| **AI** | News summary and Q&A per ticker (Gemini, `gemini-2.5-flash-lite`; needs `GEMINI_API_KEY`). Shown with a "not investment advice" notice |
+| **AI** | News summary and Q&A per ticker (Gemini, `gemini-3.5-flash-lite`; needs `GEMINI_API_KEY`). Shown with a "not investment advice" notice |
 
 ---
 
@@ -322,7 +322,7 @@ every user from one IP, so raise the limit for load tests.
 | `NODE_RPC` | the 4 local nodes | Node RPC URLs, tried in order |
 | `ORACLE_DISPLAY_URL` | `127.0.0.1:8001` | Source used only for display prices before the chain has one |
 | `GEMINI_API_KEY` | empty | Enables the AI features |
-| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | Pinned Gemini model |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Pinned Gemini model |
 | `THROTTLE_TX` / `THROTTLE_AI` | `600/minute` / `120/hour` | Per-IP limits |
 | `NUM_PROXIES` | `0` | Reverse proxies whose `X-Forwarded-For` is trusted |
 | `DEBUG` | `False` | Django debug mode (never in a real deployment) |

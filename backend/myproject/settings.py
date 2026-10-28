@@ -36,7 +36,7 @@ ORACLE_DISPLAY_URL = config('ORACLE_DISPLAY_URL', default='127.0.0.1:8001')
 
 # Gemini — a fixed model version, so answers do not change under us.
 GEMINI_API_KEY = config('GEMINI_API_KEY', default='')
-GEMINI_MODEL   = config('GEMINI_MODEL', default='gemini-2.5-flash-lite')
+GEMINI_MODEL   = config('GEMINI_MODEL', default='gemini-3.5-flash-lite')
 
 INSTALLED_APPS = [
     'django.contrib.staticfiles',
