@@ -1,6 +1,7 @@
 // Accounts live in the extension's own IndexedDB (the extension's origin,
 // which no web page can open). A record holds the address, a label, the raw
-// public key and the NON-EXTRACTABLE CryptoKey — never the private key bytes
+// public key and the vault (the seed encrypted under the account's password,
+// see lockSeed in core.js) — never the seed in the clear, never a private key
 // and never the recovery code.
 
 const DB = 'tradedesk-wallet', STORE = 'accounts';
