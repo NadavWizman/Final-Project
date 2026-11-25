@@ -68,9 +68,17 @@ class ReadOnlyViewsTests(SimpleTestCase):
         self.assertEqual(self.c.get('/api/portfolio/?address=nothex').status_code, 400)
         self.assertEqual(self.c.get('/api/portfolio/?address=' + 'b' * 40).status_code, 404)
 
-    def test_price_is_the_chains_verified_median(self, _q):
-        r = self.c.get('/api/price/aapl/')
-        self.assertEqual((r.data['execution_price'], r.data['verified']), ('330.32', True))
+    def test_prices_are_live_with_the_chain_as_fallback(self, q):
+        live = {'price': '334.10', 'timestamp': '2026-10-01T15:00:00+00:00', 'market_time': None}
+        with patch('gateway.market.live_quote', return_value=live):
+            r = self.c.get('/api/price/aapl/')
+            self.assertEqual((r.data['execution_price'], r.data['live']), ('334.10', True))
+            # the option premium is quoted at the live price too
+            self.c.get('/api/option-quote/?ticker=AAPL&type=CALL&strike=340&expiry=2026-12-18')
+            self.assertEqual(json.loads(q.call_args.args[1])['Price'], '334.10')
+        with patch('gateway.market.live_quote', return_value=None):
+            r = self.c.get('/api/price/aapl/')   # the source is down: the chain's last verified median
+            self.assertEqual((r.data['execution_price'], r.data['live'], r.data['verified']), ('330.32', False, True))
         self.assertEqual(self.c.get('/api/price/SPY/').status_code, 404)
 
 

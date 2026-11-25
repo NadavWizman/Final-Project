@@ -18,7 +18,8 @@ import (
 //	/account   data=address the account, with liquidation prices
 //	/username  data=name    the address registered under a username
 //	/prices                 the last verified price of every ticker
-//	/option_quote data=json the model premium of an option at the last price
+//	/option_quote data=json the model premium of an option at the given
+//	                        underlying price, or else at the last verified one
 func (a *App) Query(_ context.Context, req *abci.RequestQuery) (*abci.ResponseQuery, error) {
 	a.mu.Lock()
 	c := a.chain
@@ -80,11 +81,20 @@ func (a *App) Query(_ context.Context, req *abci.RequestQuery) (*abci.ResponseQu
 		return reply(map[string]any{"prices": s.LastPrices, "height": s.Height, "time": s.Time})
 
 	case "/option_quote":
-		var q struct{ Ticker, Type, Strike, Expiry string }
+		var q struct{ Ticker, Type, Strike, Expiry, Price string }
 		if json.Unmarshal(req.Data, &q) != nil {
 			return &abci.ResponseQuery{Code: 1, Log: "bad option query"}, nil
 		}
 		px, ok := s.LastPrices[q.Ticker]
+		// The gateway passes the live price so the premium on screen follows
+		// the market. A purchase still pays the model at its block's median.
+		if q.Price != "" {
+			live, err := ledger.ParseCents(q.Price)
+			if err != nil || live <= 0 || !s.Listed(q.Ticker) {
+				return &abci.ResponseQuery{Code: 1, Log: "invalid price or ticker"}, nil
+			}
+			px, ok = live, true
+		}
 		k, err := ledger.ParseCents(q.Strike)
 		cutoff, err2 := s.ExpiryCutoff(q.Expiry)
 		if !ok || err != nil || err2 != nil {

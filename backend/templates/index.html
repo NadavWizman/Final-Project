@@ -356,6 +356,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Helvetica Neue'
 .price-live{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
   color:var(--green);background:rgba(52,199,89,.1);padding:3px 8px;border-radius:20px}
 .price-live-dot{width:6px;height:6px;background:var(--green);border-radius:50%;animation:pulse 1.5s infinite}
+.price-live.stale{color:var(--label2);background:var(--gray6)}
+.price-live.stale .price-live-dot{background:var(--label2);animation:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .price-big{font-size:34px;font-weight:700;letter-spacing:-1px;margin-bottom:4px}
 .estimate-row{display:flex;justify-content:space-between;align-items:center;
@@ -835,7 +837,7 @@ const S = {
   mc: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
   ec: { ticker: '', period: '1mo', type: 'line', data: null, interval: '1d' },
   modal: { ticker: null, tradeType: 'BUY', price: null, qty: 0 },
-  refreshTimer: null, priceTimer: null,
+  refreshTimer: null, priceTimer: null, chartTimer: null, pricesBusy: false,
   // CFD state
   cfdPositions: [],
   cfdDir: 'BUY', cfdStock: '', cfdQty: '', cfdLeverage: 10, cfdPrice: null, cfdStopLoss: '', cfdTakeProfit: '', cfdSlQty: '', cfdTpQty: '',
@@ -849,8 +851,17 @@ const S = {
   // AI chat: keyed by ticker -> { messages: [{role,text}], loading, inputVal }
   aiChat: {},
 };
-// chart cache: key = "TICKER-period" => prices[]
+// chart cache: key = "TICKER-period-interval" => {at, data}. Intraday bars are
+// kept for a minute (new bars keep coming), longer bars for ten.
 const CC = {};
+const INTRADAY = new Set(['1m', '2m', '5m', '15m', '30m', '60m', '1h']);
+const chartTTL = interval => INTRADAY.has(interval) ? 60_000 : 600_000;
+
+// The bars a chart asks for. A line chart has no interval buttons, so it gets
+// bars that fit its period: a 1-day line needs intraday bars, or it is one
+// point. A candle chart uses the interval the user picked.
+const LINE_INTERVAL = {'1d': '5m', '5d': '30m'};   // longer periods: daily bars
+const chartInterval = st => st.type === 'candle' ? st.interval : (LINE_INTERVAL[st.period] || '1d');
 
 // ── API ──────────────────────────────────────────────────────────
 // The gateway is read-only: no logins, no keys. Account views take the address.
@@ -968,10 +979,11 @@ const orderTx = (order, pendingText, onSigned) => submitTx({type: 'order', order
 
 async function getChartData(ticker, period, interval = '1d') {
   const key = `${ticker}-${period}-${interval}`;
-  if (CC[key]) return CC[key];
+  const hit = CC[key];
+  if (hit && Date.now() - hit.at < chartTTL(interval)) return hit.data;
   const r = await api('GET', `/history/${ticker}/?period=${period}&interval=${interval}`);
-  if (r.ok) { CC[key] = r.data.prices; return CC[key]; }
-  return null;
+  if (r.ok) { CC[key] = {at: Date.now(), data: r.data.prices}; return r.data.prices; }
+  return hit?.data ?? null;
 }
 
 // ── AUTH ─────────────────────────────────────────────────────────
@@ -1087,7 +1099,7 @@ function logout() {
   // clear everything tied to this account so the next user never sees it
   S.cfdPositions = []; S.optPositions = [];
   S.aiChat = {}; S.aiNews = {};
-  clearInterval(S.refreshTimer); clearInterval(S.priceTimer);
+  clearInterval(S.refreshTimer); clearInterval(S.priceTimer); clearInterval(S.chartTimer);
   document.getElementById('app-screen').classList.remove('visible');
   document.getElementById('login-screen').style.display = 'flex';
   const signIn = document.querySelector('.login-tabs button');
@@ -1106,7 +1118,8 @@ function enterApp() {
   updateHeader();
   loadData();
   S.refreshTimer = setInterval(loadData, 8000);
-  S.priceTimer   = setInterval(refreshHoldingPrices, 30000);
+  S.priceTimer   = setInterval(refreshLivePrices, PRICE_TICK_MS);
+  S.chartTimer   = setInterval(refreshCharts, 60_000);
 }
 
 function updateHeader() {
@@ -1128,6 +1141,27 @@ async function loadData() {
   renderActiveTab();
 }
 
+// Every price on screen follows the market: every few seconds the page asks
+// for the live price of each ticker it shows. (A price source keeps a quote
+// for 3 s, so asking more often would only repeat it.)
+const PRICE_TICK_MS = 3000;
+
+async function refreshLivePrices() {
+  if (S.pricesBusy) return;   // a slow price source must not pile requests up
+  S.pricesBusy = true;
+  try { await Promise.all([refreshHoldingPrices(), refreshFormPrice(), refreshModalPrice(), refreshOptQuote()]); }
+  finally { S.pricesBusy = false; }
+}
+
+const livePrice = t => S.holdingPrices[t] ? parseFloat(S.holdingPrices[t].execution_price) : null;
+const typingInPage = () => /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
+
+// "Live" for a market price; "Last verified" when the price source did not
+// answer and the gateway sent the chain's last verified price, which can be old.
+const liveBadge = p => p.live === false
+  ? '<span class="price-live stale" title="The price source is not answering. This is the last price verified on the chain, which can be old."><span class="price-live-dot"></span>Last verified</span>'
+  : '<span class="price-live"><span class="price-live-dot"></span>Live</span>';
+
 // The price card on the Trade or CFD form follows the market while it is open.
 async function refreshFormPrice() {
   const cfd = S.tab === 'cfd';
@@ -1136,8 +1170,61 @@ async function refreshFormPrice() {
   if (!t || !(cfd ? S.cfdPrice : S.tradePrice)) return;
   const r = await api('GET', `/price/${t}/`);
   if (!r.ok || (cfd ? S.cfdStock : S.tradeStock).trim() !== t) return;
-  if (cfd) { S.cfdPrice = r.data; S.holdingPrices[t] = r.data; updateCFDPriceCard(); }
-  else     { S.tradePrice = r.data; updateTradePriceCard(); }
+  if (cfd) { S.cfdPrice = r.data; S.holdingPrices[t] = r.data; updateCFDPriceLive(); }
+  else     { S.tradePrice = r.data; updateTradePriceLive(); }
+  liveChartPrice(t, parseFloat(r.data.execution_price));
+}
+
+// The stock window's price, position value and estimate follow the market while it is open.
+async function refreshModalPrice() {
+  const t = S.modal.ticker;
+  if (!t || S.modal.price == null || !document.getElementById('stock-modal').classList.contains('open')) return;
+  const r = await api('GET', `/price/${t}/`);
+  if (!r.ok || S.modal.ticker !== t) return;
+  S.modal.price = parseFloat(r.data.execution_price);
+  showModalPrice();
+  liveChartPrice(t, S.modal.price);
+}
+
+// The charts on screen move with the price: the newest bar follows the live
+// price every few seconds, and once a minute the charts reload to get the
+// bars formed since (the cache keeps intraday bars for 60 s).
+const chartsOnScreen = () => {
+  const list = [];
+  if (S.tab === 'trade') list.push([S.tc, paintTradeChart]);
+  if (S.tab === 'cfd')   list.push([S.cc, paintCFDChart]);
+  if (document.getElementById('stock-modal')?.classList.contains('open'))     list.push([S.mc, paintModalChart]);
+  if (document.getElementById('expand-overlay')?.classList.contains('open')) list.push([S.ec, paintExpandChart]);
+  return list.filter(([st]) => st.ticker && st.data?.length);
+};
+
+function liveChartPrice(ticker, price) {
+  if (!(price > 0)) return;
+  for (const [st, paint] of chartsOnScreen()) {
+    if (st.ticker !== ticker) continue;
+    const last = st.data.at(-1);   // the expanded chart can share its array with the source chart
+    last.close = price;
+    if (last.high != null) last.high = Math.max(last.high, price);
+    if (last.low  != null) last.low  = Math.min(last.low, price);
+    paint();
+  }
+}
+
+function refreshCharts() {
+  for (const [st, paint] of chartsOnScreen()) loadChart(st, st.ticker, paint);
+}
+
+// The premium of the option picked in the chain follows the market too.
+async function refreshOptQuote() {
+  const row = S.optSelectedRow;
+  if (S.tab !== 'options' || !row || !S.optQuote || S.optQuote.key !== optQuoteKey(row)) return;
+  const r = await api('GET', `/option-quote/?ticker=${encodeURIComponent(S.optTicker)}&type=${S.optContractType}&strike=${row.strike}&expiry=${S.optExpiry}`);
+  if (!r.ok || S.optSelectedRow !== row || r.data.premium === S.optQuote.premium) return;
+  const hadPremium = S.optQuote.premium != null;
+  S.optQuote = {key: optQuoteKey(row), premium: r.data.premium};
+  const el = document.getElementById('opt-premium-val');
+  if (el && hadPremium) { el.textContent = fmt$(parseFloat(r.data.premium)); onOptContracts(); }
+  else if (!typingInPage()) renderOptions();   // the panel still shows the market ask: redraw it with the premium
 }
 
 async function refreshHoldingPrices() {
@@ -1166,10 +1253,27 @@ async function refreshHoldingPrices() {
     }
   });
   if (changed) {
-    if (S.tab === 'portfolio') renderPortfolio();
-    if (S.tab === 'cfd')       updateCFDLivePrices();
-    if (S.tab === 'options')   renderOptions();
+    if (S.tab === 'portfolio' && !updateHoldingPricesLive()) renderPortfolio();
+    if (S.tab === 'cfd') updateCFDLivePrices();
+    // the positions list shows these prices; never redraw under someone typing
+    if (S.tab === 'options' && S.optSubTab === 'positions' && !typingInPage()) renderOptions();
   }
+}
+
+// New prices for the holding cards already on screen: change the numbers
+// only, so the 3-second updates do not rebuild the cards. False when the
+// cards must be drawn in full (none yet, or one still waiting for a price).
+function updateHoldingPricesLive() {
+  const cards = document.querySelectorAll('#tab-portfolio .holding-card[data-ticker]');
+  if (!cards.length) return false;
+  for (const card of cards) {
+    const price = livePrice(card.dataset.ticker);
+    const valueEl = card.querySelector('.holding-value');
+    if (price === null || !valueEl) return false;
+    card.querySelector('.holding-price').textContent = fmt$(price) + ' / share';
+    valueEl.textContent = fmt$(price * parseFloat(card.dataset.qty));
+  }
+  return true;
 }
 
 // ── TABS ─────────────────────────────────────────────────────────
@@ -1187,7 +1291,7 @@ function renderActiveTab() {
   if (S.tab === 'trade') {
     // never destroy the form while the user has focus inside it
     if (document.activeElement?.closest?.('#tab-trade')) {
-      updateTradePriceCard(); // only update the price/chart panel
+      updateTradePriceLive(); // only update the price panel
     } else {
       renderTrade();
     }
@@ -1227,7 +1331,7 @@ function renderPortfolio() {
       // JSON-encode for the JS string, then HTML-escape for the attribute
       const safeName = esc(JSON.stringify(String(h.name || h.ticker)));
       return `
-        <div class="holding-card" onclick="openModal('${esc(h.ticker)}',${safeName},${qty})">
+        <div class="holding-card" data-ticker="${esc(h.ticker)}" data-qty="${qty}" onclick="openModal('${esc(h.ticker)}',${safeName},${qty})">
           <div class="holding-dot"></div>
           <div class="holding-ticker">${esc(h.ticker)}</div>
           <div class="holding-name">${esc(h.name)}</div>
@@ -1239,7 +1343,7 @@ function renderPortfolio() {
             <button class="btn-small gray" style="flex:1;font-size:11px;padding:5px 8px"
               onclick="event.stopPropagation();openModal('${esc(h.ticker)}',${safeName},${qty})">Trade</button>
             <button class="btn-small blue" style="flex:1;font-size:11px;padding:5px 8px"
-              onclick="event.stopPropagation();openSLTPModal('position','${esc(h.id)}','${esc(h.ticker)} · ${qty} shares',${qty},${S.holdingPrices[h.ticker]?parseFloat(S.holdingPrices[h.ticker].execution_price):'null'},'LONG')">SL/TP</button>
+              onclick="event.stopPropagation();openSLTPModal('position','${esc(h.id)}','${esc(h.ticker)} · ${qty} shares',${qty},livePrice('${esc(h.ticker)}'),'LONG')">SL/TP</button>
           </div>
         </div>`;
     }).join('');
@@ -1363,9 +1467,9 @@ function updateTradePriceCard() {
   card.innerHTML = `
     <div class="price-header">
       <span class="price-ticker-label">${esc(p.ticker)}</span>
-      <span class="price-live"><span class="price-live-dot"></span>Live</span>
+      <span id="trade-price-badge">${liveBadge(p)}</span>
     </div>
-    <div class="price-big">${fmt$(p.execution_price)}</div>
+    <div class="price-big" id="trade-price-big" data-ticker="${esc(p.ticker)}">${fmt$(p.execution_price)}</div>
     ${est}
     <div style="margin-top:14px">
       <div class="chart-outer">
@@ -1411,6 +1515,17 @@ function updateTradePriceCard() {
       </div>
     </div>`;
   paintTradeChart();
+}
+
+// A new price for the ticker already on the card: change the numbers only,
+// so the chart is not redrawn every few seconds.
+function updateTradePriceLive() {
+  const big = document.getElementById('trade-price-big');
+  if (!big || big.dataset.ticker !== S.tradePrice?.ticker) return updateTradePriceCard();
+  big.textContent = fmt$(S.tradePrice.execution_price);
+  document.getElementById('trade-price-badge').innerHTML = liveBadge(S.tradePrice);
+  updateTradeEstimate();
+  updateTradeSLTPPreview();
 }
 
 // update only the estimate value when qty changes — no DOM rebuild
@@ -1569,7 +1684,7 @@ function onTradeTickerChange() {
     S.tradePrice = r.data; S.tradePriceError = null;
     if (S.tc.ticker !== t) {
       S.tc.ticker = t;
-      S.tc.data = await getChartData(t, S.tc.period, S.tc.interval);
+      S.tc.data = await getChartData(t, S.tc.period, chartInterval(S.tc));
     }
     updateTradePriceCard();
     loadAiNews(t);
@@ -1701,9 +1816,9 @@ function markActive(btn) {
 // user has picked another period or interval meanwhile, in which case this
 // (late) answer is dropped, so the chart always matches the highlighted button.
 async function loadChart(st, ticker, paint) {
-  const want = st.period + '|' + st.interval;
-  const data = await getChartData(ticker, st.period, st.interval);
-  if (st.period + '|' + st.interval !== want) return;
+  const want = st.period + '|' + chartInterval(st);
+  const data = await getChartData(ticker, st.period, chartInterval(st));
+  if (st.period + '|' + chartInterval(st) !== want || (st.ticker && st.ticker !== ticker)) return;
   st.data = data;
   paint();
 }
@@ -1719,7 +1834,7 @@ function setTradeChartType(type, btn) {
   markActive(btn);
   const bar = document.getElementById('tc-interval-bar');
   if (bar) bar.classList.toggle('visible', type === 'candle');
-  paintTradeChart();
+  loadChart(S.tc, S.tradeStock, paintTradeChart);
 }
 
 async function setTradeInterval(interval, btn) {
@@ -1775,32 +1890,44 @@ async function openModal(ticker, name, qty) {
   const needChart = S.mc.ticker !== ticker;
   const [priceRes, chartData] = await Promise.all([
     api('GET', `/price/${ticker}/`),
-    needChart ? getChartData(ticker, S.mc.period, S.mc.interval) : Promise.resolve(S.mc.data),
+    needChart ? getChartData(ticker, S.mc.period, chartInterval(S.mc)) : Promise.resolve(S.mc.data),
     new Promise(r => setTimeout(r, 260)),   // let the open animation settle
   ]);
 
   if (S.modal.ticker !== ticker) return;              // another stock was opened meanwhile
+  S.mc.ticker = ticker;
+  S.mc.data   = chartData;
   if (priceRes.ok) {
     S.modal.price = parseFloat(priceRes.data.execution_price);
-    document.getElementById('m-price').textContent = fmt$(S.modal.price);
-    if (qty) document.getElementById('m-pos-value').textContent = fmt$(S.modal.price * qty);
+    showModalPrice();
   } else {
     document.getElementById('m-price').textContent = '—';
     if (qty) document.getElementById('m-pos-value').textContent = '—';
+    updateModalChange();
   }
-  // change over the period shown in the chart
-  const first = chartData?.[0]?.close, last = S.modal.price || chartData?.at(-1)?.close;
-  if (first && last) {
-    const pct = (last - first) / first * 100, up = pct >= 0;
-    const ch = document.getElementById('m-change');
-    ch.textContent = `${up ? '+' : ''}${pct.toFixed(2)}% · ${S.mc.period}`;
-    ch.style.color = up ? 'var(--green)' : 'var(--red)';
-    ch.style.background = up ? 'rgba(52,199,89,.12)' : 'rgba(255,59,48,.12)';
-  }
-
-  S.mc.ticker = ticker;
-  S.mc.data   = chartData;
   paintModalChart();
+}
+
+// Everything in the stock window that follows the price: set on open, then
+// again by the live refresh while the window stays open.
+function showModalPrice() {
+  document.getElementById('m-price').textContent = fmt$(S.modal.price);
+  if (S.modal.qty) document.getElementById('m-pos-value').textContent = fmt$(S.modal.price * S.modal.qty);
+  updateModalChange();
+  updateModalEstimate();
+  updateModalSLTPPreview();
+}
+
+// change over the period shown in the chart
+function updateModalChange() {
+  const data = S.mc.ticker === S.modal.ticker ? S.mc.data : null;
+  const first = data?.[0]?.close, last = S.modal.price || data?.at(-1)?.close;
+  if (!first || !last) return;
+  const pct = (last - first) / first * 100, up = pct >= 0;
+  const ch = document.getElementById('m-change');
+  ch.textContent = `${up ? '+' : ''}${pct.toFixed(2)}% · ${S.mc.period}`;
+  ch.style.color = up ? 'var(--green)' : 'var(--red)';
+  ch.style.background = up ? 'rgba(52,199,89,.12)' : 'rgba(255,59,48,.12)';
 }
 
 async function setModalPeriod(period, btn) {
@@ -1815,7 +1942,7 @@ function setModalChartType(type, btn) {
   btn.classList.add('active');
   const bar = document.getElementById('m-interval-bar');
   if (bar) bar.classList.toggle('visible', type === 'candle');
-  paintModalChart();
+  loadChart(S.mc, S.modal.ticker, paintModalChart);
 }
 
 async function setModalInterval(interval, btn) {
@@ -1916,7 +2043,7 @@ function setExpandChartType(type, btn) {
   btn.classList.add('active');
   const bar = document.getElementById('expand-interval-bar');
   if (bar) bar.classList.toggle('visible', type === 'candle');
-  paintExpandChart();
+  loadChart(S.ec, S.ec.ticker, paintExpandChart);
 }
 
 async function setExpandInterval(interval, btn) {
@@ -2637,7 +2764,9 @@ function observeWrap(wrapId, redrawFn) {
 
 /** Generic drag-resize: dragging handleEl changes wrap dimension */
 function attachDrag(handleEl, wrapEl, axis, redrawFn) {
-  if (!handleEl || !wrapEl) return;
+  // once per handle: charts repaint every few seconds, and each paint asks again
+  if (!handleEl || !wrapEl || handleEl.dataset.dragAttached) return;
+  handleEl.dataset.dragAttached = '1';
   handleEl.addEventListener('mousedown', startDrag);
   handleEl.addEventListener('touchstart', startDrag, {passive:false});
 
@@ -2866,7 +2995,21 @@ function updateCFDLivePrices() {
     }
     if (subEl) subEl.textContent = `Live @ ${fmt$(cp)}`;
   });
-  updateCFDPriceCard();
+  updateCFDPriceLive();
+}
+
+// A new price for the ticker already on the CFD card: change the numbers
+// only, so the chart is not redrawn every few seconds.
+function updateCFDPriceLive() {
+  const big = document.getElementById('cfd-price-big');
+  if (!big || big.dataset.ticker !== S.cfdPrice?.ticker) return updateCFDPriceCard();
+  const price = parseFloat(S.cfdPrice.execution_price), qty = parseFloat(S.cfdQty || 0);
+  const notionalEl = document.getElementById('cfd-notional-val'), marginEl = document.getElementById('cfd-margin-val');
+  if (qty && !notionalEl) return updateCFDPriceCard();   // the preview rows are not drawn yet
+  big.textContent = fmt$(price);
+  document.getElementById('cfd-price-badge').innerHTML = liveBadge(S.cfdPrice);
+  if (qty) { notionalEl.textContent = fmt$(price * qty); marginEl.textContent = fmt$(price * qty / S.cfdLeverage); }
+  updateCFDSLTPPreview();
 }
 
 function setCFDDir(dir) {
@@ -2903,7 +3046,7 @@ function onCFDTickerChange() {
     S.cfdPrice = r.data; S.cfdPriceError = null; S.holdingPrices[t] = r.data;
     if (S.cc.ticker !== t) {
       S.cc.ticker = t;
-      S.cc.data = await getChartData(t, S.cc.period, S.cc.interval);
+      S.cc.data = await getChartData(t, S.cc.period, chartInterval(S.cc));
     }
     updateCFDPriceCard();
     loadAiNews(t);
@@ -2941,19 +3084,19 @@ function updateCFDPriceCard() {
       ${notional ? `
       <div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0">
         <span style="color:var(--label2)">Notional value</span>
-        <span style="font-weight:700">${fmt$(notional)}</span>
+        <span style="font-weight:700" id="cfd-notional-val">${fmt$(notional)}</span>
       </div>
       <div style="display:flex;justify-content:space-between;font-size:13px;padding:7px 0 3px;border-top:1px solid var(--sep);margin-top:3px">
         <span style="color:var(--label2)">Required margin</span>
-        <span style="font-weight:700;color:var(--blue)">${fmt$(margin)}</span>
+        <span style="font-weight:700;color:var(--blue)" id="cfd-margin-val">${fmt$(margin)}</span>
       </div>` : ''}
     </div>`;
   card.innerHTML = `
     <div class="price-header">
       <span class="price-ticker-label">${S.cfdPrice.ticker}</span>
-      <span class="price-live"><span class="price-live-dot"></span>Live</span>
+      <span id="cfd-price-badge">${liveBadge(S.cfdPrice)}</span>
     </div>
-    <div class="price-big">${fmt$(price)}</div>
+    <div class="price-big" id="cfd-price-big" data-ticker="${esc(S.cfdPrice.ticker)}">${fmt$(price)}</div>
     ${posPreview}
     <div style="margin-top:14px">
       <div class="chart-outer">
@@ -3032,7 +3175,7 @@ function setCFDChartType(type, btn) {
   markActive(btn);
   const bar = document.getElementById('cc-interval-bar');
   if (bar) bar.classList.toggle('visible', type === 'candle');
-  paintCFDChart();
+  loadChart(S.cc, S.cfdStock, paintCFDChart);
 }
 
 async function setCFDInterval(interval, btn) {
@@ -3103,10 +3246,11 @@ function renderOptions() {
       if (S.optSelectedRow) {
         const row = S.optSelectedRow;
         const contracts = parseInt(S.optContracts) || 1;
-        // The chain charges its own model premium at the verified price; the market ask is only a fallback hint.
+        // The panel shows the chain's model premium at the live price (the purchase pays the same
+        // model at its block's verified price); the market ask is only a fallback hint.
         const q = S.optQuote && S.optQuote.key === optQuoteKey(row) ? S.optQuote : null;
         const modelPremium = q && q.premium ? parseFloat(q.premium) : null;
-        const indicativePremium = modelPremium ?? (row.ask > 0 ? row.ask : row.lastPrice);
+        const indicativePremium = optIndicativePremium(row);
         const premiumLabel = modelPremium !== null ? 'Chain premium (per share)'
                            : q ? 'Market ask (per share)' : 'Premium (per share)';
         const indicativeCost = indicativePremium * contracts * 100;
@@ -3123,13 +3267,13 @@ function renderOptions() {
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
               <div>
                 <div class="field-label">${premiumLabel}</div>
-                <div style="font-size:16px;font-weight:700;color:var(--red)">${q ? fmt$(indicativePremium) : '…'}</div>
+                <div style="font-size:16px;font-weight:700;color:var(--red)" id="opt-premium-val">${q ? fmt$(indicativePremium) : '…'}</div>
               </div>
               <div>
                 <div class="field-label">Contracts (×100 shares)</div>
                 <input class="modal-input" type="number" min="1" step="1" value="${S.optContracts}"
                   id="opt-contracts-input"
-                  oninput="S.optContracts=this.value;onOptContracts(${indicativePremium})"
+                  oninput="S.optContracts=this.value;onOptContracts()"
                   style="margin-bottom:0">
               </div>
             </div>
@@ -3139,8 +3283,8 @@ function renderOptions() {
             </div>
             <div style="font-size:11px;color:var(--label2);margin-bottom:10px;opacity:.7">
               ⚡ ${modelPremium !== null
-                ? 'The chain prices the option with its model at the verified price when the block is built, so the final premium can move slightly.'
-                : 'No verified price of ' + esc(S.optTicker) + ' on the chain yet — the chain will price the option with its model when the block is built.'}
+                ? 'This is the chain\'s model at the live price. The purchase pays the same model at the verified price of its block, so the final premium can move slightly.'
+                : 'No price for ' + esc(S.optTicker) + ' right now — the chain will price the option with its model when the block is built.'}
             </div>
             <div id="opt-buy-error" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px"></div>
             <div style="display:flex;gap:8px">
@@ -3403,10 +3547,17 @@ async function doOpenOption() {
 const buyLabel = n => 'Buy ' + n + ' Contract' + (n !== 1 ? 's' : '');
 const optQuoteKey = row => `${S.optTicker}|${S.optContractType}|${row.strike}|${S.optExpiry}`;
 
-function onOptContracts(premium) {
+// The premium the panel works with: the chain's model quote, else the market's ask (or last trade).
+function optIndicativePremium(row) {
+  const q = S.optQuote && S.optQuote.key === optQuoteKey(row) ? S.optQuote : null;
+  return q && q.premium ? parseFloat(q.premium) : (row.ask > 0 ? row.ask : row.lastPrice);
+}
+
+function onOptContracts() {
+  const row = S.optSelectedRow;
   const n = parseInt(S.optContracts) || 0;
   const tc = document.getElementById('opt-total-cost');
-  if (tc) tc.textContent = n > 0 ? fmt$(premium * n * 100) : '—';
+  if (tc) tc.textContent = row && n > 0 ? fmt$(optIndicativePremium(row) * n * 100) : '—';
   const btn = document.getElementById('opt-buy-btn');
   if (btn && !btn.disabled) btn.textContent = buyLabel(n);
 }

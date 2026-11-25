@@ -443,28 +443,35 @@ def ai_chat_view(request, ticker):
     return Response({"error": "Gemini is busy, try again in a moment."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
-# ── unsigned display price (before any block has priced a ticker) ────
+# ── live display price ───────────────────────────────────────────────
+
+_ORACLE = None   # (stub, pb): one channel for every request; the page polls prices every few seconds
+
 
 def _oracle_stub():
-    import os
-    import sys
-    import grpc
-    path = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'oracle_service'))
-    if path not in sys.path:
-        sys.path.insert(0, path)
-    import oracle_pb2
-    import oracle_pb2_grpc
-    channel = grpc.insecure_channel(settings.ORACLE_DISPLAY_URL)
-    return oracle_pb2_grpc.OracleServiceStub(channel), oracle_pb2
+    global _ORACLE
+    if _ORACLE is None:
+        import os
+        import sys
+        import grpc
+        path = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'oracle_service'))
+        if path not in sys.path:
+            sys.path.insert(0, path)
+        import oracle_pb2
+        import oracle_pb2_grpc
+        channel = grpc.insecure_channel(settings.ORACLE_DISPLAY_URL)
+        _ORACLE = (oracle_pb2_grpc.OracleServiceStub(channel), oracle_pb2)
+    return _ORACLE
 
 
-def display_price(ticker):
-    """A price for display only, straight from one oracle signer. Marked
-    unverified: trades always execute at the chain's median of signed quotes."""
+def live_quote(ticker):
+    """The market price now, from one price source, for display only: it is
+    unsigned, and a trade never uses it (it executes at the median of the
+    signed quotes in its block). None if the source does not answer."""
     try:
         stub, pb = _oracle_stub()
-        r = stub.GetPrice(pb.PriceRequest(ticker=ticker), timeout=5)
-    except Exception:
-        return _service_error('Live price')
-    return Response({'ticker': r.ticker, 'execution_price': r.execution_price,
-                     'timestamp': r.timestamp, 'verified': False})
+        r = stub.GetPrice(pb.PriceRequest(ticker=ticker), timeout=3)
+    except Exception as e:
+        logger.warning('live price of %s unavailable: %s', ticker, e)
+        return None
+    return {'price': r.execution_price, 'timestamp': r.timestamp, 'market_time': r.market_time or None}

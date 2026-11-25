@@ -220,32 +220,48 @@ def sltp_view(request):
 
 @api_view(['GET'])
 def price_view(_request, ticker):
-    """The last execution price the chain verified for a ticker (the median of
-    the signed oracle quotes in its latest priced block)."""
+    """The price to show for a ticker: the market price now, from one price
+    source (live, unsigned). A trade never uses it — it executes at the median
+    of the signed quotes in its block. If that source does not answer, the
+    last price the chain verified is shown instead, marked as not live: the
+    chain prices a ticker only in blocks that need it, so that price can be
+    old."""
     ticker = ticker.upper()
     if ticker not in SP500_STOCKS:
         return Response({'error': 'not a listed ticker'}, status=404)
+    from .market import live_quote
+    live = live_quote(ticker)
+    if live:
+        return Response({'ticker': ticker, 'execution_price': live['price'], 'timestamp': live['timestamp'],
+                         'market_time': live['market_time'], 'live': True, 'verified': False})
     try:
         p = chain.query('/prices')
     except chain.ChainUnavailable:
         return _unavailable()
     cents = (p or {}).get('prices', {}).get(ticker)
     if cents is None:
-        # no block has priced it yet: fall back to an unsigned display quote
-        from .market import display_price
-        return display_price(ticker)
-    return Response({'ticker': ticker, 'execution_price': _money(cents),
-                     'timestamp': _iso(p.get('time')), 'verified': True})
+        return Response({'error': 'No price for this ticker right now. Please try again.'}, status=503)
+    return Response({'ticker': ticker, 'execution_price': _money(cents), 'timestamp': None,
+                     'live': False, 'verified': True})
 
 
 @api_view(['GET'])
 def option_quote_view(request):
+    """The chain's model premium for an option, at the live price of the
+    underlying (at the chain's last verified price if the live source does not
+    answer). A purchase pays the same model at the median price of its block."""
     q = {k: request.query_params.get(k, '') for k in ('ticker', 'type', 'strike', 'expiry')}
+    ticker = q['ticker'].upper()
+    query = {'Ticker': ticker, 'Type': q['type'].upper(), 'Strike': q['strike'], 'Expiry': q['expiry']}
+    if ticker in SP500_STOCKS:
+        from .market import live_quote
+        live = live_quote(ticker)
+        if live:
+            query['Price'] = live['price']
     try:
-        r = chain.query('/option_quote', json.dumps(
-            {'Ticker': q['ticker'].upper(), 'Type': q['type'].upper(), 'Strike': q['strike'], 'Expiry': q['expiry']}).encode())
+        r = chain.query('/option_quote', json.dumps(query).encode())
     except chain.ChainUnavailable:
         return _unavailable()
     if r is None:
-        return Response({'error': 'no verified price yet for this ticker, or invalid strike/expiry'}, status=404)
+        return Response({'error': 'no price for this ticker right now, or invalid strike/expiry'}, status=404)
     return Response({'premium': _money(r['premium']), 'underlying': _money(r['underlying'])})

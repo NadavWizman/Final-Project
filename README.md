@@ -244,7 +244,7 @@ Each line runs from the repo root (with `.venv` activated for the Python ones):
 (cd oracle_service && python3 -m unittest -v)                # price signers
 ```
 
-97 tests in all: 65 in Go (34 ledger, 13 quotes, 4 app, 14 acceptance), 8 for the wallet
+98 tests in all: 66 in Go (34 ledger, 13 quotes, 5 app, 14 acceptance), 8 for the wallet
 (7 unit tests and scenario 13), 15 for the gateway and 9 for the price signers.
 
 Coverage: `nodes/ledger` 86 %, `nodes/quotes` 98 %. `nodes/app` is exercised mostly by the
@@ -320,7 +320,7 @@ every user from one IP, so raise the limit for load tests.
 |----------|---------|---------|
 | `SECRET_KEY` | random | Django secret |
 | `NODE_RPC` | the 4 local nodes | Node RPC URLs, tried in order |
-| `ORACLE_DISPLAY_URL` | `127.0.0.1:8001` | Source used only for display prices before the chain has one |
+| `ORACLE_DISPLAY_URL` | `127.0.0.1:8001` | Source of the live prices shown on screen (unsigned; a trade always executes at the signed median) |
 | `GEMINI_API_KEY` | empty | Enables the AI features |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Pinned Gemini model |
 | `THROTTLE_TX` / `THROTTLE_AI` | `600/minute` / `120/hour` | Per-IP limits |
@@ -355,8 +355,8 @@ sessions.
 | GET | `tx/<hash>/` | `pending` / `committed`, with the result |
 | GET | `username/<name>/` | Address registered under a username |
 | GET | `portfolio/`, `orders/`, `cfd/`, `options/`, `sltp/` | Account views from the chain state |
-| GET | `price/<ticker>/` | Last verified price |
-| GET | `option-quote/` | Model premium for a ticker/type/strike/expiry |
+| GET | `price/<ticker>/` | Live price for display; the chain's last verified price if the source does not answer |
+| GET | `option-quote/` | The chain's model premium for a ticker/type/strike/expiry, at the live price |
 | GET | `history/<ticker>/`, `options/chain/<ticker>/` | Market data for display |
 | GET | `ai-news/<ticker>/` | Gemini news summary (not investment advice) |
 | POST | `ai-chat/<ticker>/` | Gemini answer to a question about the ticker (not investment advice) |
