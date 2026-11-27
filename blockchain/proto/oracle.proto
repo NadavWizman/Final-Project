@@ -10,7 +10,8 @@ message PriceRequest {
   string ticker = 1;
 }
 
-// PriceResponse is returned by the oracle with the live execution price
+// PriceResponse is returned by the oracle with the live price, for display
+// only: trades execute at the median of signed quotes (SignedQuote)
 message PriceResponse {
   string ticker          = 1;
   string execution_price = 2;

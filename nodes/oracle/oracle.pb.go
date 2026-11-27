@@ -66,7 +66,8 @@ func (x *PriceRequest) GetTicker() string {
 	return ""
 }
 
-// PriceResponse is returned by the oracle with the live execution price
+// PriceResponse is returned by the oracle with the live price, for display
+// only: trades execute at the median of signed quotes (SignedQuote)
 type PriceResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Ticker         string                 `protobuf:"bytes,1,opt,name=ticker,proto3" json:"ticker,omitempty"`
